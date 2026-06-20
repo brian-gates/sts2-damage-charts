@@ -4,9 +4,10 @@ A standalone in-combat damage analytics overlay for [Slay the Spire 2](https://w
 
 - **Always-on compact chart** (top-right): grouped bars per round of damage **dealt** (solid) vs
   **taken** (faded). Per-player colors in multiplayer.
-- **Hotkey-toggled detailed breakdown** (default **Cmd+D**): two columns — damage **dealt** and
-  **taken** broken down **by source** (each card by name; powers/DoTs like Poison, Doom, Thorns;
-  orbs; relics), with totals and percentages, sorted highest-first.
+- **Hotkey-toggled full-screen breakdown** (default **C**, for "combat stats"): a full-screen
+  takeover with two columns — damage **dealt** and **taken** broken down **by source** (each card by
+  name; powers/DoTs like Poison, Doom, Thorns; orbs; relics), with totals and percentages, sorted
+  highest-first, over a tall scrollable combat log (mouse-wheel or drag the scrollbar).
 - Single-player and multiplayer. Reads game state directly — no dependency on any other mod.
 
 ## Requirements
@@ -68,12 +69,12 @@ on first launch). Restart the game after replacing the DLL — mods load at star
 ```json
 {
   "enabled": true,
-  "hotkey": "cmd+d",
+  "hotkey": "c",
   "show_bars": true
 }
 ```
 
-- `hotkey`: modifier+key, e.g. `cmd+d`, `shift+d`, `alt+d`, `ctrl+d`, or a bare key like `f9`.
+- `hotkey`: a bare key like `c` or `f9`, or modifier+key, e.g. `cmd+d`, `shift+d`, `alt+d`, `ctrl+d`.
 - `show_bars`: set `false` to hide the always-on bars and use only the hotkey panel.
 
 ## License

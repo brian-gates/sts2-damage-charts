@@ -303,6 +303,126 @@ internal static class UiTheme
         catch { }
     }
 
+    private static readonly System.Collections.Generic.HashSet<string> _loggedLayers = new();
+    // Diagnostic: log each distinct CanvasLayer once (name + layer + ancestry) so we can pick a layer
+    // that renders behind the game's HUD/top-bar (like the native deck/map screens do).
+    public static void DumpCanvasLayers(Node? root)
+    {
+        if (root == null) return;
+        try { DumpLayerNodes(root); } catch { }
+    }
+
+    private static void DumpLayerNodes(Node n)
+    {
+        try
+        {
+            if (n is CanvasLayer cl)
+            {
+                // Dedup by instance, not name|layer — many distinct canvases share name 'CanvasLayer'/layer 10.
+                string key = cl.GetInstanceId().ToString();
+                if (_loggedLayers.Add(key))
+                {
+                    string firstChild = "";
+                    foreach (var ch in cl.GetChildren()) { firstChild = $"{ch.Name}:{ch.GetType().Name}"; break; }
+                    GD.Print($"[STS2 Damage] canvaslayer name='{cl.Name}' layer={cl.Layer} vis={(cl.Visible ? 1 : 0)} children={cl.GetChildCount()} first='{firstChild}' chain='{Ancestry(cl)}'");
+                }
+            }
+            foreach (var ch in n.GetChildren()) DumpLayerNodes(ch);
+        }
+        catch { }
+    }
+
+    // Diagnostic: map the game's combat CanvasLayer (the one under NGame) so we can parent our
+    // breakdown content beneath the top-bar node in draw order. Logs each child (to depth 2) once,
+    // with z-index / visibility / global rect, so the top bar and deck/map insertion point are visible.
+    private static readonly System.Collections.Generic.HashSet<string> _loggedTree = new();
+    public static void DumpGameCanvasTree(Node? root)
+    {
+        if (root == null) return;
+        try
+        {
+            var canvas = FindGameCanvas(root);
+            if (canvas == null) return;
+            int idx = 0;
+            foreach (var ch in canvas.GetChildren()) LogCanvasChild(ch, 0, idx++);
+        }
+        catch { }
+    }
+
+    // Diagnostic for the reparent: the combat HUD/top bar lives in the base viewport (no CanvasLayer).
+    // Log top-anchored wide Controls (top-bar candidates) plus the deck/map containers, each with their
+    // parent + sibling index, so we know where to mount our content beneath the top bar.
+    private static readonly System.Collections.Generic.HashSet<string> _loggedReparent = new();
+    public static void DumpReparentTargets(Node? root)
+    {
+        if (root == null) return;
+        try
+        {
+            float vpW = 1920f;
+            try { vpW = ((Window)root).GetVisibleRect().Size.X; } catch { }
+            DumpReparentWalk(root, vpW);
+        }
+        catch { }
+    }
+
+    private static void DumpReparentWalk(Node n, float vpW)
+    {
+        try
+        {
+            string type = n.GetType().Name;
+            bool interesting = type.Contains("CapstoneContainer") || type.Contains("MapScreen")
+                || type.Contains("TopBar") || type.Contains("Hud") || type.Contains("OverlayStack");
+            if (n is Control c)
+            {
+                var r = c.GetGlobalRect();
+                bool topBarLike = r.Position.Y <= 2f && r.Size.X >= vpW * 0.6f && r.Size.Y >= 36f && r.Size.Y <= 220f;
+                if (interesting || topBarLike)
+                {
+                    var p = c.GetParent();
+                    int idx = p != null ? p.GetChildren().IndexOf(c) : -1;
+                    string pkey = $"{type}|{c.Name}";
+                    if (_loggedReparent.Add(pkey))
+                        GD.Print($"[STS2 Damage] reparent cand '{c.Name}' type={type} idx={idx}/{p?.GetChildCount()} parent='{p?.Name}:{p?.GetType().Name}' z={c.ZIndex} rect=({r.Position.X:F0},{r.Position.Y:F0} {r.Size.X:F0}x{r.Size.Y:F0}) chain='{Ancestry(c)}'");
+                }
+            }
+            else if (interesting && _loggedReparent.Add($"{type}|{n.Name}"))
+            {
+                var p = n.GetParent();
+                int idx = p != null ? p.GetChildren().IndexOf(n) : -1;
+                GD.Print($"[STS2 Damage] reparent cand(node) '{n.Name}' type={type} idx={idx}/{p?.GetChildCount()} parent='{p?.Name}:{p?.GetType().Name}' chain='{Ancestry(n)}'");
+            }
+            foreach (var ch in n.GetChildren()) DumpReparentWalk(ch, vpW);
+        }
+        catch { }
+    }
+
+    private static Node? FindGameCanvas(Node n)
+    {
+        try
+        {
+            if (n is CanvasLayer && n.GetParent()?.GetType().Name == "NGame") return n;
+            foreach (var ch in n.GetChildren()) { var r = FindGameCanvas(ch); if (r != null) return r; }
+        }
+        catch { }
+        return null;
+    }
+
+    private static void LogCanvasChild(Node n, int depth, int siblingIndex)
+    {
+        try
+        {
+            string type = n.GetType().Name;
+            string key = $"{depth}|{n.Name}|{type}";
+            string extra = "";
+            if (n is Control c) { var r = c.GetGlobalRect(); extra = $" z={c.ZIndex} vis={(c.Visible ? 1 : 0)} rect=({r.Position.X:F0},{r.Position.Y:F0} {r.Size.X:F0}x{r.Size.Y:F0})"; }
+            else if (n is CanvasItem ci) extra = $" z={ci.ZIndex} vis={(ci.Visible ? 1 : 0)}";
+            if (_loggedTree.Add(key))
+                GD.Print($"[STS2 Damage] tree d{depth} i{siblingIndex} '{n.Name}' type={type}{extra}");
+            if (depth < 2) { int i = 0; foreach (var ch in n.GetChildren()) LogCanvasChild(ch, depth + 1, i++); }
+        }
+        catch { }
+    }
+
     private static string Ancestry(Node n)
     {
         var parts = new System.Collections.Generic.List<string>();

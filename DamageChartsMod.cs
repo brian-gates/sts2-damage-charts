@@ -54,10 +54,10 @@ public static class DamageChartsMod
     private static bool _debugTheme;          // config: dump game theme styleboxes once (diagnostic)
     private static bool _themeDumped;
 
-    // Hotkey (default Cmd+D)
-    private static Key _hotkeyKey = Key.D;
-    private static readonly List<Key> _hotkeyMods = new() { Key.Meta };
-    private static string _hotkeySpec = "cmd+d";
+    // Hotkey (default bare C, "combat stats"). A/S/D/X/M/E are taken by the game; C is free.
+    private static Key _hotkeyKey = Key.C;
+    private static readonly List<Key> _hotkeyMods = new();
+    private static string _hotkeySpec = "c";
     private static bool _hotkeyDownLast;
 
     // Saved chart position (null = default top-right until first placed/dragged).
@@ -94,7 +94,7 @@ public static class DamageChartsMod
 
             if (!File.Exists(path))
             {
-                try { File.WriteAllText(path, "{\n  \"enabled\": true,\n  \"hotkey\": \"cmd+d\",\n  \"show_bars\": true\n}\n"); }
+                try { File.WriteAllText(path, "{\n  \"enabled\": true,\n  \"hotkey\": \"c\",\n  \"show_bars\": true\n}\n"); }
                 catch { }
                 return true;
             }
@@ -239,9 +239,19 @@ public static class DamageChartsMod
     }
 
     // Return false to skip the game's hotkey dispatch for events that match our combo.
+    // Also the one place mouse-wheel events reach us (no engine GUI callbacks on our CanvasLayer):
+    // while the breakdown is up, route unhandled wheel notches into its scroll and swallow them.
     private static bool SuppressPrefix(InputEvent inputEvent)
     {
-        try { if (inputEvent is InputEventKey k && MatchesOurCombo(k)) return false; }
+        try
+        {
+            if (inputEvent is InputEventKey k && MatchesOurCombo(k)) return false;
+            if (inputEvent is InputEventMouseButton mb && mb.Pressed && (_detailVisible || _summaryActive) && _detail != null)
+            {
+                if (mb.ButtonIndex == MouseButton.WheelUp) { _detail.ScrollBy(-3); return false; }
+                if (mb.ButtonIndex == MouseButton.WheelDown) { _detail.ScrollBy(3); return false; }
+            }
+        }
         catch { }
         return true;
     }
@@ -429,6 +439,9 @@ public static class DamageChartsMod
                 var dbgRoot = ((SceneTree)Engine.GetMainLoop()).Root;
                 if (!_themeDumped) { try { if (UiTheme.DumpThemeStyleboxes(dbgRoot)) _themeDumped = true; } catch { } }
                 try { UiTheme.DumpNewTextures(dbgRoot); } catch { }
+                try { UiTheme.DumpCanvasLayers(dbgRoot); } catch { }
+                try { UiTheme.DumpGameCanvasTree(dbgRoot); } catch { }
+                try { UiTheme.DumpReparentTargets(dbgRoot); } catch { }
             }
             HandleHotkey();
 
@@ -453,8 +466,19 @@ public static class DamageChartsMod
                         // A game menu/modal/overlay is on top — get out of its way.
                         _bars?.Hide(); _tooltip?.Hide(); _detail?.SetVisible(false);
                     }
+                    else if (_detailVisible && _detail != null)
+                    {
+                        // Full-screen breakdown is up — it takes over; hide the compact bars/tooltip.
+                        _bars?.Hide(); _tooltip?.Hide();
+                        _detail.SummaryMode = false; _detail.SetVisible(true);
+                        _detail.Render(_tracker.SourceSnapshot(), _tracker.Snapshot(), Palette);
+                        _detail.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left));
+                        if (_detail.TakeCloseRequest()) { _detailVisible = false; _detail.SetVisible(false); } // ✕ clicked
+
+                    }
                     else
                     {
+                        _detail?.SetVisible(false);
                         if (_showBars && _bars != null)
                         {
                             _bars.Render(_tracker.Snapshot(), Palette);
@@ -464,8 +488,6 @@ public static class DamageChartsMod
                             if (!_bars.IsDragging && _bars.TryGetHover(out var hv)) _tooltip?.Render(hv, RootMouse());
                             else _tooltip?.Hide();
                         }
-                        if (_detailVisible && _detail != null) { _detail.SummaryMode = false; _detail.SetVisible(true); _detail.Render(_tracker.SourceSnapshot(), Palette); _detail.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left)); }
-                        else _detail?.SetVisible(false);
                     }
                 }
             }
@@ -476,7 +498,7 @@ public static class DamageChartsMod
                 _bars?.Hide(); _tooltip?.Hide();
                 if (IsMapOpen()) { _summaryActive = false; _detail.SetVisible(false); }
                 else if (IsMenuOpen()) { _detail.SetVisible(false); }
-                else { _detail.SummaryMode = true; _detail.SetVisible(true); _detail.Render(_tracker.SourceSnapshot(), Palette); }
+                else { _detail.SummaryMode = true; _detail.SetVisible(true); _detail.Render(_tracker.SourceSnapshot(), _tracker.Snapshot(), Palette); }
             }
 
             _errCount = 0;
@@ -549,8 +571,11 @@ public static class DamageChartsMod
             if (_debugTheme && !_themeDumped) { _themeDumped = true; UiTheme.DumpThemeStyleboxes(root); }
             Vector2? savedPos = (_posXFrac.HasValue && _posYFrac.HasValue) ? new Vector2(_posXFrac.Value, _posYFrac.Value) : null;
             if (_bars == null || !_bars.IsValid()) _bars = new DamageChartView(root, savedPos);
-            if (_detail == null || !_detail.IsValid()) _detail = new DamageDetailView(root);
+            // _detail may have been freed by the game (its content can be reparented under NGlobalUi).
+            if (_detail != null && !_detail.IsValid()) { _detail.Dispose(); _detail = null; }
+            if (_detail == null) _detail = new DamageDetailView(root);
             if (_tooltip == null || !_tooltip.IsValid()) _tooltip = new DamageTooltipView(root);
+            if (_detail != null) _detail.HotkeyHint = _hotkeySpec.ToUpperInvariant();
             _detail?.SetVisible(_detailVisible);
         }
         catch (Exception ex) { GD.PrintErr($"[STS2 Damage] failed to create views: {ex.Message}"); }
