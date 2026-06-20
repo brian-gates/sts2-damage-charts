@@ -26,6 +26,8 @@ internal sealed class DamageChartView
     private const int MaxGroups = 6;
     private const float BaseMaxIcon = 34f;
 
+    private readonly Node _root;
+    private Node? _topBar;
     private readonly CanvasLayer _layer;
     private readonly Control _container;
     private readonly Panel _bg;
@@ -54,9 +56,11 @@ internal sealed class DamageChartView
     // cached each render for UpdateMouse/hover
     private Vector2 _vp = new(1920, 1080);
     private float _w = BaseWidth, _h = BaseHeight, _headerH = BaseHeaderH;
+    private float _topInset;
 
     public DamageChartView(Node root, Vector2? savedPosFrac)
     {
+        _root = root;
         _layer = new CanvasLayer { Layer = 128, Name = "Sts2DamageChartsBars" };
         root.AddChild(_layer);
 
@@ -117,8 +121,9 @@ internal sealed class DamageChartView
             else if (leftDown && _dragging) // dragging the header
             {
                 Vector2 abs = global - _dragOffset;
+                float yMin = _vp.Y > 0 ? _topInset / _vp.Y : 0f;
                 float x = _vp.X > 0 ? Math.Clamp(abs.X / _vp.X, 0f, Math.Max(0f, 1f - _w / _vp.X)) : 0f;
-                float y = _vp.Y > 0 ? Math.Clamp(abs.Y / _vp.Y, 0f, Math.Max(0f, 1f - _h / _vp.Y)) : 0f;
+                float y = _vp.Y > 0 ? Math.Clamp(abs.Y / _vp.Y, yMin, Math.Max(yMin, 1f - _h / _vp.Y)) : 0f;
                 _posFrac = new Vector2(x, y);
             }
             else if (!leftDown && _leftLast) // release
@@ -174,6 +179,38 @@ internal sealed class DamageChartView
         return null;
     }
 
+    // Bottom edge (viewport px) of the game's top bar, so the chart can be floored below it instead of
+    // sliding under the higher-layer HUD. Measures the real NTopBar when reachable; empirical fallback.
+    private float TopInset(Vector2 vp)
+    {
+        try
+        {
+            if (_topBar == null || !GodotObject.IsInstanceValid(_topBar))
+            {
+                var globalUi = FindByType(_root, "NGlobalUi");
+                _topBar = globalUi != null ? FindByType(globalUi, "NTopBar") : null;
+            }
+            if (_topBar is Control c)
+            {
+                float bottom = c.GetGlobalRect().End.Y;
+                if (bottom > 1f) return Math.Clamp(bottom + 4f, 0f, vp.Y * 0.25f);
+            }
+        }
+        catch { }
+        return Math.Max(64f, vp.Y * 0.06f);
+    }
+
+    private static Node? FindByType(Node n, string typeName)
+    {
+        try
+        {
+            if (n.GetType().Name == typeName) return n;
+            foreach (var ch in n.GetChildren()) { var r = FindByType(ch, typeName); if (r != null) return r; }
+        }
+        catch { }
+        return null;
+    }
+
     public void Render(ChartSnapshot snap, Color[] palette)
     {
         if (!IsValid()) return;
@@ -195,13 +232,15 @@ internal sealed class DamageChartView
             _iconLayer.SetSize(new Vector2(_w, _h));
             UiTheme.RestylePanel(_bg, 0.5f, sc);
 
+            float inset = TopInset(_vp);
+            _topInset = inset;
             if (!_posFracInit)
             {
-                _posFrac = new Vector2(_vp.X > 0 ? (_vp.X - _w - margin) / _vp.X : 0.7f, _vp.Y > 0 ? margin / _vp.Y : 0.02f);
+                _posFrac = new Vector2(_vp.X > 0 ? (_vp.X - _w - margin) / _vp.X : 0.7f, _vp.Y > 0 ? Math.Max(margin, inset) / _vp.Y : 0.02f);
                 _posFracInit = true;
             }
             float px = Math.Clamp(_posFrac.X * _vp.X, 0f, Math.Max(0f, _vp.X - _w));
-            float py = Math.Clamp(_posFrac.Y * _vp.Y, 0f, Math.Max(0f, _vp.Y - _h));
+            float py = Math.Clamp(_posFrac.Y * _vp.Y, inset, Math.Max(inset, _vp.Y - _h));
             _container.SetPosition(new Vector2(px, py));
 
             UiTheme.Apply(_title, F(11, sc), new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.85f));

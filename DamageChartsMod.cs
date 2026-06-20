@@ -51,8 +51,6 @@ public static class DamageChartsMod
     private static bool _detailVisible;
     private static bool _summaryActive;       // auto end-of-combat summary showing
     private static bool _summaryOnEnd = true; // config
-    private static bool _debugTheme;          // config: dump game theme styleboxes once (diagnostic)
-    private static bool _themeDumped;
 
     // Hotkey (default bare C, "combat stats"). A/S/D/X/M/E are taken by the game; C is free.
     private static Key _hotkeyKey = Key.C;
@@ -118,7 +116,6 @@ public static class DamageChartsMod
             if (root.TryGetProperty("enabled", out var en) && en.ValueKind == JsonValueKind.False) return false;
             if (root.TryGetProperty("show_bars", out var sb) && sb.ValueKind == JsonValueKind.False) _showBars = false;
             if (root.TryGetProperty("summary_on_combat_end", out var su) && su.ValueKind == JsonValueKind.False) _summaryOnEnd = false;
-            if (root.TryGetProperty("debug_theme", out var dt) && dt.ValueKind == JsonValueKind.True) _debugTheme = true;
             if (root.TryGetProperty("hotkey", out var hk) && hk.ValueKind == JsonValueKind.String)
             {
                 _hotkeySpec = hk.GetString() ?? _hotkeySpec;
@@ -479,18 +476,6 @@ public static class DamageChartsMod
             {
                 try { UiTheme.EnsurePanelStyle(((SceneTree)Engine.GetMainLoop()).Root); } catch { }
             }
-            // Diagnostic: one-shot header (theme/probe/tree counts) once the UI tree is populated, then
-            // a continuous, deduped dump of texture-bearing nodes so contextual UI (settings, popups,
-            // hover-tips) reveals the game's real frame art as the player navigates.
-            if (_debugTheme && _frame > 120 && _frame % 30 == 0)
-            {
-                var dbgRoot = ((SceneTree)Engine.GetMainLoop()).Root;
-                if (!_themeDumped) { try { if (UiTheme.DumpThemeStyleboxes(dbgRoot)) _themeDumped = true; } catch { } }
-                try { UiTheme.DumpNewTextures(dbgRoot); } catch { }
-                try { UiTheme.DumpCanvasLayers(dbgRoot); } catch { }
-                try { UiTheme.DumpGameCanvasTree(dbgRoot); } catch { }
-                try { UiTheme.DumpReparentTargets(dbgRoot); } catch { }
-            }
             HandleHotkey();
 
             bool inCombat = SafeIsInCombat();
@@ -616,7 +601,6 @@ public static class DamageChartsMod
             var root = ((SceneTree)Engine.GetMainLoop()).Root;
             UiTheme.EnsureFont(root);
             UiTheme.EnsurePanelStyle(root);
-            if (_debugTheme && !_themeDumped) { _themeDumped = true; UiTheme.DumpThemeStyleboxes(root); }
             Vector2? savedPos = (_posXFrac.HasValue && _posYFrac.HasValue) ? new Vector2(_posXFrac.Value, _posYFrac.Value) : null;
             if (_bars == null || !_bars.IsValid()) _bars = new DamageChartView(root, savedPos);
             // _detail may have been freed by the game (its content can be reparented under NGlobalUi).

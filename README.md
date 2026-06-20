@@ -74,8 +74,11 @@ on first launch). Restart the game after replacing the DLL — mods load at star
 }
 ```
 
-- `hotkey`: a bare key like `c` or `f9`, or modifier+key, e.g. `cmd+d`, `shift+d`, `alt+d`, `ctrl+d`.
+- `hotkey`: a bare key like `c` (the default) or `f9`, or modifier+key, e.g. `cmd+d`, `shift+d`, `alt+d`, `ctrl+d`.
 - `show_bars`: set `false` to hide the always-on bars and use only the hotkey panel.
+
+Edits to this file are picked up live — change the `hotkey` or `show_bars` and it applies within
+about half a second, no restart needed.
 
 ## License
 
