@@ -64,6 +64,8 @@ public static class DamageChartsMod
     private static float? _posXFrac;
     private static float? _posYFrac;
 
+    private static long _lastConfigWriteTicks;
+
     public static void Initialize()
     {
         try
@@ -84,21 +86,33 @@ public static class DamageChartsMod
 
     // ===== Config =====
 
+    private static string? ConfigPath()
+    {
+        string? dir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+        return dir == null ? null : Path.Combine(dir, ConfigFileName);
+    }
+
+    private static void RememberConfigWriteTime(string path)
+    {
+        try { _lastConfigWriteTicks = File.GetLastWriteTimeUtc(path).Ticks; } catch { }
+    }
+
     private static bool LoadConfig()
     {
         try
         {
-            string? dir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-            if (dir == null) return true;
-            string path = Path.Combine(dir, ConfigFileName);
+            string? path = ConfigPath();
+            if (path == null) return true;
 
             if (!File.Exists(path))
             {
                 try { File.WriteAllText(path, "{\n  \"enabled\": true,\n  \"hotkey\": \"c\",\n  \"show_bars\": true\n}\n"); }
                 catch { }
+                RememberConfigWriteTime(path);
                 return true;
             }
 
+            RememberConfigWriteTime(path);
             using var doc = JsonDocument.Parse(File.ReadAllText(path));
             var root = doc.RootElement;
             if (root.TryGetProperty("enabled", out var en) && en.ValueKind == JsonValueKind.False) return false;
@@ -122,8 +136,8 @@ public static class DamageChartsMod
     {
         try
         {
-            string? dir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-            if (dir == null || _bars == null) return;
+            string? path = ConfigPath();
+            if (path == null || _bars == null) return;
             var pos = _bars.PositionFraction;
             var dict = new Dictionary<string, object>
             {
@@ -134,10 +148,44 @@ public static class DamageChartsMod
                 ["pos_x_frac"] = (float)Math.Round(pos.X, 4),
                 ["pos_y_frac"] = (float)Math.Round(pos.Y, 4),
             };
-            File.WriteAllText(Path.Combine(dir, ConfigFileName), JsonSerializer.Serialize(dict, new JsonSerializerOptions { WriteIndented = true }));
+            File.WriteAllText(path, JsonSerializer.Serialize(dict, new JsonSerializerOptions { WriteIndented = true }));
+            RememberConfigWriteTime(path);
             _posXFrac = pos.X; _posYFrac = pos.Y;
         }
         catch (Exception ex) { GD.PrintErr($"[STS2 Damage] save config failed: {ex.Message}"); }
+    }
+
+    private static void ReloadConfigIfChangedOnDisk()
+    {
+        try
+        {
+            string? path = ConfigPath();
+            if (path == null || !File.Exists(path)) return;
+            long writeTicks = File.GetLastWriteTimeUtc(path).Ticks;
+            if (writeTicks == _lastConfigWriteTicks) return;
+            _lastConfigWriteTicks = writeTicks;
+
+            using var doc = JsonDocument.Parse(File.ReadAllText(path));
+            var root = doc.RootElement;
+            if (root.TryGetProperty("hotkey", out var hk) && hk.ValueKind == JsonValueKind.String)
+            {
+                string? spec = hk.GetString();
+                if (!string.IsNullOrWhiteSpace(spec) && spec != _hotkeySpec)
+                {
+                    _hotkeySpec = spec!;
+                    ParseHotkey(_hotkeySpec);
+                    _hotkeyDownLast = false;
+                    GD.Print($"[STS2 Damage] hotkey reloaded live: {_hotkeySpec}");
+                }
+            }
+            bool showBars = !(root.TryGetProperty("show_bars", out var sb) && sb.ValueKind == JsonValueKind.False);
+            if (showBars != _showBars)
+            {
+                _showBars = showBars;
+                if (!_showBars) _bars?.Hide();
+            }
+        }
+        catch (Exception ex) { GD.PrintErr($"[STS2 Damage] config reload failed: {ex.Message}"); }
     }
 
     private static Vector2 RootMouse()
@@ -426,7 +474,7 @@ public static class DamageChartsMod
         try
         {
             _frame++;
-            // Capture the game's native panel frame at the menu (before combat) so it's cached and ready.
+            if (_frame % 30 == 0) ReloadConfigIfChangedOnDisk();
             if (_frame > 120 && _frame % 30 == 0)
             {
                 try { UiTheme.EnsurePanelStyle(((SceneTree)Engine.GetMainLoop()).Root); } catch { }
