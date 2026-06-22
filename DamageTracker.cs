@@ -36,6 +36,8 @@ internal sealed class PlayerSources
     public long DealtTotal;
     public List<SourceEntry> Taken = new();
     public long TakenTotal;
+    public long HealTotal;   // total HP healed this scope (no by-source breakdown)
+    public long BlockTotal;  // total block gained this scope (no by-source breakdown)
 }
 
 internal sealed class ChartRow
@@ -83,6 +85,8 @@ internal sealed class DamageTracker
     private readonly Dictionary<int, Dictionary<string, long>> _takenBySource = new();
     private readonly Dictionary<string, string> _sourceIcon = new(); // source label -> texture resource path
     private readonly Dictionary<(int Round, int Slot), List<DealtSeg>> _dealtSegs = new();
+    private readonly Dictionary<int, long> _healByPlayer = new();   // slot -> total healed
+    private readonly Dictionary<int, long> _blockByPlayer = new();  // slot -> total block gained
     private readonly List<LogEntry> _log = new();
     private const int LogCap = 500;
     private const int LogShow = 300; // detail panel scrolls through this much history
@@ -100,6 +104,8 @@ internal sealed class DamageTracker
             _takenBySource.Clear();
             _sourceIcon.Clear();
             _dealtSegs.Clear();
+            _healByPlayer.Clear();
+            _blockByPlayer.Clear();
             _log.Clear();
             _maxRound = 0;
             _playerCount = Math.Max(1, playerCount);
@@ -127,6 +133,20 @@ internal sealed class DamageTracker
 
     public void AddTaken(int round, int slot, int amount, string source, string? icon = null)
         => Add(round, slot, 1, amount, source, _takenBySource, icon);
+
+    public void AddHealed(int slot, int amount) => AddTotal(_healByPlayer, slot, amount);
+
+    public void AddBlock(int slot, int amount) => AddTotal(_blockByPlayer, slot, amount);
+
+    private void AddTotal(Dictionary<int, long> byPlayer, int slot, int amount)
+    {
+        if (amount <= 0 || slot < 0) return;
+        lock (_lock)
+        {
+            byPlayer.TryGetValue(slot, out long cur);
+            byPlayer[slot] = cur + amount;
+        }
+    }
 
     private void Add(int round, int slot, int field, int amount, string source,
                      Dictionary<int, Dictionary<string, long>> bySource, string? icon)
@@ -188,6 +208,8 @@ internal sealed class DamageTracker
                 var ps = new PlayerSources();
                 ps.Dealt = SortedList(_dealtBySource, s, out ps.DealtTotal);
                 ps.Taken = SortedList(_takenBySource, s, out ps.TakenTotal);
+                _healByPlayer.TryGetValue(s, out ps.HealTotal);
+                _blockByPlayer.TryGetValue(s, out ps.BlockTotal);
                 perPlayer[s] = ps;
             }
             int from = Math.Max(0, _log.Count - LogShow);

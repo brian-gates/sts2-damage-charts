@@ -19,15 +19,13 @@ internal sealed class HoverInfo
 // fraction so it stays put across resolutions.
 internal sealed class DamageChartView
 {
-    private const float BaseWidth = 320f;
-    private const float BaseHeight = 150f;
+    private const float BaseWidth = 340f;
+    private const float BaseHeight = 168f;
     private const float BaseMargin = 14f;
-    private const float BaseHeaderH = 20f;
+    private const float BaseHeaderH = 24f;
     private const int MaxGroups = 6;
     private const float BaseMaxIcon = 34f;
 
-    private readonly Node _root;
-    private Node? _topBar;
     private readonly CanvasLayer _layer;
     private readonly Control _container;
     private readonly Panel _bg;
@@ -43,6 +41,10 @@ internal sealed class DamageChartView
 
     private readonly List<(Rect2 Rect, int Round, int Slot)> _cellRects = new();
     private ChartSnapshot? _lastSnap;
+
+    // User multiplier from config (ui_scale): enlarges the whole widget (panel + text) on top of the
+    // automatic resolution scale, for legibility.
+    public float UiScaleMul = 1f;
 
     private Vector2 _posFrac;     // top-left as fraction of viewport
     private bool _posFracInit;
@@ -60,7 +62,6 @@ internal sealed class DamageChartView
 
     public DamageChartView(Node root, Vector2? savedPosFrac)
     {
-        _root = root;
         _layer = new CanvasLayer { Layer = 128, Name = "Sts2DamageChartsBars" };
         root.AddChild(_layer);
 
@@ -179,37 +180,9 @@ internal sealed class DamageChartView
         return null;
     }
 
-    // Bottom edge (viewport px) of the game's top bar, so the chart can be floored below it instead of
-    // sliding under the higher-layer HUD. Measures the real NTopBar when reachable; empirical fallback.
-    private float TopInset(Vector2 vp)
-    {
-        try
-        {
-            if (_topBar == null || !GodotObject.IsInstanceValid(_topBar))
-            {
-                var globalUi = FindByType(_root, "NGlobalUi");
-                _topBar = globalUi != null ? FindByType(globalUi, "NTopBar") : null;
-            }
-            if (_topBar is Control c)
-            {
-                float bottom = c.GetGlobalRect().End.Y;
-                if (bottom > 1f) return Math.Clamp(bottom + 4f, 0f, vp.Y * 0.25f);
-            }
-        }
-        catch { }
-        return Math.Max(64f, vp.Y * 0.06f);
-    }
-
-    private static Node? FindByType(Node n, string typeName)
-    {
-        try
-        {
-            if (n.GetType().Name == typeName) return n;
-            foreach (var ch in n.GetChildren()) { var r = FindByType(ch, typeName); if (r != null) return r; }
-        }
-        catch { }
-        return null;
-    }
+    // Y floor (viewport px) that keeps the chart below the game's top bar instead of sliding under the
+    // higher-layer HUD. The bar is ~8% of viewport height (letterbox-excluded); 9% leaves a hair below.
+    private static float TopInset(Vector2 vp) => Math.Max(48f, vp.Y * 0.09f);
 
     public void Render(ChartSnapshot snap, Color[] palette)
     {
@@ -221,7 +194,7 @@ internal sealed class DamageChartView
             _cellRects.Clear();
 
             _vp = _container.GetViewportRect().Size;
-            float sc = UiTheme.Scale(_vp);
+            float sc = UiTheme.Scale(_vp) * Math.Clamp(UiScaleMul, 0.5f, 4f);
             _w = BaseWidth * sc; _h = BaseHeight * sc; _headerH = BaseHeaderH * sc;
             float margin = BaseMargin * sc;
 
@@ -243,36 +216,35 @@ internal sealed class DamageChartView
             float py = Math.Clamp(_posFrac.Y * _vp.Y, inset, Math.Max(inset, _vp.Y - _h));
             _container.SetPosition(new Vector2(px, py));
 
-            UiTheme.Apply(_title, F(11, sc), new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.85f));
-            _title.SetPosition(new Vector2(8 * sc, 3 * sc));
+            UiTheme.Apply(_title, F(14, sc), new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.85f));
+            _title.SetPosition(new Vector2(8 * sc, 4 * sc));
 
             int labelCur = 0, barCur = 0, iconCur = 0, gridCur = 0;
             float maxIcon = BaseMaxIcon * sc;
 
-            float plotTop = 20 * sc;
+            float plotTop = 26 * sc;
             if (snap.PlayerCount > 1)
             {
                 float lx = 8 * sc;
                 for (int s = 0; s < snap.PlayerCount && s < palette.Length; s++)
                 {
-                    var lbl = NextLabel(ref labelCur, F(9, sc), palette[s]);
+                    var lbl = NextLabel(ref labelCur, F(11, sc), palette[s]);
                     lbl.Text = "■ " + (s < snap.Labels.Length ? snap.Labels[s] : $"P{s + 1}");
-                    lbl.SetPosition(new Vector2(lx, 16 * sc));
+                    lbl.SetPosition(new Vector2(lx, 20 * sc));
                     lx += Math.Min(100 * sc, lbl.Text.Length * 6f * sc + 14 * sc);
                 }
-                plotTop = 32 * sc;
+                plotTop = 40 * sc;
             }
 
-            float plotLeft = 26 * sc, plotRight = _w - 8 * sc, plotBottom = _h - 15 * sc; // left gutter for Y-axis values
+            float plotLeft = 30 * sc, plotRight = _w - 8 * sc, plotBottom = _h - 18 * sc; // left gutter for Y-axis values
             float plotW = plotRight - plotLeft, plotH = plotBottom - plotTop;
 
             int total = snap.Rows.Count;
             if (total == 0)
             {
-                var empty = NextLabel(ref labelCur, F(11, sc), new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.6f));
-                empty.Text = "No damage yet";
-                empty.SetPosition(new Vector2(plotLeft + 2 * sc, plotTop + 6 * sc));
-                HideRest(_labels, labelCur); HideRest(_bars, barCur); HideRest(_icons, iconCur); HideRest(_grid, gridCur);
+                // Nothing to show yet — hide the whole widget rather than render an empty box.
+                HideRest(_labels, 0); HideRest(_bars, 0); HideRest(_icons, 0); HideRest(_grid, 0);
+                _layer.Visible = false;
                 return;
             }
 
@@ -297,12 +269,14 @@ internal sealed class DamageChartView
                 gl.Color = new Color(1f, 1f, 1f, g == 0 ? 0.22f : 0.10f);
                 gl.SetPosition(new Vector2(plotLeft, yLine));
                 gl.SetSize(new Vector2(plotW, Math.Max(1f, sc)));
-                var vl = NextLabel(ref labelCur, F(8, sc), axisColor);
+                var vl = NextLabel(ref labelCur, F(13, sc), axisColor);
                 vl.Text = ((long)Math.Round(frac * maxVal)).ToString();
-                vl.SetPosition(new Vector2(3 * sc, yLine - 6 * sc));
+                vl.SetPosition(new Vector2(3 * sc, yLine - 7 * sc));
             }
 
-            float groupW = plotW / groups;
+            // Constant bar width regardless of round count: size each round group to the chart's capacity
+            // (MaxGroups), left-aligned, so a single early round isn't stretched across the whole plot.
+            float groupW = plotW / MaxGroups;
             float cellW = groupW / snap.PlayerCount;
 
             for (int gi = 0; gi < groups; gi++)
@@ -346,7 +320,7 @@ internal sealed class DamageChartView
                         }
                         if (a.Count > 1 && bh >= 13 * sc && dealtW >= 16 * sc)
                         {
-                            var xn = NextLabel(ref labelCur, F(9, sc), UiTheme.Cream);
+                            var xn = NextLabel(ref labelCur, F(11, sc), UiTheme.Cream);
                             xn.Text = $"x{a.Count}";
                             xn.SetPosition(new Vector2(dealtX + dealtW - 16 * sc, yTop - bh + 1 * sc));
                         }
@@ -363,9 +337,9 @@ internal sealed class DamageChartView
                     }
                 }
 
-                var rl = NextLabel(ref labelCur, F(9, sc), new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.6f));
+                var rl = NextLabel(ref labelCur, F(13, sc), new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.6f));
                 rl.Text = row.Round.ToString();
-                rl.SetPosition(new Vector2(groupX + groupW * 0.5f - 4 * sc, plotBottom + 2 * sc));
+                rl.SetPosition(new Vector2(groupX + groupW * 0.5f - 4 * sc, plotBottom + 3 * sc));
             }
 
             HideRest(_labels, labelCur);
