@@ -24,6 +24,10 @@ cp mod_manifest.json "$GAME_DIR/SlayTheSpire2.app/Contents/MacOS/mods/STS2_Damag
 
 On Windows/Linux the `mods/` dir is directly under `$GAME_DIR`. See README.md for those paths.
 
+For Steam Workshop publishing, `scripts/package-workshop.sh` builds Release, stages
+`dist/workshop/content/`, and runs (or prints) MegaCrit's `ModUploader`. It must run locally with the
+Steam client logged in — never CI. See the "Steam Workshop" section of README.md.
+
 **Requires the .NET 9 SDK.** There is no test suite — verification is manual: rebuild, copy the DLL into
 `mods/`, **restart the game** (mods load at startup), and watch in-game. `GD.Print("[STS2 Damage] ...")`
 lines go to the Godot console/log; the mod self-disables after 5 consecutive per-frame exceptions.

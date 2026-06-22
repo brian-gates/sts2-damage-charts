@@ -67,6 +67,33 @@ cp mod_manifest.json "$GAME_DIR/mods/STS2_DamageCharts.json"
 Then launch the game and enable **Damage Charts** in **Settings → Mods** (accept the consent dialog
 on first launch). Restart the game after replacing the DLL — mods load at startup.
 
+## Steam Workshop
+
+### Players
+
+Subscribe to **Damage Charts** on the Steam Workshop and it installs automatically — no manual file
+copying. Enable it in **Settings → Mods** and restart the game.
+
+### Maintainers (publishing)
+
+Publishing uses MegaCrit's official [`sts2-mod-uploader`](https://github.com/megacrit/sts2-mod-uploader),
+which talks to Steam directly — so it runs **locally with the Steam client open and logged in**, never
+in CI. The workspace lives in `dist/workshop/` (`workshop.json` + `image.png`); built content is staged
+into `dist/workshop/content/` (git-ignored).
+
+```bash
+# One-time: download the uploader (osx-arm64) from the sts2-mod-uploader releases page,
+# place the binary at ./tools/ModUploader (git-ignored), or set $MODUPLOADER.
+
+# Build, stage content/, and upload (or print the upload command if the CLI isn't found):
+./scripts/package-workshop.sh
+```
+
+First run **creates** the Workshop item with the visibility set in `workshop.json` (starts `private`)
+and writes `dist/workshop/mod_id.txt` — **commit that file** so later runs update the same item.
+After the first publish, subscribe in-client and verify the overlay loads in a run, then flip
+`visibility` to `public` (in `workshop.json` or on the Workshop page) and re-run the script.
+
 ## Config — `STS2_DamageCharts.conf` (next to the DLL in `mods/`)
 
 ```json

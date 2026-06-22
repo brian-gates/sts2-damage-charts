@@ -1,7 +1,7 @@
 {
   "id": "STS2_DamageCharts",
   "name": "Damage Charts",
-  "author": "brian",
+  "author": "zaxnyd",
   "description": "Live in-combat damage analytics: per-round dealt/taken bars, plus a hotkey-toggled (default C) breakdown of damage dealt and taken by source (cards, Poison, Doom, etc.). Single-player and multiplayer.",
   "version": "0.1.0",
   "has_pck": false,

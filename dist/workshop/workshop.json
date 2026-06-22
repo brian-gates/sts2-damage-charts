@@ -1,0 +1,8 @@
+{
+  "title": "Damage Charts",
+  "description": "Live in-combat damage analytics overlay: an always-on per-round dealt/taken bar chart, a hotkey-toggled (default C) breakdown of damage dealt and taken by source (cards, Poison, Doom, etc.), and an end-of-run recap. Single-player and multiplayer. Standalone — depends on no other mod.\n\nNote: by-source attribution for damage-over-time, relics, orbs, and potions ships disabled by default for stability, so that damage is labelled generically (Status/Other); opt in via the source_hooks config at your own risk. All other stats are always tracked.",
+  "visibility": "private",
+  "changeNote": "Initial release.",
+  "tags": [],
+  "dependencies": []
+}
