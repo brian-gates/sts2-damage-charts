@@ -591,7 +591,13 @@ public static class DamageChartsMod
                 _detail.RecapMode = false; _detail.ShowRunHistory = false;
                 if (IsMapOpen()) { _summaryActive = false; _detail.SetVisible(false); }
                 else if (IsMenuOpen()) { _detail.SetVisible(false); }
-                else { _detail.SummaryMode = true; _detail.SetVisible(true); _detail.Render(_tracker.SourceSnapshot(), _tracker.Snapshot(), Palette); }
+                else
+                {
+                    _detail.SummaryMode = true; _detail.SetVisible(true);
+                    _detail.Render(_tracker.SourceSnapshot(), _tracker.Snapshot(), Palette);
+                    _detail.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left));
+                    if (_detail.TakeCloseRequest()) { _summaryActive = false; _detail.SetVisible(false); } // ✕ clicked
+                }
             }
 
             _errCount = 0;
@@ -623,14 +629,20 @@ public static class DamageChartsMod
         foreach (var m in _hotkeyMods) down = down && Input.IsPhysicalKeyPressed(m);
         if (down && !_hotkeyDownLast)
         {
-            if (!SafeIsInCombat() && _recapEnabled && _run.HasData())
+            if (SafeIsInCombat())
             {
-                // Out of combat with a run aggregate: the hotkey opens/closes the run recap takeover.
-                _summaryActive = false;
+                _detailVisible = !_detailVisible; _detail?.SetVisible(_detailVisible);
+            }
+            else if (_summaryActive)
+            {
+                // The end-of-combat summary takes priority: the hotkey dismisses it (next press opens recap).
+                _summaryActive = false; _detail?.SetVisible(false);
+            }
+            else if (_recapEnabled && _run.HasData())
+            {
                 _recapVisible = !_recapVisible;
                 if (!_recapVisible) _detail?.SetVisible(false);
             }
-            else if (_summaryActive) { _summaryActive = false; _detail?.SetVisible(false); } // dismiss summary
             else { _detailVisible = !_detailVisible; _detail?.SetVisible(_detailVisible); }
         }
         _hotkeyDownLast = down;

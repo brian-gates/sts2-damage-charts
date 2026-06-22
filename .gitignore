@@ -6,3 +6,6 @@ out/
 *.user
 .vs/
 .idea/
+
+# Local MCP server config (machine-specific paths)
+.mcp.json

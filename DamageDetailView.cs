@@ -176,7 +176,7 @@ internal sealed class DamageDetailView
     // Poll-based scrollbar drag / track paging (called from the mod's tick while interactive).
     public void UpdateMouse(bool leftDown)
     {
-        if (!IsValid() || !_panelVisible || SummaryMode) return;
+        if (!IsValid() || !_panelVisible) return;
         try
         {
             Vector2 m = _container.GetLocalMousePosition();
@@ -184,6 +184,8 @@ internal sealed class DamageDetailView
             _btnHovered = overClose;
             _btnPressed = overClose && leftDown;
             if (leftDown && !_leftLast && overClose) _closeRequested = true;
+            // Summary mode: only the ✕ is interactive (no scrollbar). Stop after close detection.
+            if (SummaryMode) { _leftLast = leftDown; return; }
             bool overTrackX = m.X >= _sbX - 6f && m.X <= _sbX + 12f;
             bool overGrabber = overTrackX && m.Y >= _grabberY && m.Y <= _grabberY + _grabberH;
             bool overTrack = overTrackX && m.Y >= _trackY && m.Y <= _trackY + _trackH;
@@ -319,9 +321,12 @@ internal sealed class DamageDetailView
             _container.SetSize(new Vector2(_w, _h));
             _dim.Visible = full;
             if (full) { _dim.SetPosition(Vector2.Zero); _dim.SetSize(new Vector2(_w, _h)); }
-            // Block game hover/clicks beneath the full takeover (prevents stray tooltips); off in summary.
-            _inputBlock.Visible = full;
+            // Input-catcher: full-screen under the takeover (suppresses stray game tooltips), or just over
+            // the summary panel (so the mouse wheel scrolls the summary log instead of the rewards screen
+            // underneath eating it). Outside the summary panel stays click-through.
+            _inputBlock.Visible = full || SummaryMode;
             if (full) { _inputBlock.SetPosition(Vector2.Zero); _inputBlock.SetSize(vp); }
+            else if (SummaryMode) { _inputBlock.SetPosition(_container.Position); _inputBlock.SetSize(new Vector2(_w, _h)); }
             _bg.Visible = !full;
             if (!full) { _bg.SetPosition(Vector2.Zero); _bg.SetSize(new Vector2(_w, _h)); }
             _barLayer.SetSize(new Vector2(_w, _h));
@@ -344,8 +349,8 @@ internal sealed class DamageDetailView
             float rightX = pad + colW + gap;
             // Full-screen stacks three bands within the padded content area: by-source columns, the
             // Damage/Round chart, then the log.
-            float chartTop = full ? top + (_h - top) * 0.34f : 0f;
-            float logTop = full ? top + (_h - top) * 0.66f : 296f;
+            float chartTop = full ? top + (_h - top) * 0.32f : 0f;
+            float logTop = full ? top + (_h - top) * 0.58f : 296f;
             float rowH = full ? 26f * _fontScale : 22f;
             // Column rows: as many as fit between the column head and the next band.
             int maxRows = full
@@ -360,7 +365,7 @@ internal sealed class DamageDetailView
                 float bw = 120f * _fontScale, bh = 84f * _fontScale;
                 float bx = pad, by = _h - bh - pad * 0.5f;
                 _closeRect = new Rect2(bx, by, bw, bh);
-                _bottomReserve = bh + pad * 0.6f;            // keep the combat log clear of the button
+                _bottomReserve = bh + pad;                    // distance from screen bottom to keep the log clear of the button
 
                 // Ease the three animation scalars toward their targets (~framerate-independent enough).
                 const float k = 0.25f;
@@ -378,9 +383,22 @@ internal sealed class DamageDetailView
                 _btn.PivotOffset = piv; _btn.Scale = new Vector2(scale, scale); _btn.Modulate = mod;
 
                 UiTheme.Apply(_btnGlyph, Math.Max(12, (int)Math.Round(30f * _fontScale)), UiTheme.Gold);
+                _btnGlyph.Text = "←";
                 _btnGlyph.Visible = true;
                 _btnGlyph.SetPosition(new Vector2(bx, by)); _btnGlyph.SetSize(new Vector2(bw, bh));
                 _btnGlyph.PivotOffset = piv; _btnGlyph.Scale = new Vector2(scale, scale); _btnGlyph.Modulate = mod;
+            }
+            else if (SummaryMode)
+            {
+                // Compact ✕ in the summary's top-right corner — mouse dismiss (click polled via _closeRect).
+                float bs = 26f, bx = _w - bs - 10f, by = 6f;
+                _closeRect = new Rect2(bx, by, bs, bs);
+                _btn.Visible = false;
+                UiTheme.Apply(_btnGlyph, 18, UiTheme.Cream);
+                _btnGlyph.Text = "✕";
+                _btnGlyph.Visible = true;
+                _btnGlyph.PivotOffset = Vector2.Zero; _btnGlyph.Scale = Vector2.One; _btnGlyph.Modulate = Colors.White;
+                _btnGlyph.SetPosition(new Vector2(bx, by)); _btnGlyph.SetSize(new Vector2(bs, bs));
             }
             else { _btn.Visible = false; _btnGlyph.Visible = false; _closeRect = new Rect2(); }
 
@@ -396,7 +414,7 @@ internal sealed class DamageDetailView
             header.Text = recap
                 ? $"Run Recap{who}     ({HotkeyHint} to close)"
                 : SummaryMode
-                    ? $"Combat Summary{who}     ({HotkeyHint} to dismiss)"
+                    ? $"Combat Summary{who}     ({HotkeyHint} or ✕ to dismiss)"
                     : $"Combat Stats{who}     ({HotkeyHint} to close)";
             if (full) { header.HorizontalAlignment = HorizontalAlignment.Center; header.SetSize(new Vector2(_w, 0f)); header.SetPosition(new Vector2(0f, headerY)); }
             else { header.HorizontalAlignment = HorizontalAlignment.Left; header.SetSize(Vector2.Zero); header.SetPosition(new Vector2(10f, headerY)); }
@@ -692,8 +710,10 @@ internal sealed class DamageDetailView
         head.SetPosition(new Vector2(leftX, top));
 
         float listTop = top + (full ? 28f * _fontScale : 22f);
-        float listBottom = _h - (full ? pad : 10f) - (full ? _bottomReserve : 0f);
-        float lineH = full ? 20f * _fontScale : 16f;
+        // _bottomReserve already measures the full distance from the screen bottom to keep clear of the
+        // close button (don't also subtract pad — that double-counted and wasted ~a pad of log height).
+        float listBottom = _h - (full ? _bottomReserve : 10f);
+        float lineH = full ? 22f * _fontScale : 16f;
         float regionH = listBottom - listTop;
         _visible = Math.Max(1, (int)(regionH / lineH));
 
@@ -712,8 +732,8 @@ internal sealed class DamageDetailView
         _logOffset = Math.Clamp(_logOffset, 0, _maxOffset);
         _logAtBottom = _logOffset >= _maxOffset;
 
-        int sepSize = full ? 13 : 10;
-        int lineSize = full ? 14 : 11;
+        int sepSize = full ? 15 : 10;
+        int lineSize = full ? 16 : 11;
         float y = listTop;
         for (int i = _logOffset; i < rows.Count && i < _logOffset + _visible; i++)
         {
