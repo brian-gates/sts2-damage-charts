@@ -8,6 +8,9 @@ A standalone in-combat damage analytics overlay for [Slay the Spire 2](https://w
   takeover with two columns — damage **dealt** and **taken** broken down **by source** (each card by
   name; powers/DoTs like Poison, Doom, Thorns; orbs; relics), with totals and percentages, sorted
   highest-first, over a tall scrollable combat log (mouse-wheel or drag the scrollbar).
+- **End-of-run recap**: the same hotkey, pressed **out of combat** (e.g. on the run's victory/death
+  screen), opens a run-wide recap — total **dealt / taken / healed / block**, the by-source breakdown,
+  a per-**fight** chart, and the whole run's combat log. The aggregate resets when a new run begins.
 - Single-player and multiplayer. Reads game state directly — no dependency on any other mod.
 
 ## Requirements
@@ -76,6 +79,15 @@ on first launch). Restart the game after replacing the DLL — mods load at star
 
 - `hotkey`: a bare key like `c` (the default) or `f9`, or modifier+key, e.g. `cmd+d`, `shift+d`, `alt+d`, `ctrl+d`.
 - `show_bars`: set `false` to hide the always-on bars and use only the hotkey panel.
+- `run_recap`: set `false` to disable the out-of-combat end-of-run recap (the hotkey then only toggles
+  the in-combat breakdown).
+- `ui_scale`: a number (default `1.0`) that scales the overlay — the always-on chart and the full-screen
+  breakdown/recap (text and spacing) — on top of the automatic resolution scaling. Bump it (e.g. `1.5`)
+  if the text reads too small. Applied live, no restart needed.
+- `source_hooks`: **default `false`.** When `true`, damage-over-time and relic/orb/potion hits are
+  attributed by name (Poison, Doom, Thorns, …) instead of the generic `Status`/`Other`. This requires
+  Harmony-patching many game methods, which can intermittently destabilize the game (a hard hang / "Bad
+  IL range"), so it ships off. Enable at your own risk; all other stats work regardless.
 
 Edits to this file are picked up live — change the `hotkey` or `show_bars` and it applies within
 about half a second, no restart needed.

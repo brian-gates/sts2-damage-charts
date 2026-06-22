@@ -25,14 +25,22 @@ namespace STS2_DamageCharts;
 public static class DamageChartsMod
 {
     private const string ConfigFileName = "STS2_DamageCharts.conf";
+    private const string BuildTag = "2026-06-21";  // stamped at init so logs identify the loaded DLL
 
     private static readonly Color[] Palette = UiTheme.Players;
 
     private static bool _initialized;
+    private static bool _disabled;            // hard kill-switch: once set, nothing runs again
+    private static Callable _tickCallable;     // stored so we can disconnect ProcessFrame on disable
+    private static readonly string[] HarmonyIds =
+        { "com.sts2damagecharts", "com.sts2damagecharts.suppress", "com.sts2damagecharts.deck", "com.sts2damagecharts.powers" };
     private static bool _showBars = true;
 
     private static readonly DamageTracker _tracker = new();
+    private static readonly RunAggregate _run = new();
+    private static bool _runActiveLast;
     private static readonly Dictionary<Creature, Action<int, int>> _subs = new();
+    private static readonly Dictionary<Creature, Action<int, int>> _blockSubs = new();
     private static readonly Dictionary<Creature, (string Label, Creature? Dealer, string? Icon)> _pending = new();
     // Set by a power's hook just before it deals damage; consumed by the next non-card hit. Only valid
     // for ~1 frame (a damaging hook stamps-and-deals synchronously) so a stale stamp from a passive
@@ -51,6 +59,16 @@ public static class DamageChartsMod
     private static bool _detailVisible;
     private static bool _summaryActive;       // auto end-of-combat summary showing
     private static bool _summaryOnEnd = true; // config
+    private static bool _recapVisible;        // on-demand run recap takeover showing (out of combat)
+    private static bool _recapEnabled = true; // config
+    private static float _uiScale = 1f;       // config: extra font/spacing multiplier for the takeover
+    // Power/relic/orb/potion source-attribution Harmony hooks. Default OFF: the blanket patching of every
+    // hook method (~791) can intermittently deadlock the CLR's reflection/JIT (observed as a hard hang and
+    // "Bad IL range" errors). With it off, DoT/relic damage is labeled "Status"/"Other" but the mod is
+    // stable. Opt in via config to get by-name attribution at that risk. See issue tracker for the fix.
+    private static bool _sourceHooks;
+    private static bool _combatResolved;      // this combat reached a win/loss (not abandoned)
+    private static int _localSlot;            // local player's slot for this combat
 
     // Hotkey (default bare C, "combat stats"). A/S/D/X/M/E are taken by the game; C is free.
     private static Key _hotkeyKey = Key.C;
@@ -71,13 +89,15 @@ public static class DamageChartsMod
             if (!LoadConfig()) { GD.Print("[STS2 Damage] disabled via config"); return; }
 
             var tree = (SceneTree)Engine.GetMainLoop();
-            tree.Connect(SceneTree.SignalName.ProcessFrame, Callable.From(Tick));
+            _tickCallable = Callable.From(Tick);
+            tree.Connect(SceneTree.SignalName.ProcessFrame, _tickCallable);
 
             TryApplyDamageHook();
             TryApplySuppressHook();
-            TryApplyPowerSourceHooks();
+            if (_sourceHooks) TryApplyPowerSourceHooks();
+            else GD.Print("[STS2 Damage] power-source hooks DISABLED via config");
             _initialized = true;
-            GD.Print("[STS2 Damage] initialized");
+            GD.Print($"[STS2 Damage] initialized (build {BuildTag}, source_hooks={_sourceHooks})");
         }
         catch (Exception ex) { GD.PrintErr($"[STS2 Damage] init failed: {ex.Message}"); }
     }
@@ -116,6 +136,9 @@ public static class DamageChartsMod
             if (root.TryGetProperty("enabled", out var en) && en.ValueKind == JsonValueKind.False) return false;
             if (root.TryGetProperty("show_bars", out var sb) && sb.ValueKind == JsonValueKind.False) _showBars = false;
             if (root.TryGetProperty("summary_on_combat_end", out var su) && su.ValueKind == JsonValueKind.False) _summaryOnEnd = false;
+            if (root.TryGetProperty("run_recap", out var rr) && rr.ValueKind == JsonValueKind.False) _recapEnabled = false;
+            if (root.TryGetProperty("ui_scale", out var us) && us.ValueKind == JsonValueKind.Number && us.TryGetSingle(out float uss)) _uiScale = Math.Clamp(uss, 0.5f, 4f);
+            if (root.TryGetProperty("source_hooks", out var shk) && shk.ValueKind == JsonValueKind.True) _sourceHooks = true;
             if (root.TryGetProperty("hotkey", out var hk) && hk.ValueKind == JsonValueKind.String)
             {
                 _hotkeySpec = hk.GetString() ?? _hotkeySpec;
@@ -253,6 +276,11 @@ public static class DamageChartsMod
         catch (Exception ex) { GD.PrintErr($"[STS2 Damage] hotkey suppress hook skipped: {ex.GetType().Name}: {ex.Message}"); }
 
         // (b) Block only the deck-open itself (NDeckViewScreen.ShowScreen) when our modifier is held.
+        // This exists ONLY to stop a D-based hotkey (e.g. cmd+d) from also opening the deck — so it is
+        // installed only when our hotkey actually uses the D key. With any other hotkey (the default is
+        // bare C) there is no collision, and patching ShowScreen at all would needlessly risk the deck
+        // not opening, so we skip it entirely.
+        if (_hotkeyKey != Key.D) { GD.Print("[STS2 Damage] deck-open suppress hook not needed (hotkey isn't D)"); return; }
         // We deliberately do NOT patch the button's OnRelease: that handler also resets the button's
         // press animation, so skipping it leaves the button stuck mid-rotation. Letting OnRelease run
         // normally (press→release animation, no deck) while no-opping ShowScreen looks clean.
@@ -291,7 +319,7 @@ public static class DamageChartsMod
         try
         {
             if (inputEvent is InputEventKey k && MatchesOurCombo(k)) return false;
-            if (inputEvent is InputEventMouseButton mb && mb.Pressed && (_detailVisible || _summaryActive) && _detail != null)
+            if (inputEvent is InputEventMouseButton mb && mb.Pressed && (_detailVisible || _summaryActive || _recapVisible) && _detail != null)
             {
                 if (mb.ButtonIndex == MouseButton.WheelUp) { _detail.ScrollBy(-3); return false; }
                 if (mb.ButtonIndex == MouseButton.WheelDown) { _detail.ScrollBy(3); return false; }
@@ -467,7 +495,7 @@ public static class DamageChartsMod
 
     private static void Tick()
     {
-        if (!_initialized) return;
+        if (_disabled || !_initialized) return;
         try
         {
             _frame++;
@@ -477,6 +505,12 @@ public static class DamageChartsMod
                 try { UiTheme.EnsurePanelStyle(((SceneTree)Engine.GetMainLoop()).Root); } catch { }
             }
             HandleHotkey();
+
+            // Run lifecycle: a fresh run (not-in-progress -> in-progress) clears the run-wide aggregate
+            // so the recap never shows a previous run's data.
+            bool runActive = SafeIsRunInProgress();
+            if (runActive && !_runActiveLast) { _run.Clear(); _recapVisible = false; }
+            _runActiveLast = runActive;
 
             bool inCombat = SafeIsInCombat();
             // Edge handlers are contained AND state advances regardless, so a throw here can never
@@ -494,6 +528,10 @@ public static class DamageChartsMod
                 if (cs != null)
                 {
                     SubscribeNewCreatures(cs); // keep tracking even while hidden
+                    // Sticky: did this combat reach a real conclusion (all enemies dead, or local player
+                    // dead)? If the player abandons the fight instead, this stays false and we suppress the
+                    // end-of-combat summary.
+                    if (!_combatResolved && IsCombatResolved(cs)) _combatResolved = true;
                     if (IsBlockingUiOpen())
                     {
                         // A game menu/modal/overlay is on top — get out of its way.
@@ -503,17 +541,27 @@ public static class DamageChartsMod
                     {
                         // Full-screen breakdown is up — it takes over; hide the compact bars/tooltip.
                         _bars?.Hide(); _tooltip?.Hide();
-                        _detail.SummaryMode = false; _detail.SetVisible(true);
+                        _detail.SummaryMode = false; _detail.RecapMode = false; _detail.UiScaleMul = _uiScale;
+                        _detail.ShowRunHistory = true;
+                        _detail.RunFights = _run.HasData() ? _run.EncounterStats(_localSlot) : null;
+                        _detail.SetVisible(true);
                         _detail.Render(_tracker.SourceSnapshot(), _tracker.Snapshot(), Palette);
                         _detail.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left));
                         if (_detail.TakeCloseRequest()) { _detailVisible = false; _detail.SetVisible(false); } // ✕ clicked
 
+                    }
+                    else if (_combatResolved)
+                    {
+                        // The fight is won/lost (or winding down) — drop the always-on HUD now rather than
+                        // leaving it up through the victory/defeat sequence until combat formally ends.
+                        _bars?.Hide(); _tooltip?.Hide(); _detail?.SetVisible(false);
                     }
                     else
                     {
                         _detail?.SetVisible(false);
                         if (_showBars && _bars != null)
                         {
+                            _bars.UiScaleMul = _uiScale;
                             _bars.Render(_tracker.Snapshot(), Palette);
                             // Poll-based drag + click + hover (no input overrides).
                             if (_bars.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left))) SaveConfig();
@@ -524,11 +572,23 @@ public static class DamageChartsMod
                     }
                 }
             }
+            else if (_recapVisible && _recapEnabled && _run.HasData() && _detail != null)
+            {
+                // On-demand run recap: a full-screen takeover shown out of combat (e.g. over the run's
+                // victory/death screen). Unlike the in-combat takeover this is NOT gated by blocking UI,
+                // so it can appear on top of the game's end screen.
+                _bars?.Hide(); _tooltip?.Hide(); _summaryActive = false;
+                _detail.SummaryMode = false; _detail.RecapMode = true; _detail.ShowRunHistory = false; _detail.UiScaleMul = _uiScale; _detail.SetVisible(true);
+                _detail.Render(_run.RunSourceSnapshot(), _run.RunChartSnapshot(), Palette);
+                _detail.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left));
+                if (_detail.TakeCloseRequest()) { _recapVisible = false; _detail.RecapMode = false; _detail.SetVisible(false); }
+            }
             else if (_summaryActive && _detail != null)
             {
                 // End-of-combat summary: shown over the rewards moment (click-through), hidden while a
                 // menu is up, dismissed once the player moves on to the map (or via Cmd+D / next fight).
                 _bars?.Hide(); _tooltip?.Hide();
+                _detail.RecapMode = false; _detail.ShowRunHistory = false;
                 if (IsMapOpen()) { _summaryActive = false; _detail.SetVisible(false); }
                 else if (IsMenuOpen()) { _detail.SetVisible(false); }
                 else { _detail.SummaryMode = true; _detail.SetVisible(true); _detail.Render(_tracker.SourceSnapshot(), _tracker.Snapshot(), Palette); }
@@ -538,9 +598,23 @@ public static class DamageChartsMod
         }
         catch (Exception ex)
         {
-            // Disable fast on repeated errors so we never spam the broken logger.
-            if (++_errCount >= 5) { GD.PrintErr($"[STS2 Damage] disabled after repeated errors: {ex.Message}"); SafeTeardown(); _initialized = false; }
+            // Disable fast on repeated errors so we never spam the broken logger or stall the game.
+            if (++_errCount >= 5) HardDisable($"repeated errors: {ex.Message}");
         }
+    }
+
+    // Permanent kill-switch. Stops the per-frame tick AND removes our Harmony patches so any faulting
+    // woven method (e.g. a "Bad IL range" power hook) reverts to the game's original IL — otherwise the
+    // game keeps invoking the broken method every frame and the failsafe can't actually contain it.
+    private static void HardDisable(string reason)
+    {
+        if (_disabled) return;
+        _disabled = true;
+        _initialized = false;
+        try { GD.PrintErr($"[STS2 Damage] disabled: {reason}"); } catch { }
+        try { ((SceneTree)Engine.GetMainLoop()).Disconnect(SceneTree.SignalName.ProcessFrame, _tickCallable); } catch { }
+        foreach (var id in HarmonyIds) { try { new Harmony(id).UnpatchAll(id); } catch { } }
+        SafeTeardown();
     }
 
     private static void HandleHotkey()
@@ -549,7 +623,14 @@ public static class DamageChartsMod
         foreach (var m in _hotkeyMods) down = down && Input.IsPhysicalKeyPressed(m);
         if (down && !_hotkeyDownLast)
         {
-            if (_summaryActive) { _summaryActive = false; _detail?.SetVisible(false); } // dismiss summary
+            if (!SafeIsInCombat() && _recapEnabled && _run.HasData())
+            {
+                // Out of combat with a run aggregate: the hotkey opens/closes the run recap takeover.
+                _summaryActive = false;
+                _recapVisible = !_recapVisible;
+                if (!_recapVisible) _detail?.SetVisible(false);
+            }
+            else if (_summaryActive) { _summaryActive = false; _detail?.SetVisible(false); } // dismiss summary
             else { _detailVisible = !_detailVisible; _detail?.SetVisible(_detailVisible); }
         }
         _hotkeyDownLast = down;
@@ -575,6 +656,9 @@ public static class DamageChartsMod
         }
 
         _summaryActive = false; // a new fight clears any lingering end-of-combat summary
+        _recapVisible = false;   // the recap is an out-of-combat view
+        _combatResolved = false; // until enemies/player actually die, this combat hasn't ended naturally
+        _localSlot = localSlot;
         _tracker.Reset(_players.Count, labels, localSlot);
         _pending.Clear();
         UnsubscribeAll();
@@ -588,8 +672,11 @@ public static class DamageChartsMod
         _pending.Clear();
         _bars?.Hide();
         _tooltip?.Hide();
-        // Auto-show the breakdown as an end-of-combat summary (until dismissed / map / next fight).
-        _summaryActive = _summaryOnEnd && _tracker.HasData();
+        // Fold this combat into the run-wide aggregate before the next combat's Reset() wipes the tracker.
+        if (_tracker.HasData()) _run.Fold(_tracker.SourceSnapshot(), _tracker.Snapshot());
+        // Auto-show the breakdown as an end-of-combat summary (until dismissed / map / next fight), but
+        // only for a real win/loss — not when the player abandons combat (e.g. quits to the menu).
+        _summaryActive = _summaryOnEnd && _combatResolved && _tracker.HasData();
         if (!_summaryActive) _detail?.SetVisible(false);
         GD.Print($"[STS2 Damage] combat end (summary={_summaryActive})");
     }
@@ -607,7 +694,8 @@ public static class DamageChartsMod
             if (_detail != null && !_detail.IsValid()) { _detail.Dispose(); _detail = null; }
             if (_detail == null) _detail = new DamageDetailView(root);
             if (_tooltip == null || !_tooltip.IsValid()) _tooltip = new DamageTooltipView(root);
-            if (_detail != null) _detail.HotkeyHint = _hotkeySpec.ToUpperInvariant();
+            if (_detail != null) { _detail.HotkeyHint = _hotkeySpec.ToUpperInvariant(); _detail.UiScaleMul = _uiScale; }
+            if (_bars != null) _bars.UiScaleMul = _uiScale;
             _detail?.SetVisible(_detailVisible);
         }
         catch (Exception ex) { GD.PrintErr($"[STS2 Damage] failed to create views: {ex.Message}"); }
@@ -632,22 +720,76 @@ public static class DamageChartsMod
         Action<int, int> handler = (oldHp, newHp) => OnHpChanged(creature, oldHp, newHp);
         creature.CurrentHpChanged += handler;
         _subs[creature] = handler;
+        // Block gained is captured the same event-driven way as HP: sum positive BlockChanged deltas.
+        Action<int, int> bh = (oldBlock, newBlock) => OnBlockChanged(creature, oldBlock, newBlock);
+        try { creature.BlockChanged += bh; _blockSubs[creature] = bh; } catch { }
     }
 
     private static void UnsubscribeAll()
     {
         foreach (var kv in _subs) { try { kv.Key.CurrentHpChanged -= kv.Value; } catch { } }
         _subs.Clear();
+        foreach (var kv in _blockSubs) { try { kv.Key.BlockChanged -= kv.Value; } catch { } }
+        _blockSubs.Clear();
+    }
+
+    // Did this combat reach a natural conclusion (win/lose) rather than being abandoned (quit to menu)?
+    // The game's own end-of-combat flags are the reliable signal — they're set as combat winds down to
+    // victory/defeat but not when combat is torn down by leaving. Creature-death checks are a fallback.
+    private static bool IsCombatResolved(CombatState cs)
+    {
+        try
+        {
+            var cm = CombatManager.Instance;
+            if (cm != null && (cm.IsOverOrEnding || cm.IsEnding)) return true;
+        }
+        catch { }
+        try
+        {
+            if (_localSlot >= 0 && _localSlot < _players.Count && _players[_localSlot]?.Creature?.IsDead == true)
+                return true; // local player defeated
+            bool anyEnemyAlive = false, anyEnemy = false;
+            foreach (var e in cs.Enemies) { if (e == null) continue; anyEnemy = true; if (e.IsAlive) { anyEnemyAlive = true; break; } }
+            if (anyEnemy && !anyEnemyAlive) return true; // all enemies defeated
+        }
+        catch { }
+        return false;
+    }
+
+    private static void OnBlockChanged(Creature creature, int oldBlock, int newBlock)
+    {
+        if (_disabled) return;
+        try
+        {
+            int gained = newBlock - oldBlock;
+            if (gained <= 0 || !creature.IsPlayer) return; // only block *gained*, players only
+            int slot = SlotOf(creature.Player);
+            if (slot >= 0) _tracker.AddBlock(slot, gained);
+        }
+        catch { /* overlay must never break combat */ }
     }
 
     private static void OnHpChanged(Creature creature, int oldHp, int newHp)
     {
+        if (_disabled) return;
         try
         {
             int lost = oldHp - newHp;
-            if (lost <= 0) return;
+            if (lost == 0) return;
 
             int round = SafeCombatState()?.RoundNumber ?? 0;
+
+            if (lost < 0) // HP gained — a heal (tracked as a per-player total, players only)
+            {
+                if (!creature.IsPlayer) return;
+                int hslot = SlotOf(creature.Player);
+                if (hslot < 0) return;
+                int healed = -lost;
+                _tracker.AddHealed(hslot, healed);
+                _tracker.AddLog(round, $"{MaybeName(creature)} healed  {healed}", false);
+                return;
+            }
+
             _pending.TryGetValue(creature, out var pend);
 
             if (creature.IsPlayer)
@@ -791,6 +933,7 @@ public static class DamageChartsMod
     private static bool SafeIsInCombat() { try { return CombatManager.Instance?.IsInProgress == true; } catch { return false; } }
     private static CombatState? SafeCombatState() { try { return CombatManager.Instance?.DebugOnlyGetState(); } catch { return null; } }
     private static RunState? SafeRunState() { try { return RunManager.Instance.IsInProgress ? RunManager.Instance.DebugOnlyGetState() : null; } catch { return null; } }
+    private static bool SafeIsRunInProgress() { try { return RunManager.Instance.IsInProgress; } catch { return false; } }
 
     private static void SafeTeardown()
     {
