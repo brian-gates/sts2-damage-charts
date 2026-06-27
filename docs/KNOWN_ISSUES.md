@@ -31,3 +31,36 @@ Notes for whoever picks it up:
   the power frame (which is why the original author patched everything).
 - Candidates to investigate: a curated set of known damage-dealing hook methods; patching only safe
   method shapes; or a different game-side signal.
+
+## Steam Workshop install hard-freezes the game (game-side Sentry bug, NOT our mod)
+
+**Status:** Root cause **confirmed** by bisection. This is a **MegaCrit / game-side bug**, not fixable
+in this mod. **Do not publish the Workshop item public**; distribute via manual install until MegaCrit
+ships a fix. Tracked upstream — see `docs/megacrit-workshop-crash-report.md`.
+
+**Symptom:** With the mod installed via **Steam Workshop** and enabled, the game **hard-freezes
+(beachball, force-quit required) within ~2s of startup**, around the main menu. The Godot log ends
+abruptly with no clean-exit/leak-at-exit sequence, and there is **no** `[STS2 Damage] disabled after
+repeated errors` line — i.e. it is a *native* fault, not a caught managed exception.
+
+**Key fact:** The **identical DLL** runs perfectly when installed **manually** in `mods/` (full combat,
+thousands of frames) but freezes when loaded via **Steam Workshop**. Same bytes, different load path.
+
+**Root cause (bisected):** The crash is in the **game's own Sentry telemetry**, not our code. A process
+`sample` of the frozen game shows the main thread wedged in
+`…CFRunLoop observer → game → libsentry.macos.release.dylib → Object::get_instance_id()` while the
+`SentryCrash Exception Handler` thread is in `handleExceptions → thread_suspend` — i.e. a native fault
+fired and Sentry's crash-report generation hangs walking the Godot object graph. It reproduces with:
+- the full mod (Workshop) — freeze;
+- a **neutered** build whose `Initialize` just returns (no tick, no Harmony) — freeze;
+- a **separate minimal hello-world** mod (Godot + sts2 only, no Harmony, body = one `GD.Print`) — freeze.
+
+Since a do-nothing hello-world still freezes, the trigger is **the mere loading of *any* C# mod via
+Steam Workshop**, independent of mod code. (The mod's `try/catch` safety net cannot catch this — a
+native access violation isn't a managed exception.)
+
+**To reproduce / re-verify** (macOS): build, drop the DLL into
+`steamapps/workshop/content/2868840/<itemid>/STS2_DamageCharts.dll`, subscribe, launch; `sample "Slay
+the Spire 2"` while frozen shows the signature above. Manual install in `mods/` does not freeze.
+
+**Action:** Reported to MegaCrit (see report doc). Revisit Workshop publishing once they confirm a fix.
