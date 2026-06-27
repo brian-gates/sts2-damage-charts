@@ -30,7 +30,12 @@ echo "    $(ls -1 "$CONTENT" | tr '\n' ' ')"
 UPLOADER="${MODUPLOADER:-./tools/ModUploader}"
 if [[ -x "$UPLOADER" ]]; then
   echo "==> Uploading via $UPLOADER (Steam must be running + logged in)"
-  "$UPLOADER" upload -w "$WORKSPACE"
+  # Steamworks resolves the AppID from steam_appid.txt in the process's working directory and loads
+  # libsteam_api.dylib next to the binary — both ship in the uploader's own dir. Run from there with
+  # an absolute workspace path so init succeeds and mod_id.txt lands back in the workspace.
+  UPLOADER_DIR="$(cd "$(dirname "$UPLOADER")" && pwd)"
+  ABS_WORKSPACE="$(cd "$WORKSPACE" && pwd)"
+  ( cd "$UPLOADER_DIR" && "./$(basename "$UPLOADER")" upload -w "$ABS_WORKSPACE" )
 else
   cat <<EOF
 
@@ -39,6 +44,8 @@ else
       1. Download the uploader for your platform (osx-arm64) from
          https://github.com/megacrit/sts2-mod-uploader/releases
          and place the binary at ./tools/ModUploader (or set MODUPLOADER).
+         On Apple Silicon, ad-hoc sign it first or macOS kills it ("Killed: 9"):
+           codesign --force --sign - ./tools/ModUploader
       2. Make sure the Steam client is running and logged in.
       3. Run:  "\$MODUPLOADER" upload -w $WORKSPACE
     First upload creates the item and writes $WORKSPACE/mod_id.txt — commit that file
