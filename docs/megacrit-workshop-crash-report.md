@@ -68,13 +68,41 @@ are executing; the CLR threads are idle.
 A do-nothing hello-world freezing under Workshop load — but not under manual load — shows the trigger
 is the game's handling of a **Workshop-loaded** mod assembly (Sentry context/registration), not the mod.
 
-## Suspected cause / suggested fix
+## Confirmed cause (crash stack)
 
-The game's Sentry integration appears to take a different code path for Workshop-sourced mod assemblies
-(vs. local `mods/` assemblies) — e.g. when building the "running modded" Sentry context / registering
-the assembly as a debug image — and that path triggers a native fault whose crash-report generation
-then hangs walking the Godot scene tree (`Object::get_instance_id`). Disabling Sentry, or skipping
-Sentry's Workshop-mod context/debug-image registration, is the likely fix.
+Launching with Godot's crash handler disabled (`--disable-crash-handler`) turns the hang into a clean
+crash, revealing the actual fault — `EXC_CRASH (SIGABRT)`, `abort() called`, on the main thread:
+
+```
+std::__1::mutex::lock()                                    ← throws std::system_error
+  → std::__throw_system_error → __cxa_throw
+  → std::terminate → abort()
+libsentry.macos.release.dylib                 (+0x4a390)
+Slay the Spire 2  (sentry-godot integration)  (×5 frames)
+__CFRUNLOOP_IS_CALLING_OUT_TO_AN_OBSERVER_CALLBACK_FUNCTION__
+__CFRunLoopDoObservers → CFRunLoopRunSpecific → -[NSApplication run]
+```
+
+**sentry-godot's per-frame CFRunLoop observer calls `std::mutex::lock()`, which throws
+`std::system_error`** (the underlying `pthread_mutex_lock` returns an error — a re-entrant / already-held
+lock). The unhandled C++ exception triggers `std::terminate()` → `abort()`.
+
+Two failure modes from the same fault:
+- **Default:** Godot's crash handler and sentry-cocoa's `SentryCrash` handler both fire and **deadlock**
+  (one suspends the thread the other needs) → the process **hangs (beachball)** instead of exiting.
+  Sampling the hang shows the main thread wedged in `libsentry → Object::get_instance_id` and a
+  `SentryCrash Exception Handler` thread in `handleExceptions → thread_suspend`.
+- **With `--disable-crash-handler`:** no handler conflict → the process **aborts cleanly** (the stack above).
+
+This maps to open sentry-godot issues: **#472 "Add reentry guard to before_send"** (the re-entrant lock)
+and **#230 "Linux processes hang on crash (not exiting)"** / **#441 "Crash on macOS (Cocoa)"** (the
+dual-handler hang). The Workshop-mod-load path appears to change startup timing/threading enough to
+trip the re-entrancy that the local-`mods/` path does not.
+
+### Suggested fix
+Add the reentry guard in the sentry-godot run-loop observer / `before_send` path (#472), and resolve the
+dual crash-handler conflict (#230) so a fault exits cleanly rather than hanging. Neither is fixable in
+mod code — a do-nothing Workshop-loaded mod reproduces it.
 
 ## Workaround (for mod authors, until fixed)
 

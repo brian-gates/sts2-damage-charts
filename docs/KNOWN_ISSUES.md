@@ -63,4 +63,12 @@ native access violation isn't a managed exception.)
 `steamapps/workshop/content/2868840/<itemid>/STS2_DamageCharts.dll`, subscribe, launch; `sample "Slay
 the Spire 2"` while frozen shows the signature above. Manual install in `mods/` does not freeze.
 
+**Confirmed cause (crash stack):** Launching with `--disable-crash-handler` turns the hang into a clean
+`SIGABRT` and reveals the fault: sentry-godot's per-frame CFRunLoop observer calls `std::mutex::lock()`,
+which throws `std::system_error` (re-entrant/already-held lock) → unhandled → `std::terminate()` →
+`abort()`. By default Godot's crash handler and sentry-cocoa's `SentryCrash` handler then deadlock, so
+the process **hangs** instead of exiting. Maps to sentry-godot **#472** (reentry guard) and **#230 /
+#441** (hang-on-crash / macOS). Neither the `--disable-crash-handler` flag nor clearing `SENTRY_DSN`
+avoids it (the flag converts hang→abort; the DSN is hardcoded so the env var is ignored).
+
 **Action:** Reported to MegaCrit (see report doc). Revisit Workshop publishing once they confirm a fix.
