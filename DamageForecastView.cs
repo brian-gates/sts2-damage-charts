@@ -205,13 +205,16 @@ internal sealed class DamageForecastView
 
             // Hero: predicted HP loss (big) plus the HP you're left at afterwards (worst case). Together
             // they answer "how much will I lose" and "what will I be sitting at".
-            int after = Math.Max(0, r.CurrentHp - r.MaxLoss);
-            string afterHex = after == 0 ? LossHex
+            // Don't clamp at 0 when lethal: the net-negative HP is how much you still need to block/mitigate
+            // to survive (e.g. "30 → -11" means you're 11 short).
+            int after = r.CurrentHp - r.MaxLoss;
+            string afterHex = after <= 0 ? LossHex
                 : (r.MaxHp > 0 && after < r.MaxHp * 0.30f ? GoldHex : GreenHex);
+            string tail = after <= 0 ? "☠" : "left";
             string line1 = r.IsSafe
                 ? $"[color=#{GreenHex}]Safe ✓[/color]"
-                : $"[color=#{LossHex}]{lossStr} [font_size={F(15, sc)}]HP[/font_size]{(r.IsLethal ? " ☠" : "")}[/color]";
-            string line2 = $"[color=#{CreamHex}][font_size={F(13, sc)}]{r.CurrentHp} → [color=#{afterHex}]{after}[/color] left[/font_size][/color]";
+                : $"[color=#{LossHex}]{lossStr} [font_size={F(15, sc)}]HP[/font_size][/color]";
+            string line2 = $"[color=#{CreamHex}][font_size={F(13, sc)}]{r.CurrentHp} → [color=#{afterHex}]{after}[/color] {tail}[/font_size][/color]";
             UiTheme.Apply(_loss, F(30, sc), UiTheme.Red);
             _loss.Text = line1 + "\n" + line2;
             _loss.SetPosition(new Vector2(10 * sc, rowY));

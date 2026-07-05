@@ -92,7 +92,7 @@ internal sealed class ForecastLedgerView
             var foot = Next(ref cur, F(13, sc), r.IsLethal ? UiTheme.Red : UiTheme.Cream);
             foot.Text = $"In {r.Incoming}   Block {r.Block}{ostyStr}   Loss {lossStr}";
             y += 20f * sc;
-            int after = Math.Max(0, r.CurrentHp - r.MaxLoss);
+            int after = r.CurrentHp - r.MaxLoss; // net-negative when lethal = mitigation still needed
             var hp = Next(ref cur, F(13, sc), r.IsLethal ? UiTheme.Red : UiTheme.Gold);
             hp.Text = $"HP {r.CurrentHp} → {after} after";
             hp.SetPosition(new Vector2(pad, y));
