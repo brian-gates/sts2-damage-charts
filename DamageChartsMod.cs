@@ -61,6 +61,7 @@ public static class DamageChartsMod
     private static DamageDetailView? _detail;
     private static DamageTooltipView? _tooltip;
     private static DamageForecastView? _forecast;
+    private static ForecastLedgerView? _forecastLedger;
     private static bool _detailVisible;
     private static bool _summaryActive;       // auto end-of-combat summary showing
     private static bool _summaryOnEnd = true; // config
@@ -553,12 +554,12 @@ public static class DamageChartsMod
                     if (IsBlockingUiOpen())
                     {
                         // A game menu/modal/overlay is on top — get out of its way.
-                        _bars?.Hide(); _tooltip?.Hide(); _detail?.SetVisible(false); _forecast?.Hide();
+                        _bars?.Hide(); _tooltip?.Hide(); _detail?.SetVisible(false); _forecast?.Hide(); _forecastLedger?.Hide();
                     }
                     else if (_detailVisible && _detail != null)
                     {
                         // Full-screen breakdown is up — it takes over; hide the compact bars/tooltip.
-                        _bars?.Hide(); _tooltip?.Hide(); _forecast?.Hide();
+                        _bars?.Hide(); _tooltip?.Hide(); _forecast?.Hide(); _forecastLedger?.Hide();
                         _detail.SummaryMode = false; _detail.RecapMode = false; _detail.UiScaleMul = _uiScale;
                         _detail.ShowRunHistory = true;
                         _detail.RunFights = _run.HasData() ? _run.EncounterStats(_localSlot) : null;
@@ -572,7 +573,7 @@ public static class DamageChartsMod
                     {
                         // The fight is won/lost (or winding down) — drop the always-on HUD now rather than
                         // leaving it up through the victory/defeat sequence until combat formally ends.
-                        _bars?.Hide(); _tooltip?.Hide(); _detail?.SetVisible(false); _forecast?.Hide();
+                        _bars?.Hide(); _tooltip?.Hide(); _detail?.SetVisible(false); _forecast?.Hide(); _forecastLedger?.Hide();
                     }
                     else
                     {
@@ -596,7 +597,7 @@ public static class DamageChartsMod
                 // On-demand run recap: a full-screen takeover shown out of combat (e.g. over the run's
                 // victory/death screen). Unlike the in-combat takeover this is NOT gated by blocking UI,
                 // so it can appear on top of the game's end screen.
-                _bars?.Hide(); _tooltip?.Hide(); _forecast?.Hide(); _summaryActive = false;
+                _bars?.Hide(); _tooltip?.Hide(); _forecast?.Hide(); _forecastLedger?.Hide(); _summaryActive = false;
                 _detail.SummaryMode = false; _detail.RecapMode = true; _detail.ShowRunHistory = false; _detail.UiScaleMul = _uiScale; _detail.SetVisible(true);
                 _detail.Render(_run.RunSourceSnapshot(), _run.RunChartSnapshot(), Palette);
                 _detail.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left));
@@ -606,7 +607,7 @@ public static class DamageChartsMod
             {
                 // End-of-combat summary: shown over the rewards moment (click-through), hidden while a
                 // menu is up, dismissed once the player moves on to the map (or via Cmd+D / next fight).
-                _bars?.Hide(); _tooltip?.Hide(); _forecast?.Hide();
+                _bars?.Hide(); _tooltip?.Hide(); _forecast?.Hide(); _forecastLedger?.Hide();
                 _detail.RecapMode = false; _detail.ShowRunHistory = false;
                 if (IsMapOpen()) { _summaryActive = false; _detail.SetVisible(false); }
                 else if (IsMenuOpen()) { _detail.SetVisible(false); }
@@ -651,6 +652,9 @@ public static class DamageChartsMod
             var r = DamageForecast.Compute(inputs);
             _forecast.Render(r);
             if (_forecast.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left))) SaveConfig();
+            if (!_forecast.IsDragging && _forecast.IsHovered() && _forecast.LastResult is { } last)
+                _forecastLedger?.Render(last, RootMouse());
+            else _forecastLedger?.Hide();
             if (ForecastReader.Debug)
             {
                 string line = $"in={r.Incoming} block={r.Block} loss={r.MinLoss}-{r.MaxLoss} " +
@@ -722,7 +726,7 @@ public static class DamageChartsMod
         _pending.Clear();
         _bars?.Hide();
         _tooltip?.Hide();
-        _forecast?.Hide();
+        _forecast?.Hide(); _forecastLedger?.Hide();
         // Fold this combat into the run-wide aggregate before the next combat's Reset() wipes the tracker.
         if (_tracker.HasData()) _run.Fold(_tracker.SourceSnapshot(), _tracker.Snapshot());
         // Auto-show the breakdown as an end-of-combat summary (until dismissed / map / next fight), but
@@ -744,6 +748,7 @@ public static class DamageChartsMod
             Vector2? fcPos = (_fcPosXFrac.HasValue && _fcPosYFrac.HasValue) ? new Vector2(_fcPosXFrac.Value, _fcPosYFrac.Value) : (Vector2?)null;
             if (_forecast == null || !_forecast.IsValid()) _forecast = new DamageForecastView(root, fcPos);
             if (_forecast != null) _forecast.UiScaleMul = _uiScale;
+            if (_forecastLedger == null || !_forecastLedger.IsValid()) _forecastLedger = new ForecastLedgerView(root);
             // _detail may have been freed by the game (its content can be reparented under NGlobalUi).
             if (_detail != null && !_detail.IsValid()) { _detail.Dispose(); _detail = null; }
             if (_detail == null) _detail = new DamageDetailView(root);
