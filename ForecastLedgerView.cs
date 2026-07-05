@@ -91,6 +91,11 @@ internal sealed class ForecastLedgerView
             string ostyStr = r.OstyAbsorb > 0 ? $"   Osty {r.OstyAbsorb}" : "";
             var foot = Next(ref cur, F(13, sc), r.IsLethal ? UiTheme.Red : UiTheme.Cream);
             foot.Text = $"In {r.Incoming}   Block {r.Block}{ostyStr}   Loss {lossStr}";
+            y += 20f * sc;
+            int after = Math.Max(0, r.CurrentHp - r.MaxLoss);
+            var hp = Next(ref cur, F(13, sc), r.IsLethal ? UiTheme.Red : UiTheme.Gold);
+            hp.Text = $"HP {r.CurrentHp} → {after} after";
+            hp.SetPosition(new Vector2(pad, y));
             foot.SetPosition(new Vector2(pad, y));
             y += 22f * sc;
 

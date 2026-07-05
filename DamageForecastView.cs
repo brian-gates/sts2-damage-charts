@@ -10,7 +10,7 @@ namespace STS2_DamageCharts;
 internal sealed class DamageForecastView
 {
     private const float BaseWidth = 216f;
-    private const float BaseHeight = 112f;
+    private const float BaseHeight = 124f;
     private const float BaseHeaderH = 20f;
     private const float BaseBarH = 18f;
     private const float BaseMargin = 14f;
@@ -35,7 +35,8 @@ internal sealed class DamageForecastView
     private const string OstyHex = "c08cf0";   // Osty = violet
     private const string LossHex = "ff5555";   // loss = red
     private const string GreenHex = "6bd45c";  // safe
-    private const string GoldHex = "efc851";   // hidden flag
+    private const string GoldHex = "efc851";   // hidden flag / caution
+    private const string CreamHex = "fff6e2";  // default text
     private readonly ColorRect _track;
     private readonly ColorRect _shield;
     private readonly ColorRect _osty;
@@ -202,12 +203,17 @@ internal sealed class DamageForecastView
             string lossStr = r.MinLoss == r.MaxLoss ? r.MinLoss.ToString() : $"{r.MinLoss}–{r.MaxLoss}";
             float rowY = _headerH + 4 * sc;
 
-            // Hero: the predicted HP loss, big and color-coded — the number the player decides on.
-            string hero = r.IsSafe
+            // Hero: predicted HP loss (big) plus the HP you're left at afterwards (worst case). Together
+            // they answer "how much will I lose" and "what will I be sitting at".
+            int after = Math.Max(0, r.CurrentHp - r.MaxLoss);
+            string afterHex = after == 0 ? LossHex
+                : (r.MaxHp > 0 && after < r.MaxHp * 0.30f ? GoldHex : GreenHex);
+            string line1 = r.IsSafe
                 ? $"[color=#{GreenHex}]Safe ✓[/color]"
                 : $"[color=#{LossHex}]{lossStr} [font_size={F(15, sc)}]HP[/font_size]{(r.IsLethal ? " ☠" : "")}[/color]";
+            string line2 = $"[color=#{CreamHex}][font_size={F(13, sc)}]{r.CurrentHp} → [color=#{afterHex}]{after}[/color] left[/font_size][/color]";
             UiTheme.Apply(_loss, F(30, sc), UiTheme.Red);
-            _loss.Text = hero;
+            _loss.Text = line1 + "\n" + line2;
             _loss.SetPosition(new Vector2(10 * sc, rowY));
 
             // Tucked micro-ledger on the right: the components behind the loss, small and color-coded.
