@@ -33,7 +33,7 @@ internal static class ForecastReader
                 block = GetInt(me, "Block", "CurrentBlock");
                 if (Debug && !_dumped) { _dumped = true; DumpDiagnostics(cs, players, localSlot, me); }
                 ReadDots(me, items);
-                ReadSelfDamageCards(players, localSlot, items);
+                ReadSelfDamageCards(cs, players, localSlot, items);
             }
         }
         catch { }
@@ -64,25 +64,77 @@ internal static class ForecastReader
         {
             string tn = intent.GetType().Name;
             if (Contains(tn, "Hidden") || Contains(tn, "Unknown")) return false;
-            if (!Contains(tn, "Attack")) continue; // buff/defend/etc: known, no HP threat
+            string itype = GetProp(intent, "IntentType")?.ToString() ?? "";
+            if (!Contains(tn, "Attack") && !Contains(itype, "Attack")) continue; // buff/defend/etc: no HP threat
 
-            int perHit = GetInt(intent, "Damage", "BaseDamage", "Amount");
-            int hits = GetInt(intent, "Hits", "Times", "Count", "AttackCount");
+            int hits = GetInt(intent, "Repeats", "Hits", "Times", "Count", "AttackCount");
             if (hits <= 0) hits = 1;
+            int perHit = ResolveIntentDamage(intent);
             if (perHit <= 0) continue; // attack with no readable number → treat as no threat, not hidden
             items.Add(new ForecastItem(name, ForecastKind.Attack, hits, perHit, blockable: true, conditional: false));
         }
         return true;
     }
 
+    // Attack intents expose damage via a DamageCalc delegate (Func<...>), not a plain int. Invoke it and
+    // pull the number out of the result (an int, or an object with a Damage/Total/Amount field).
+    private static int ResolveIntentDamage(object intent)
+    {
+        int d = GetInt(intent, "Damage", "BaseDamage", "Amount");
+        if (d > 0) return d;
+
+        object? calc = GetProp(intent, "DamageCalc");
+        if (calc is Delegate del)
+        {
+            object? res = null;
+            try { res = del.DynamicInvoke(); } catch { }
+            if (res is int ri) return ri;
+            if (res is decimal de) return (int)Math.Round(de, MidpointRounding.AwayFromZero);
+            if (res is double db) return (int)Math.Round(db, MidpointRounding.AwayFromZero);
+            if (res is float fl) return (int)Math.Round(fl, MidpointRounding.AwayFromZero);
+            if (res != null)
+            {
+                int rd = GetInt(res, "Damage", "Total", "TotalDamage", "FinalDamage", "Amount", "Value", "BaseDamage");
+                if (rd > 0) return rd;
+                if (int.TryParse(res.ToString(), out int p)) return p;
+            }
+        }
+        return 0;
+    }
+
     private static List<object> ResolveIntents(Creature enemy)
     {
         var list = new List<object>();
-        object? single = GetProp(enemy, "NextMove") ?? GetProp(enemy, "Intent") ?? GetProp(enemy, "CurrentMove");
-        if (single != null) { list.Add(single); return list; }
-        if (GetProp(enemy, "Intents") is IEnumerable en)
-            foreach (var i in en) if (i != null) list.Add(i);
+        // The enemy's telegraphed move lives on the MonsterModel: enemy.Monster.NextMove is a MoveState.
+        // Intents hang off the MoveState, or off the actual Move it wraps.
+        object? monster = GetProp(enemy, "Monster");
+        object? moveState = monster != null ? GetProp(monster, "NextMove") : null;
+        if (moveState == null) return list;
+
+        CollectIntents(moveState, list);
+        if (list.Count == 0)
+        {
+            object? inner = GetProp(moveState, "Move");
+            if (inner != null) CollectIntents(inner, list);
+        }
         return list;
+    }
+
+    private static void CollectIntents(object holder, List<object> list)
+    {
+        object? intents = GetProp(holder, "Intents") ?? Invoke(holder, "GetIntents");
+        if (intents is IEnumerable en)
+            foreach (var i in en) if (i != null) list.Add(i);
+    }
+
+    private static object? Invoke(object obj, string method)
+    {
+        try
+        {
+            var m = obj.GetType().GetMethod(method, BindingFlags.Public | BindingFlags.Instance, null, Type.EmptyTypes, null);
+            return m?.Invoke(obj, null);
+        }
+        catch { return null; }
     }
 
     private static string SafeName(Creature enemy)
@@ -143,13 +195,15 @@ internal static class ForecastReader
 
     // Cards in hand whose description says they cost the player HP. Conditional — only counts if played,
     // so it widens the range MAX. Description-scan heuristic (no hard-coded card list). Bypass block.
-    private static void ReadSelfDamageCards(IReadOnlyList<Player> players, int localSlot, List<ForecastItem> items)
+    private static void ReadSelfDamageCards(CombatState cs, IReadOnlyList<Player> players, int localSlot, List<ForecastItem> items)
     {
         try
         {
             if (localSlot < 0 || localSlot >= players.Count) return;
-            object? hand = GetProp(players[localSlot], "Hand") ?? GetProp(players[localSlot], "CardsInHand");
-            if (hand is not IEnumerable cards) return;
+            object? hand = FindHand(players[localSlot], cs);
+            if (hand == null) return;
+            object? cardsObj = GetProp(hand, "Cards") ?? hand; // hand is a CardPile; its list is under .Cards
+            if (cardsObj is not IEnumerable cards) return;
             foreach (var card in cards)
             {
                 if (card == null) continue;
@@ -184,6 +238,16 @@ internal static class ForecastReader
         catch { return 0; }
     }
 
+    // The player's hand lives on the combat state, not the Player model. Try the player's combat-state
+    // object, the player itself, then the global CombatState — under either common name.
+    private static object? FindHand(object player, CombatState cs)
+    {
+        object? pcs = GetProp(player, "PlayerCombatState") ?? GetProp(player, "CombatState");
+        return (pcs != null ? (GetProp(pcs, "Hand") ?? GetProp(pcs, "CardsInHand")) : null)
+            ?? GetProp(player, "Hand") ?? GetProp(player, "CardsInHand")
+            ?? GetProp(cs, "CardsInHand") ?? GetProp(cs, "Hand");
+    }
+
     private static bool MatchesAny(string s, string[] subs)
     {
         foreach (var k in subs) if (Contains(s, k)) return true;
@@ -208,62 +272,78 @@ internal static class ForecastReader
     {
         try
         {
-            Godot.GD.Print($"[STS2 Damage] DIAG player creature type={me.GetType().FullName}");
-            Godot.GD.Print($"[STS2 Damage] DIAG player ints: {IntMembers(me)}");
-            if (GetProp(me, "Powers") is IEnumerable powers)
-                foreach (var p in powers) { if (p == null) continue; Godot.GD.Print($"[STS2 Damage] DIAG power type={p.GetType().Name} ints={IntMembers(p)}"); }
-            else Godot.GD.Print("[STS2 Damage] DIAG player has no readable 'Powers'");
+            DumpObj("player creature", me);
+            object? mePowers = GetProp(me, "Powers");
+            DumpObj("player.Powers", mePowers);
+            if (mePowers is IEnumerable powers)
+                foreach (var p in powers) { if (p != null) { DumpObj("power", p); break; } }
 
             foreach (var enemy in cs.Enemies)
             {
                 if (enemy == null) continue;
                 try { if (!enemy.IsAlive) continue; } catch { }
-                var intents = ResolveIntents(enemy);
-                Godot.GD.Print($"[STS2 Damage] DIAG enemy='{SafeName(enemy)}' intents={intents.Count}");
-                foreach (var it in intents)
-                    Godot.GD.Print($"[STS2 Damage] DIAG   intent type={it.GetType().Name} ints={IntMembers(it)}");
+                DumpObj($"enemy '{SafeName(enemy)}'", enemy);
+                object? monster = GetProp(enemy, "Monster");
+                object? moveState = monster != null ? GetProp(monster, "NextMove") : null;
+                DumpObj("Monster.NextMove (MoveState)", moveState);
+                object? innerMove = moveState != null ? GetProp(moveState, "Move") : null;
+                DumpObj("MoveState.Move", innerMove);
+                object? intents = moveState != null ? (GetProp(moveState, "Intents") ?? Invoke(moveState, "GetIntents")) : null;
+                if (intents == null && innerMove != null) intents = GetProp(innerMove, "Intents") ?? Invoke(innerMove, "GetIntents");
+                DumpObj("intents", intents);
+                if (intents is IEnumerable ien)
+                    foreach (var it in ien)
+                    {
+                        if (it == null) continue;
+                        DumpObj("intent", it);
+                        if (GetProp(it, "DamageCalc") is Delegate del)
+                        {
+                            object? res = null; try { res = del.DynamicInvoke(); } catch (Exception e) { Godot.GD.Print($"[STS2 Damage] DIAG DamageCalc threw: {e.Message}"); }
+                            if (res is int ri) Godot.GD.Print($"[STS2 Damage] DIAG DamageCalc()=int {ri}");
+                            else DumpObj("DamageCalc()", res);
+                        }
+                    }
+                break; // first alive enemy is enough to learn the shape
             }
 
             if (localSlot >= 0 && localSlot < players.Count)
             {
-                object? hand = GetProp(players[localSlot], "Hand") ?? GetProp(players[localSlot], "CardsInHand");
-                if (hand is IEnumerable cards)
-                    foreach (var c in cards) { if (c == null) continue; Godot.GD.Print($"[STS2 Damage] DIAG hand card type={c.GetType().Name} strs={StringMembers(c)}"); break; }
-                else Godot.GD.Print("[STS2 Damage] DIAG player has no readable 'Hand'/'CardsInHand'");
+                object? pl = players[localSlot];
+                DumpObj("player object", pl);
+                object? pcs = GetProp(pl!, "PlayerCombatState") ?? GetProp(pl!, "CombatState");
+                DumpObj("player.PlayerCombatState", pcs);
+                object? hand = FindHand(pl!, cs);
+                DumpObj("resolved hand", hand);
+                object? cardsObj = hand != null ? (GetProp(hand, "Cards") ?? hand) : null;
+                if (cardsObj is IEnumerable cards)
+                    foreach (var c in cards) { if (c != null) { DumpObj("hand card", c); break; } }
             }
         }
         catch (Exception ex) { Godot.GD.PrintErr($"[STS2 Damage] DIAG failed: {ex.Message}"); }
     }
 
-    private static string IntMembers(object obj)
+    // Generic one-line dump of an object's public instance members (name=value; enumerables as [N items]).
+    private static void DumpObj(string label, object? o)
     {
+        if (o == null) { Godot.GD.Print($"[STS2 Damage] DIAG {label}=null"); return; }
         var sb = new System.Text.StringBuilder();
         try
         {
-            foreach (var p in obj.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance))
+            foreach (var p in o.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance))
             {
                 if (p.GetIndexParameters().Length > 0) continue;
-                if (p.PropertyType != typeof(int)) continue;
-                try { sb.Append(p.Name).Append('=').Append(p.GetValue(obj)).Append(' '); } catch { }
+                object? v = null;
+                try { v = p.GetValue(o); } catch { }
+                string vs;
+                if (v is null) vs = "null";
+                else if (v is string s) vs = '"' + (s.Length > 16 ? s[..16] + "…" : s) + '"';
+                else if (v is int || v is bool || v is float || v is double || v.GetType().IsEnum) vs = v.ToString() ?? "?";
+                else if (v is IEnumerable en) { int c = 0; try { foreach (var _ in en) c++; } catch { } vs = $"[{c} items]"; }
+                else vs = "{" + v.GetType().Name + "}";
+                sb.Append(p.Name).Append('=').Append(vs).Append("  ");
             }
         }
         catch { }
-        return sb.ToString();
-    }
-
-    private static string StringMembers(object obj)
-    {
-        var sb = new System.Text.StringBuilder();
-        try
-        {
-            foreach (var p in obj.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance))
-            {
-                if (p.GetIndexParameters().Length > 0) continue;
-                if (p.PropertyType != typeof(string)) continue;
-                sb.Append(p.Name).Append(' ');
-            }
-        }
-        catch { }
-        return sb.ToString();
+        Godot.GD.Print($"[STS2 Damage] DIAG {label} ({o.GetType().Name}): {sb}");
     }
 }

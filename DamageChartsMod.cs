@@ -181,6 +181,7 @@ public static class DamageChartsMod
                 ["forecast_pos_x_frac"] = _fcForecastPosRounded().X,
                 ["forecast_pos_y_frac"] = _fcForecastPosRounded().Y,
             };
+            if (ForecastReader.Debug) dict["forecast_debug"] = true;
             File.WriteAllText(path, JsonSerializer.Serialize(dict, new JsonSerializerOptions { WriteIndented = true }));
             RememberConfigWriteTime(path);
             _posXFrac = pos.X; _posYFrac = pos.Y;
@@ -657,8 +658,10 @@ public static class DamageChartsMod
             else _forecastLedger?.Hide();
             if (ForecastReader.Debug)
             {
+                string detail = "";
+                foreach (var it in inputs.Items) detail += $" [{it.Kind} {it.Label} {it.Hits}x{it.DamagePerHit}]";
                 string line = $"in={r.Incoming} block={r.Block} loss={r.MinLoss}-{r.MaxLoss} " +
-                              $"hidden={r.HasHidden} hp={r.CurrentHp}/{r.MaxHp} items={inputs.Items.Count}";
+                              $"hidden={r.HasHidden} hp={r.CurrentHp}/{r.MaxHp} items={inputs.Items.Count}{detail}";
                 if (line != _lastForecastLog) { _lastForecastLog = line; GD.Print($"[STS2 Damage] forecast {line}"); }
             }
         }
