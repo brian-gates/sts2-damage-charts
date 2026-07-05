@@ -132,12 +132,23 @@ internal static class ForecastReader
     {
         try
         {
-            var m = FindMethod(card, "GetDescriptionForPile", 1);
+            MethodInfo? m = null;
+            foreach (var cand in card.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance))
+            {
+                if (cand.Name != "GetDescriptionForPile") continue;
+                var cps = cand.GetParameters();
+                if (cps.Length >= 1 && cps[0].ParameterType.IsEnum) { m = cand; break; }
+            }
             if (m == null) return null;
-            var pileType = m.GetParameters()[0].ParameterType;
-            if (!pileType.IsEnum) return null;
-            object hand = Enum.Parse(pileType, "Hand");
-            object? res = m.Invoke(card, new[] { hand });
+
+            var ps = m.GetParameters();
+            var args = new object?[ps.Length];
+            args[0] = Enum.Parse(ps[0].ParameterType, "Hand");   // PileType.Hand
+            for (int i = 1; i < ps.Length; i++)
+                args[i] = ps[i].HasDefaultValue ? ps[i].DefaultValue
+                        : (ps[i].ParameterType.IsValueType ? Activator.CreateInstance(ps[i].ParameterType) : null);
+
+            object? res = m.Invoke(card, args);
             string? s = res as string ?? (res != null ? TextHelper.SafeGetText(() => res) : null);
             return s != null ? TextHelper.StripRichTextTags(s) : null;
         }
