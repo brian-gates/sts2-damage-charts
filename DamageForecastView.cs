@@ -10,7 +10,7 @@ namespace STS2_DamageCharts;
 internal sealed class DamageForecastView
 {
     private const float BaseWidth = 300f;
-    private const float BaseHeight = 76f;
+    private const float BaseHeight = 104f;
     private const float BaseHeaderH = 22f;
     private const float BaseBarH = 22f;
     private const float BaseMargin = 14f;
@@ -27,6 +27,7 @@ internal sealed class DamageForecastView
     private readonly Panel _bg;
     private readonly Control _barLayer;
     private readonly Label _title;
+    private readonly RichTextLabel _loss;
     private readonly RichTextLabel _stats;
 
     // BBCode hex tags matching the bar segments, so each value reads in its own color.
@@ -84,7 +85,15 @@ internal sealed class DamageForecastView
         _title.Text = "Incoming Forecast";
         _container.AddChild(_title);
 
-        _stats = new RichTextLabel
+        _loss = NewRich(24, UiTheme.Red);
+        _stats = NewRich(11, UiTheme.Cream);
+
+        if (savedPosFrac.HasValue) { _posFrac = savedPosFrac.Value; _posFracInit = true; }
+    }
+
+    private RichTextLabel NewRich(int fontSize, Color color)
+    {
+        var rtl = new RichTextLabel
         {
             BbcodeEnabled = true,
             FitContent = true,
@@ -92,10 +101,9 @@ internal sealed class DamageForecastView
             AutowrapMode = TextServer.AutowrapMode.Off,
             MouseFilter = Control.MouseFilterEnum.Ignore,
         };
-        UiTheme.Apply(_stats, 12, UiTheme.Cream);
-        _container.AddChild(_stats);
-
-        if (savedPosFrac.HasValue) { _posFrac = savedPosFrac.Value; _posFracInit = true; }
+        UiTheme.Apply(rtl, fontSize, color);
+        _container.AddChild(rtl);
+        return rtl;
     }
 
     private ColorRect NewRect(Color c)
@@ -195,12 +203,20 @@ internal sealed class DamageForecastView
             string hidden = r.HasHidden ? $"  [color=#{GoldHex}]+?[/color]" : "";
             string block = $"[color=#{BlockHex}]Block {r.Block}[/color]";
             string osty = r.OstyAbsorb > 0 ? $"   [color=#{OstyHex}]Osty {r.OstyAbsorb}[/color]" : "";
-            string statsText = r.IsSafe
-                ? $"[color=#{GreenHex}]Safe ✓[/color]   {block}{osty}{hidden}"
-                : $"In {r.Incoming}{hidden}   {block}{osty}   [color=#{LossHex}]Loss {lossStr}[/color]";
-            UiTheme.Apply(_stats, F(13, sc), UiTheme.Cream);
-            _stats.Text = statsText;
-            _stats.SetPosition(new Vector2(8 * sc, _headerH + 2 * sc));
+
+            // Hero line: the predicted HP loss — the number the player decides on. Big and color-coded.
+            string lossBig = r.IsSafe
+                ? $"[color=#{GreenHex}]Safe ✓[/color]"
+                : $"[color=#{LossHex}]−{lossStr} HP{(r.IsLethal ? "  ☠" : "")}[/color]";
+            UiTheme.Apply(_loss, F(26, sc), UiTheme.Red);
+            _loss.Text = lossBig;
+            _loss.SetPosition(new Vector2(8 * sc, _headerH + 1 * sc));
+
+            // Supporting line: the components behind the loss, smaller, just above the bar.
+            UiTheme.Apply(_stats, F(12, sc), UiTheme.Cream);
+            _stats.Text = $"In {r.Incoming}{hidden}   {block}{osty}";
+            float barY = _h - BaseBarH * sc - 8 * sc;
+            _stats.SetPosition(new Vector2(8 * sc, barY - 17 * sc));
 
             LayoutBar(r, sc);
 
