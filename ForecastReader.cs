@@ -32,6 +32,8 @@ internal static class ForecastReader
                 maxHp = GetInt(me, "MaxHp", "MaxHealth");
                 block = GetInt(me, "Block", "CurrentBlock");
                 if (Debug && !_dumped) { _dumped = true; DumpDiagnostics(cs, players, localSlot, me); }
+                ReadDots(me, items);
+                ReadSelfDamageCards(players, localSlot, items);
             }
         }
         catch { }
@@ -113,6 +115,93 @@ internal static class ForecastReader
             if (v != null && int.TryParse(v.ToString(), out int p)) return p;
         }
         return 0;
+    }
+
+    private static readonly string[] DotKeywords = { "Bleed", "Burn", "Poison", "Regret", "Bomb", "Constrict" };
+
+    // Player powers that tick HP loss this turn regardless of action. Damage magnitude is the power's
+    // stack/amount for stacking DoTs (Bleed/Poison); best-effort for others. Bypass block.
+    private static void ReadDots(Creature me, List<ForecastItem> items)
+    {
+        try
+        {
+            if (GetProp(me, "Powers") is not IEnumerable powers) return;
+            foreach (var p in powers)
+            {
+                if (p == null) continue;
+                string tn = p.GetType().Name;
+                string id = GetString(p, "Id", "PowerId") ?? tn;
+                if (!MatchesAny(tn, DotKeywords) && !MatchesAny(id, DotKeywords)) continue;
+                int amount = GetInt(p, "Amount", "Stacks", "Count", "Value");
+                if (amount <= 0) continue;
+                string label = TextHelper.SafeGetText(() => GetProp(p, "Title")) ?? Prettify(tn);
+                items.Add(new ForecastItem(label, ForecastKind.Dot, 1, amount, blockable: false, conditional: false));
+            }
+        }
+        catch { }
+    }
+
+    // Cards in hand whose description says they cost the player HP. Conditional — only counts if played,
+    // so it widens the range MAX. Description-scan heuristic (no hard-coded card list). Bypass block.
+    private static void ReadSelfDamageCards(IReadOnlyList<Player> players, int localSlot, List<ForecastItem> items)
+    {
+        try
+        {
+            if (localSlot < 0 || localSlot >= players.Count) return;
+            object? hand = GetProp(players[localSlot], "Hand") ?? GetProp(players[localSlot], "CardsInHand");
+            if (hand is not IEnumerable cards) return;
+            foreach (var card in cards)
+            {
+                if (card == null) continue;
+                string? desc = TextHelper.SafeGetText(() =>
+                    GetProp(card, "Description") ?? GetProp(card, "Text") ?? GetProp(card, "Body"));
+                if (desc == null) continue;
+                int hpCost = ParseHpLoss(desc);
+                if (hpCost <= 0) continue;
+                string label = TextHelper.SafeGetText(() => GetProp(card, "Title")) ?? "Card";
+                items.Add(new ForecastItem(label, ForecastKind.SelfCard, 1, hpCost, blockable: false, conditional: true));
+            }
+        }
+        catch { }
+    }
+
+    // Matches "lose N HP" / "lose N Health" / "N HP loss" case-insensitively; returns the largest number found.
+    private static int ParseHpLoss(string desc)
+    {
+        try
+        {
+            var rx = new System.Text.RegularExpressions.Regex(
+                @"lose\s+(\d+)\s*(?:hp|health)|(\d+)\s*(?:hp|health)\s*loss",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            int max = 0;
+            foreach (System.Text.RegularExpressions.Match m in rx.Matches(desc))
+            {
+                string g = m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value;
+                if (int.TryParse(g, out int n) && n > max) max = n;
+            }
+            return max;
+        }
+        catch { return 0; }
+    }
+
+    private static bool MatchesAny(string s, string[] subs)
+    {
+        foreach (var k in subs) if (Contains(s, k)) return true;
+        return false;
+    }
+
+    private static string? GetString(object obj, params string[] names)
+    {
+        foreach (var n in names) { var v = GetProp(obj, n); if (v is string s && s.Length > 0) return s; }
+        return null;
+    }
+
+    private static string Prettify(string typeName)
+    {
+        string n = typeName;
+        foreach (var suffix in new[] { "PowerModel", "Power", "Model" })
+            if (n.EndsWith(suffix)) { n = n[..^suffix.Length]; break; }
+        return n.Length > 0 ? n : typeName;
     }
 
     private static void DumpDiagnostics(CombatState cs, IReadOnlyList<Player> players, int localSlot, Creature me)
