@@ -35,6 +35,10 @@ public static class DamageChartsMod
     private static readonly string[] HarmonyIds =
         { "com.sts2damagecharts", "com.sts2damagecharts.suppress", "com.sts2damagecharts.deck", "com.sts2damagecharts.powers" };
     private static bool _showBars = true;
+    private static bool _showForecast = true;
+    private static float? _fcPosXFrac;
+    private static float? _fcPosYFrac;
+    private static string _lastForecastLog = "";
 
     private static readonly DamageTracker _tracker = new();
     private static readonly RunAggregate _run = new();
@@ -135,6 +139,10 @@ public static class DamageChartsMod
             var root = doc.RootElement;
             if (root.TryGetProperty("enabled", out var en) && en.ValueKind == JsonValueKind.False) return false;
             if (root.TryGetProperty("show_bars", out var sb) && sb.ValueKind == JsonValueKind.False) _showBars = false;
+            if (root.TryGetProperty("forecast", out var fc) && fc.ValueKind == JsonValueKind.False) _showForecast = false;
+            if (root.TryGetProperty("forecast_pos_x_frac", out var fpx) && fpx.TryGetSingle(out var ffx)) _fcPosXFrac = ffx;
+            if (root.TryGetProperty("forecast_pos_y_frac", out var fpy) && fpy.TryGetSingle(out var ffy)) _fcPosYFrac = ffy;
+            if (root.TryGetProperty("forecast_debug", out var fdb) && fdb.ValueKind == JsonValueKind.True) ForecastReader.Debug = true;
             if (root.TryGetProperty("summary_on_combat_end", out var su) && su.ValueKind == JsonValueKind.False) _summaryOnEnd = false;
             if (root.TryGetProperty("run_recap", out var rr) && rr.ValueKind == JsonValueKind.False) _recapEnabled = false;
             if (root.TryGetProperty("ui_scale", out var us) && us.ValueKind == JsonValueKind.Number && us.TryGetSingle(out float uss)) _uiScale = Math.Clamp(uss, 0.5f, 4f);
@@ -167,12 +175,21 @@ public static class DamageChartsMod
                 ["summary_on_combat_end"] = _summaryOnEnd,
                 ["pos_x_frac"] = (float)Math.Round(pos.X, 4),
                 ["pos_y_frac"] = (float)Math.Round(pos.Y, 4),
+                ["forecast"] = _showForecast,
+                ["forecast_pos_x_frac"] = _fcForecastPosRounded().X,
+                ["forecast_pos_y_frac"] = _fcForecastPosRounded().Y,
             };
             File.WriteAllText(path, JsonSerializer.Serialize(dict, new JsonSerializerOptions { WriteIndented = true }));
             RememberConfigWriteTime(path);
             _posXFrac = pos.X; _posYFrac = pos.Y;
         }
         catch (Exception ex) { GD.PrintErr($"[STS2 Damage] save config failed: {ex.Message}"); }
+    }
+
+    private static Vector2 _fcForecastPosRounded()
+    {
+        var p = new Vector2(_fcPosXFrac ?? 0f, _fcPosYFrac ?? 0f);
+        return new Vector2((float)Math.Round(p.X, 4), (float)Math.Round(p.Y, 4));
     }
 
     private static void ReloadConfigIfChangedOnDisk()
@@ -569,6 +586,7 @@ public static class DamageChartsMod
                             if (!_bars.IsDragging && _bars.TryGetHover(out var hv)) _tooltip?.Render(hv, RootMouse());
                             else _tooltip?.Hide();
                         }
+                        if (_showForecast) UpdateForecast(cs);
                     }
                 }
             }
@@ -621,6 +639,19 @@ public static class DamageChartsMod
         try { ((SceneTree)Engine.GetMainLoop()).Disconnect(SceneTree.SignalName.ProcessFrame, _tickCallable); } catch { }
         foreach (var id in HarmonyIds) { try { new Harmony(id).UnpatchAll(id); } catch { } }
         SafeTeardown();
+    }
+
+    private static void UpdateForecast(CombatState cs)
+    {
+        try
+        {
+            var inputs = ForecastReader.Build(cs, _players, _localSlot);
+            var r = DamageForecast.Compute(inputs);
+            string line = $"in={r.Incoming} block={r.Block} loss={r.MinLoss}-{r.MaxLoss} " +
+                          $"hidden={r.HasHidden} hp={r.CurrentHp}/{r.MaxHp} items={inputs.Items.Count}";
+            if (line != _lastForecastLog) { _lastForecastLog = line; GD.Print($"[STS2 Damage] forecast {line}"); }
+        }
+        catch (Exception ex) { GD.PrintErr($"[STS2 Damage] forecast error: {ex.Message}"); }
     }
 
     private static void HandleHotkey()
