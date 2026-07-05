@@ -54,6 +54,21 @@ internal static class ForecastReader
         return new ForecastInputs(hp, maxHp, block, ostyAbsorb, hasHidden, items);
     }
 
+    // True while the local player is actively taking their turn (PlayerTurnPhase.Play) — i.e. planning,
+    // when the forecast is meaningful. During the enemy turn it reads false, so the caller freezes the
+    // last planning value instead of letting it climb as block/Osty are consumed by resolving hits.
+    public static bool IsPlanningPhase(IReadOnlyList<Player> players, int localSlot)
+    {
+        try
+        {
+            if (localSlot < 0 || localSlot >= players.Count) return false;
+            object? pcs = GetProp(players[localSlot], "PlayerCombatState");
+            object? phase = pcs != null ? GetProp(pcs, "Phase") : null;
+            return phase != null && string.Equals(phase.ToString(), "Play", StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return false; }
+    }
+
     // Osty (Necrobinder's summon) is a damage sink in front of the player: its block + HP absorb attacks
     // before overflow reaches the player. Only counts while Osty is alive.
     private static int ReadOstyAbsorb(Player player)

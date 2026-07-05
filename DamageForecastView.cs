@@ -9,10 +9,10 @@ namespace STS2_DamageCharts;
 // lethal when max loss >= current HP. Native nodes only; poll-based mouse from the tick.
 internal sealed class DamageForecastView
 {
-    private const float BaseWidth = 300f;
-    private const float BaseHeight = 104f;
-    private const float BaseHeaderH = 22f;
-    private const float BaseBarH = 22f;
+    private const float BaseWidth = 184f;
+    private const float BaseHeight = 84f;
+    private const float BaseHeaderH = 16f;
+    private const float BaseBarH = 16f;
     private const float BaseMargin = 14f;
 
     private static readonly Color Green = new(0.42f, 0.83f, 0.36f);
@@ -196,27 +196,27 @@ internal sealed class DamageForecastView
             float py = Math.Clamp(_posFrac.Y * _vp.Y, inset, Math.Max(inset, _vp.Y - _h));
             _container.SetPosition(new Vector2(px, py));
 
-            UiTheme.Apply(_title, F(13, sc), new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.85f));
-            _title.SetPosition(new Vector2(8 * sc, 4 * sc));
+            UiTheme.Apply(_title, F(11, sc), new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.7f));
+            _title.SetPosition(new Vector2(8 * sc, 3 * sc));
 
             string lossStr = r.MinLoss == r.MaxLoss ? r.MinLoss.ToString() : $"{r.MinLoss}–{r.MaxLoss}";
-            string hidden = r.HasHidden ? $"  [color=#{GoldHex}]+?[/color]" : "";
-            string block = $"[color=#{BlockHex}]Block {r.Block}[/color]";
-            string osty = r.OstyAbsorb > 0 ? $"   [color=#{OstyHex}]Osty {r.OstyAbsorb}[/color]" : "";
+            float rowY = _headerH + 2 * sc;
 
-            // Hero line: the predicted HP loss — the number the player decides on. Big and color-coded.
-            string lossBig = r.IsSafe
+            // Hero: the predicted HP loss, big and color-coded — the number the player decides on.
+            string hero = r.IsSafe
                 ? $"[color=#{GreenHex}]Safe ✓[/color]"
-                : $"[color=#{LossHex}]−{lossStr} HP{(r.IsLethal ? "  ☠" : "")}[/color]";
-            UiTheme.Apply(_loss, F(26, sc), UiTheme.Red);
-            _loss.Text = lossBig;
-            _loss.SetPosition(new Vector2(8 * sc, _headerH + 1 * sc));
+                : $"[color=#{LossHex}]{lossStr} [font_size={F(12, sc)}]HP[/font_size]{(r.IsLethal ? " ☠" : "")}[/color]";
+            UiTheme.Apply(_loss, F(24, sc), UiTheme.Red);
+            _loss.Text = hero;
+            _loss.SetPosition(new Vector2(8 * sc, rowY));
 
-            // Supporting line: the components behind the loss, smaller, just above the bar.
-            UiTheme.Apply(_stats, F(12, sc), UiTheme.Cream);
-            _stats.Text = $"In {r.Incoming}{hidden}   {block}{osty}";
-            float barY = _h - BaseBarH * sc - 8 * sc;
-            _stats.SetPosition(new Vector2(8 * sc, barY - 17 * sc));
+            // Tucked micro-ledger on the right: the components behind the loss, small and color-coded.
+            string hidden = r.HasHidden ? $" [color=#{GoldHex}]+?[/color]" : "";
+            string led = $"In {r.Incoming}{hidden}\n[color=#{BlockHex}]Blk {r.Block}[/color]";
+            if (r.OstyAbsorb > 0) led += $"\n[color=#{OstyHex}]Osty {r.OstyAbsorb}[/color]";
+            UiTheme.Apply(_stats, F(10, sc), UiTheme.Cream);
+            _stats.Text = led;
+            _stats.SetPosition(new Vector2(_w - 60 * sc, rowY));
 
             LayoutBar(r, sc);
 

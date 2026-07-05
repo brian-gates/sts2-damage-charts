@@ -62,6 +62,7 @@ public static class DamageChartsMod
     private static DamageTooltipView? _tooltip;
     private static DamageForecastView? _forecast;
     private static ForecastLedgerView? _forecastLedger;
+    private static ForecastResult? _frozenForecast;  // last planning-phase value, held during the enemy turn
     private static bool _detailVisible;
     private static bool _summaryActive;       // auto end-of-combat summary showing
     private static bool _summaryOnEnd = true; // config
@@ -653,6 +654,11 @@ public static class DamageChartsMod
             if (_forecast == null) return;
             var inputs = ForecastReader.Build(cs, _players, _localSlot);
             var r = DamageForecast.Compute(inputs);
+            // Only recompute while the player is planning (their Play phase). During the enemy turn the
+            // prediction is being realized — block/Osty get eaten hit by hit — so freeze the last planning
+            // value instead of letting the shown loss climb as the animation resolves.
+            if (ForecastReader.IsPlanningPhase(_players, _localSlot) || _frozenForecast == null) _frozenForecast = r;
+            r = _frozenForecast.Value;
             _forecast.Render(r);
             if (_forecast.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left))) SaveConfig();
             if (!_forecast.IsDragging && _forecast.IsHovered() && _forecast.LastResult is { } last)
@@ -661,9 +667,9 @@ public static class DamageChartsMod
             if (ForecastReader.Debug)
             {
                 string detail = "";
-                foreach (var it in inputs.Items) detail += $" [{it.Kind} {it.Label} {it.Hits}x{it.DamagePerHit}]";
+                foreach (var it in r.Items) detail += $" [{it.Kind} {it.Label} {it.Hits}x{it.DamagePerHit}]";
                 string line = $"in={r.Incoming} block={r.Block} loss={r.MinLoss}-{r.MaxLoss} " +
-                              $"hidden={r.HasHidden} hp={r.CurrentHp}/{r.MaxHp} items={inputs.Items.Count}{detail}";
+                              $"hidden={r.HasHidden} hp={r.CurrentHp}/{r.MaxHp} frozen={!ForecastReader.IsPlanningPhase(_players, _localSlot)} items={r.Items.Count}{detail}";
                 if (line != _lastForecastLog) { _lastForecastLog = line; GD.Print($"[STS2 Damage] forecast {line}"); }
             }
         }
@@ -718,6 +724,7 @@ public static class DamageChartsMod
         _recapVisible = false;   // the recap is an out-of-combat view
         _combatResolved = false; // until enemies/player actually die, this combat hasn't ended naturally
         _allEnemiesDeadFrames = 0;
+        _frozenForecast = null;
         _localSlot = localSlot;
         _tracker.Reset(_players.Count, labels, localSlot);
         _pending.Clear();
