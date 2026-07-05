@@ -20,17 +20,19 @@ internal static class ForecastReader
     public static ForecastInputs Build(CombatState cs, IReadOnlyList<Player> players, int localSlot)
     {
         var items = new List<ForecastItem>();
-        int hp = 0, maxHp = 0, block = 0;
+        int hp = 0, maxHp = 0, block = 0, ostyAbsorb = 0;
         bool hasHidden = false;
 
         try
         {
-            Creature? me = (localSlot >= 0 && localSlot < players.Count) ? players[localSlot].Creature : null;
+            Player? mePlayer = (localSlot >= 0 && localSlot < players.Count) ? players[localSlot] : null;
+            Creature? me = mePlayer?.Creature;
             if (me != null)
             {
                 hp = GetInt(me, "CurrentHp", "Hp", "Health");
                 maxHp = GetInt(me, "MaxHp", "MaxHealth");
                 block = GetInt(me, "Block", "CurrentBlock");
+                ostyAbsorb = ReadOstyAbsorb(mePlayer!);
                 if (Debug && !_dumped) { _dumped = true; DumpDiagnostics(cs, players, localSlot, me); }
                 ReadDots(me, items);
                 ReadSelfDamageCards(cs, players, localSlot, items);
@@ -49,7 +51,25 @@ internal static class ForecastReader
         }
         catch { }
 
-        return new ForecastInputs(hp, maxHp, block, hasHidden, items);
+        return new ForecastInputs(hp, maxHp, block, ostyAbsorb, hasHidden, items);
+    }
+
+    // Osty (Necrobinder's summon) is a damage sink in front of the player: its block + HP absorb attacks
+    // before overflow reaches the player. Only counts while Osty is alive.
+    private static int ReadOstyAbsorb(Player player)
+    {
+        try
+        {
+            object? aliveObj = GetProp(player, "IsOstyAlive");
+            if (aliveObj is bool alive && !alive) return 0;
+            object? osty = GetProp(player, "Osty");
+            if (osty == null) return 0;
+            int ohp = GetInt(osty, "CurrentHp", "Hp", "Health");
+            int oblock = GetInt(osty, "Block", "CurrentBlock");
+            if (ohp <= 0 && oblock <= 0) return 0;
+            return ohp + oblock;
+        }
+        catch { return 0; }
     }
 
     // Returns true if this enemy's intent was concretely readable (attack or a known non-attack move);
@@ -69,17 +89,38 @@ internal static class ForecastReader
 
             int hits = GetInt(intent, "Repeats", "Hits", "Times", "Count", "AttackCount");
             if (hits <= 0) hits = 1;
-            int perHit = ResolveIntentDamage(intent);
+            int perHit = ResolveIntentDamage(intent, enemy);
             if (perHit <= 0) continue; // attack with no readable number → treat as no threat, not hidden
             items.Add(new ForecastItem(name, ForecastKind.Attack, hits, perHit, blockable: true, conditional: false));
         }
         return true;
     }
 
-    // Attack intents expose damage via a DamageCalc delegate (Func<...>), not a plain int. Invoke it and
-    // pull the number out of the result (an int, or an object with a Damage/Total/Amount field).
-    private static int ResolveIntentDamage(object intent)
+    private static readonly System.Text.RegularExpressions.Regex NumRx = new(@"\d+");
+
+    // The number the player sees. The intent's own display label (GetIntentLabel(targets, self)) already
+    // applies the attacker's Strength and the target's Vulnerable — DamageCalc alone is the raw base, so
+    // it under-reports once modifiers are in play. Prefer the label; fall back to the base delegate.
+    private static int ResolveIntentDamage(object intent, Creature enemy)
     {
+        try
+        {
+            object? cs = GetProp(enemy, "CombatState");
+            object? targets = cs != null ? GetProp(cs, "PlayerCreatures") : null;
+            if (targets != null)
+            {
+                var m = FindMethod(intent, "GetIntentLabel", 2);
+                object? loc = m?.Invoke(intent, new object[] { targets, enemy });
+                string? text = loc != null ? TextHelper.SafeGetText(() => loc) : null;
+                if (!string.IsNullOrEmpty(text))
+                {
+                    var mm = NumRx.Match(text);
+                    if (mm.Success && int.TryParse(mm.Value, out int n) && n > 0) return n;
+                }
+            }
+        }
+        catch { }
+
         int d = GetInt(intent, "Damage", "BaseDamage", "Amount");
         if (d > 0) return d;
 
@@ -135,6 +176,17 @@ internal static class ForecastReader
             return m?.Invoke(obj, null);
         }
         catch { return null; }
+    }
+
+    private static MethodInfo? FindMethod(object obj, string name, int paramCount)
+    {
+        try
+        {
+            foreach (var m in obj.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance))
+                if (m.Name == name && m.GetParameters().Length == paramCount) return m;
+        }
+        catch { }
+        return null;
     }
 
     private static string SafeName(Creature enemy)
@@ -312,6 +364,8 @@ internal static class ForecastReader
                 DumpObj("player object", pl);
                 object? pcs = GetProp(pl!, "PlayerCombatState") ?? GetProp(pl!, "CombatState");
                 DumpObj("player.PlayerCombatState", pcs);
+                Godot.GD.Print($"[STS2 Damage] DIAG IsOstyAlive={GetProp(pl!, "IsOstyAlive")}");
+                DumpObj("player.Osty", GetProp(pl!, "Osty"));
                 object? hand = FindHand(pl!, cs);
                 DumpObj("resolved hand", hand);
                 object? cardsObj = hand != null ? (GetProp(hand, "Cards") ?? hand) : null;

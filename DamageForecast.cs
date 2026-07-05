@@ -35,14 +35,16 @@ internal readonly struct ForecastInputs
     public readonly int CurrentHp;
     public readonly int MaxHp;
     public readonly int Block;
+    public readonly int OstyAbsorb;   // Osty's (block + HP) — a damage sink in front of the player; 0 if none/dead
     public readonly bool HasHidden;
     public readonly IReadOnlyList<ForecastItem> Items;
 
-    public ForecastInputs(int currentHp, int maxHp, int block, bool hasHidden, IReadOnlyList<ForecastItem> items)
+    public ForecastInputs(int currentHp, int maxHp, int block, int ostyAbsorb, bool hasHidden, IReadOnlyList<ForecastItem> items)
     {
         CurrentHp = currentHp;
         MaxHp = maxHp;
         Block = block;
+        OstyAbsorb = ostyAbsorb;
         HasHidden = hasHidden;
         Items = items ?? Array.Empty<ForecastItem>();
     }
@@ -52,22 +54,24 @@ internal readonly struct ForecastResult
 {
     public readonly int Incoming;   // guaranteed gross threat (attacks + guaranteed unblockable), pre-block
     public readonly int Mitigated;  // block absorbed vs guaranteed attacks
-    public readonly int MinLoss;    // guaranteed HP loss after block
+    public readonly int MinLoss;    // guaranteed HP loss after block + Osty
     public readonly int MaxLoss;    // MinLoss + conditional contributions
     public readonly int Block;
+    public readonly int OstyAbsorb; // Osty pool in front of the player (block + HP), 0 if none
     public readonly int CurrentHp;
     public readonly int MaxHp;
     public readonly bool HasHidden;
     public readonly IReadOnlyList<ForecastItem> Items;
 
     public ForecastResult(int incoming, int mitigated, int minLoss, int maxLoss,
-        int block, int currentHp, int maxHp, bool hasHidden, IReadOnlyList<ForecastItem> items)
+        int block, int ostyAbsorb, int currentHp, int maxHp, bool hasHidden, IReadOnlyList<ForecastItem> items)
     {
         Incoming = incoming;
         Mitigated = mitigated;
         MinLoss = minLoss;
         MaxLoss = maxLoss;
         Block = block;
+        OstyAbsorb = ostyAbsorb;
         CurrentHp = currentHp;
         MaxHp = maxHp;
         HasHidden = hasHidden;
@@ -102,18 +106,23 @@ internal static class DamageForecast
             }
         }
 
+        // Attacks are absorbed by the combined pool of player block + Osty (a damage sink in front of the
+        // player); DoTs bypass both. The loss total is order-independent, so we pool them.
         int block = Math.Max(0, inp.Block);
-        int mitigated = Math.Min(block, guaranteedAttack);
+        int osty = Math.Max(0, inp.OstyAbsorb);
+        int pool = block + osty;
+
+        int mitigated = Math.Min(pool, guaranteedAttack);
         int guaranteedAttackLoss = guaranteedAttack - mitigated;
         int minLoss = guaranteedAttackLoss + guaranteedUnblockable;
 
-        int remainingBlock = block - mitigated;
-        int condAttackLoss = Math.Max(0, condAttack - remainingBlock);
+        int poolLeft = pool - mitigated;
+        int condAttackLoss = Math.Max(0, condAttack - poolLeft);
         int maxLoss = minLoss + condAttackLoss + condUnblockable;
 
         int incoming = guaranteedAttack + guaranteedUnblockable;
 
         return new ForecastResult(incoming, mitigated, minLoss, maxLoss,
-            block, inp.CurrentHp, inp.MaxHp, inp.HasHidden, items);
+            block, osty, inp.CurrentHp, inp.MaxHp, inp.HasHidden, items);
     }
 }

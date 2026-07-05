@@ -88,8 +88,9 @@ internal sealed class ForecastLedgerView
             y += rowH;
 
             string lossStr = r.MinLoss == r.MaxLoss ? r.MinLoss.ToString() : $"{r.MinLoss}–{r.MaxLoss}";
+            string ostyStr = r.OstyAbsorb > 0 ? $"   Osty {r.OstyAbsorb}" : "";
             var foot = Next(ref cur, F(13, sc), r.IsLethal ? UiTheme.Red : UiTheme.Cream);
-            foot.Text = $"In {r.Incoming}   Block {r.Block}   Loss {lossStr}";
+            foot.Text = $"In {r.Incoming}   Block {r.Block}{ostyStr}   Loss {lossStr}";
             foot.SetPosition(new Vector2(pad, y));
             y += 22f * sc;
 

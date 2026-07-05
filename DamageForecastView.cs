@@ -178,9 +178,10 @@ internal sealed class DamageForecastView
 
             string lossStr = r.MinLoss == r.MaxLoss ? r.MinLoss.ToString() : $"{r.MinLoss}–{r.MaxLoss}";
             string hidden = r.HasHidden ? "  +?" : "";
+            string osty = r.OstyAbsorb > 0 ? $"   Osty {r.OstyAbsorb}" : "";
             string statsText = r.IsSafe
-                ? $"Safe ✓   Block {r.Block}{hidden}"
-                : $"In {r.Incoming}   Block {r.Block}   Loss {lossStr}{hidden}";
+                ? $"Safe ✓   Block {r.Block}{osty}{hidden}"
+                : $"In {r.Incoming}   Block {r.Block}{osty}   Loss {lossStr}{hidden}";
             var statColor = r.IsLethal ? UiTheme.Red : (r.IsSafe ? Green : UiTheme.Cream);
             UiTheme.Apply(_stats, F(13, sc), statColor);
             _stats.Text = statsText;
@@ -201,19 +202,19 @@ internal sealed class DamageForecastView
         float x0 = 8 * sc;
         float barW = _w - 16 * sc;
 
-        int block = Math.Max(0, r.Block);
         int hp = Math.Max(0, r.CurrentHp);
-        int denom = Math.Max(1, block + hp);
-        float shieldW = barW * block / denom;
+        int shieldPool = Math.Max(0, r.Block) + Math.Max(0, r.OstyAbsorb); // block + Osty absorb attacks
+        int denom = Math.Max(1, shieldPool + hp);
+        float shieldW = barW * shieldPool / denom;
         float hpW = barW * hp / denom;
         float hpX = x0 + shieldW;
 
         // Track background under the whole bar.
         Place(_track, x0, barY, barW, barH);
 
-        // Shield buffer (block); consumed portion (mitigated) rendered darker on its left.
+        // Shield buffer (block + Osty); consumed portion (mitigated) rendered darker on its left.
         Place(_shield, x0, barY, shieldW, barH);
-        float usedW = block > 0 ? shieldW * Math.Min(block, r.Mitigated) / block : 0f;
+        float usedW = shieldPool > 0 ? shieldW * Math.Min(shieldPool, r.Mitigated) / shieldPool : 0f;
         Place(_shieldUsed, x0, barY, usedW, barH);
 
         // HP track: loss eats in from the right. minLoss (solid) and up-to-max (translucent) clamp to HP.

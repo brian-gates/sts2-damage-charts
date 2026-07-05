@@ -12,7 +12,10 @@ public class DamageForecastTests
         new("Offering", ForecastKind.SelfCard, 1, amount, blockable: false, conditional: true);
 
     private static ForecastResult Run(int hp, int maxHp, int block, bool hidden, params ForecastItem[] items) =>
-        DamageForecast.Compute(new ForecastInputs(hp, maxHp, block, hidden, new List<ForecastItem>(items)));
+        DamageForecast.Compute(new ForecastInputs(hp, maxHp, block, 0, hidden, new List<ForecastItem>(items)));
+
+    private static ForecastResult RunOsty(int hp, int block, int ostyAbsorb, params ForecastItem[] items) =>
+        DamageForecast.Compute(new ForecastInputs(hp, 50, block, ostyAbsorb, false, new List<ForecastItem>(items)));
 
     [Fact]
     public void SingleAttackNoBlock_LossEqualsDamage()
@@ -93,6 +96,35 @@ public class DamageForecastTests
     {
         var r = Run(5, 50, 0, false, Attack(8));
         Assert.True(r.IsLethal);
+    }
+
+    [Fact]
+    public void OstyAbsorbsAttack_NoBlock_NoLoss()
+    {
+        // 8 attack, no block, Osty pool 10 -> Osty eats it all, 0 loss, safe.
+        var r = RunOsty(40, 0, 10, Attack(8));
+        Assert.Equal(8, r.Mitigated);
+        Assert.Equal(0, r.MinLoss);
+        Assert.True(r.IsSafe);
+    }
+
+    [Fact]
+    public void OstyPlusBlock_Pooled_OverflowCarries()
+    {
+        // 20 attack; block 5 + Osty 10 = 15 pool -> 5 overflow to HP.
+        var r = RunOsty(40, 5, 10, Attack(20));
+        Assert.Equal(15, r.Mitigated);
+        Assert.Equal(5, r.MinLoss);
+        Assert.Equal(10, r.OstyAbsorb);
+    }
+
+    [Fact]
+    public void OstyDoesNotAbsorbDots()
+    {
+        // 6 attack fully eaten by Osty 10; 3 bleed bypasses Osty -> 3 loss.
+        var r = RunOsty(40, 0, 10, Attack(6), Dot(3));
+        Assert.Equal(3, r.MinLoss);
+        Assert.False(r.IsSafe);
     }
 
     [Fact]
