@@ -715,6 +715,7 @@ public static class DamageChartsMod
         _summaryActive = false; // a new fight clears any lingering end-of-combat summary
         _recapVisible = false;   // the recap is an out-of-combat view
         _combatResolved = false; // until enemies/player actually die, this combat hasn't ended naturally
+        _allEnemiesDeadFrames = 0;
         _localSlot = localSlot;
         _tracker.Reset(_players.Count, labels, localSlot);
         _pending.Clear();
@@ -812,11 +813,16 @@ public static class DamageChartsMod
                 return true; // local player defeated
             bool anyEnemyAlive = false, anyEnemy = false;
             foreach (var e in cs.Enemies) { if (e == null) continue; anyEnemy = true; if (e.IsAlive) { anyEnemyAlive = true; break; } }
-            if (anyEnemy && !anyEnemyAlive) return true; // all enemies defeated
+            // Debounce: splitting enemies (Phrog -> wrigglers) leave a frame with all enemies momentarily
+            // dead before the spawns register. Require the empty state to persist so we don't latch
+            // "resolved" and hide the HUD mid-fight. Real wins hold and resolve within ~0.5s.
+            if (anyEnemy && !anyEnemyAlive) { if (++_allEnemiesDeadFrames >= 30) return true; }
+            else _allEnemiesDeadFrames = 0;
         }
         catch { }
         return false;
     }
+    private static int _allEnemiesDeadFrames;
 
     private static void OnBlockChanged(Creature creature, int oldBlock, int newBlock)
     {

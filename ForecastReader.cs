@@ -245,8 +245,10 @@ internal static class ForecastReader
         catch { }
     }
 
-    // Cards in hand whose description says they cost the player HP. Conditional — only counts if played,
-    // so it widens the range MAX. Description-scan heuristic (no hard-coded card list). Bypass block.
+    // Cards in hand that cost the player HP. Two flavors:
+    //   • Infection-style cards that bite at end of turn while held → GUARANTEED loss (counts toward min).
+    //   • Cards that only cost HP when played → CONDITIONAL (widens the max only).
+    // Amount comes from the card's HpLoss field, falling back to a "lose N HP" description scan.
     private static void ReadSelfDamageCards(CombatState cs, IReadOnlyList<Player> players, int localSlot, List<ForecastItem> items)
     {
         try
@@ -259,13 +261,22 @@ internal static class ForecastReader
             foreach (var card in cards)
             {
                 if (card == null) continue;
-                string? desc = TextHelper.SafeGetText(() =>
-                    GetProp(card, "Description") ?? GetProp(card, "Text") ?? GetProp(card, "Body"));
-                if (desc == null) continue;
-                int hpCost = ParseHpLoss(desc);
-                if (hpCost <= 0) continue;
-                string label = TextHelper.SafeGetText(() => GetProp(card, "Title")) ?? "Card";
-                items.Add(new ForecastItem(label, ForecastKind.SelfCard, 1, hpCost, blockable: false, conditional: true));
+                string tn = card.GetType().Name;
+                int hpLoss = GetInt(card, "HpLoss");
+                if (hpLoss <= 0)
+                {
+                    string? desc = TextHelper.SafeGetText(() =>
+                        GetProp(card, "Description") ?? GetProp(card, "Text") ?? GetProp(card, "Body"));
+                    if (desc != null) hpLoss = ParseHpLoss(desc);
+                }
+                if (hpLoss <= 0) continue;
+
+                string label = TextHelper.SafeGetText(() => GetProp(card, "Title")) ?? tn;
+                bool heldDamage = Contains(tn, "Infection") || Contains(tn, "Parasite");
+                if (heldDamage)
+                    items.Add(new ForecastItem(label, ForecastKind.Dot, 1, hpLoss, blockable: false, conditional: false));
+                else
+                    items.Add(new ForecastItem(label, ForecastKind.SelfCard, 1, hpLoss, blockable: false, conditional: true));
             }
         }
         catch { }
