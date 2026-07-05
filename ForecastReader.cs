@@ -101,6 +101,33 @@ internal static class ForecastReader
     private static readonly System.Text.RegularExpressions.Regex SelfHarmRx = new(
         @"\b(take|lose)\b.{0,40}\b(damage|hp|health)\b",
         System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Singleline);
+    // The number right after take/lose in resolved card text, e.g. "take 5 damage" -> 5.
+    private static readonly System.Text.RegularExpressions.Regex SelfDamageRx = new(
+        @"\b(?:take|lose)\s+(\d+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    private static int ParseSelfDamage(string desc)
+    {
+        var m = SelfDamageRx.Match(desc);
+        return m.Success && int.TryParse(m.Groups[1].Value, out int n) ? n : 0;
+    }
+
+    // The card's description with {Damage}-style templates resolved to real numbers. GetDescriptionForPile
+    // needs the pile context to fill them in; the plain Description property does not.
+    private static string? ResolveCardText(object card)
+    {
+        try
+        {
+            var m = FindMethod(card, "GetDescriptionForPile", 1);
+            if (m == null) return null;
+            var pileType = m.GetParameters()[0].ParameterType;
+            if (!pileType.IsEnum) return null;
+            object hand = Enum.Parse(pileType, "Hand");
+            object? res = m.Invoke(card, new[] { hand });
+            string? s = res as string ?? (res != null ? TextHelper.SafeGetText(() => res) : null);
+            return s != null ? TextHelper.StripRichTextTags(s) : null;
+        }
+        catch { return null; }
+    }
 
     // The number the player sees. The intent's own display label (GetIntentLabel(targets, self)) already
     // applies the attacker's Strength and the target's Vulnerable — DamageCalc alone is the raw base, so
@@ -225,6 +252,27 @@ internal static class ForecastReader
         return 0;
     }
 
+    // Like GetInt but rounds decimal/double values (some game numbers are Decimal, e.g. CalculatedDamage).
+    private static int GetNum(object obj, params string[] names)
+    {
+        foreach (var n in names)
+        {
+            var v = GetProp(obj, n);
+            switch (v)
+            {
+                case null: continue;
+                case int i: return i;
+                case decimal de: return (int)Math.Round(de, MidpointRounding.AwayFromZero);
+                case double db: return (int)Math.Round(db, MidpointRounding.AwayFromZero);
+                case float fl: return (int)Math.Round(fl, MidpointRounding.AwayFromZero);
+                default:
+                    if (double.TryParse(v.ToString(), out double d) && d != 0) return (int)Math.Round(d, MidpointRounding.AwayFromZero);
+                    break;
+            }
+        }
+        return 0;
+    }
+
     private static readonly string[] DotKeywords = { "Bleed", "Burn", "Poison", "Regret", "Bomb", "Constrict" };
 
     // Player powers that tick HP loss this turn regardless of action. Damage magnitude is the power's
@@ -267,17 +315,17 @@ internal static class ForecastReader
             {
                 if (card == null) continue;
                 string tn = card.GetType().Name;
-                string desc = TextHelper.SafeGetText(() =>
-                    GetProp(card, "Description") ?? GetProp(card, "Text") ?? GetProp(card, "Body")) ?? "";
+                // GetDescriptionForPile(Hand) resolves the {Damage} template to the real number; the raw
+                // Description LocString leaves it as "{Damage:diff()}".
+                string desc = ResolveCardText(card)
+                    ?? TextHelper.SafeGetText(() => GetProp(card, "Description") ?? GetProp(card, "Text")) ?? "";
 
                 // Self-harm cards say "take N damage" / "lose N HP" (as opposed to attacks that "deal" it).
-                bool selfHarm = SelfHarmRx.IsMatch(desc);
-                if (!selfHarm) continue;
+                if (!SelfHarmRx.IsMatch(desc)) continue;
 
-                // Amount: a literal in the text if present, else the card's Damage/HpLoss field (the text
-                // usually shows a {Damage} template that doesn't resolve to a number here).
-                int amount = ParseHpLoss(desc);
-                if (amount <= 0) amount = GetInt(card, "HpLoss", "Damage", "BaseDamage");
+                // Amount: the number right after "take"/"lose" in the resolved text; fall back to fields.
+                int amount = ParseSelfDamage(desc);
+                if (amount <= 0) amount = GetNum(card, "CalculatedDamage", "HpLoss", "Damage", "BaseDamage");
                 if (amount <= 0) continue;
 
                 string label = TextHelper.SafeGetText(() => GetProp(card, "Title")) ?? tn;
@@ -303,9 +351,10 @@ internal static class ForecastReader
                 if (c == null) continue;
                 string tn = c.GetType().Name;
                 int hp = GetInt(c, "HpLoss");
+                int calc = GetNum(c, "CalculatedDamage");
                 int dmg = GetInt(c, "Damage", "BaseDamage");
-                string? desc = TextHelper.SafeGetText(() => GetProp(c, "Description") ?? GetProp(c, "Text") ?? GetProp(c, "Body"));
-                sb.Append($"[{tn} HpLoss={hp} Damage={dmg} desc=\"{(desc ?? "").Replace("\n", " ")}\"] ");
+                string? desc = ResolveCardText(c) ?? TextHelper.SafeGetText(() => GetProp(c, "Description"));
+                sb.Append($"[{tn} HpLoss={hp} Calc={calc} Damage={dmg} desc=\"{(desc ?? "").Replace("\n", " ")}\"] ");
             }
             string s = sb.ToString();
             if (s != _lastHandDbg) { _lastHandDbg = s; Godot.GD.Print($"[STS2 Damage] DIAG hand: {s}"); }

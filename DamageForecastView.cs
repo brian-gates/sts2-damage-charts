@@ -16,8 +16,8 @@ internal sealed class DamageForecastView
     private const float BaseMargin = 14f;
 
     private static readonly Color Green = new(0.42f, 0.83f, 0.36f);
-    private static readonly Color Shield = new(0.55f, 0.72f, 1f, 0.55f);
-    private static readonly Color ShieldUsed = new(0.30f, 0.45f, 0.75f, 0.85f);
+    private static readonly Color Shield = new(0.55f, 0.72f, 1f, 0.7f);      // block = sky blue
+    private static readonly Color OstyColor = new(0.72f, 0.45f, 0.90f, 0.7f); // Osty = violet
     private static readonly Color LossMin = UiTheme.Red;
     private static readonly Color LossMax = new(UiTheme.Red.R, UiTheme.Red.G, UiTheme.Red.B, 0.40f);
     private static readonly Color TrackBg = new(0f, 0f, 0f, 0.35f);
@@ -30,7 +30,7 @@ internal sealed class DamageForecastView
     private readonly Label _stats;
     private readonly ColorRect _track;
     private readonly ColorRect _shield;
-    private readonly ColorRect _shieldUsed;
+    private readonly ColorRect _osty;
     private readonly ColorRect _green;
     private readonly ColorRect _lossMin;
     private readonly ColorRect _lossMax;
@@ -68,7 +68,7 @@ internal sealed class DamageForecastView
 
         _track = NewRect(TrackBg);
         _shield = NewRect(Shield);
-        _shieldUsed = NewRect(ShieldUsed);
+        _osty = NewRect(OstyColor);
         _green = NewRect(Green);
         _lossMax = NewRect(LossMax);   // painted before min so min sits on top
         _lossMin = NewRect(LossMin);
@@ -203,19 +203,20 @@ internal sealed class DamageForecastView
         float barW = _w - 16 * sc;
 
         int hp = Math.Max(0, r.CurrentHp);
-        int shieldPool = Math.Max(0, r.Block) + Math.Max(0, r.OstyAbsorb); // block + Osty absorb attacks
-        int denom = Math.Max(1, shieldPool + hp);
-        float shieldW = barW * shieldPool / denom;
+        int block = Math.Max(0, r.Block);
+        int ostyPool = Math.Max(0, r.OstyAbsorb);
+        int denom = Math.Max(1, block + ostyPool + hp);
+        float blockW = barW * block / denom;
+        float ostyW = barW * ostyPool / denom;
         float hpW = barW * hp / denom;
-        float hpX = x0 + shieldW;
+        float hpX = x0 + blockW + ostyW;
 
         // Track background under the whole bar.
         Place(_track, x0, barY, barW, barH);
 
-        // Shield buffer (block + Osty); consumed portion (mitigated) rendered darker on its left.
-        Place(_shield, x0, barY, shieldW, barH);
-        float usedW = shieldPool > 0 ? shieldW * Math.Min(shieldPool, r.Mitigated) / shieldPool : 0f;
-        Place(_shieldUsed, x0, barY, usedW, barH);
+        // Shield buffer, split into distinct segments: block (blue) then Osty (violet).
+        Place(_shield, x0, barY, blockW, barH);
+        Place(_osty, x0 + blockW, barY, ostyW, barH);
 
         // HP track: loss eats in from the right. minLoss (solid) and up-to-max (translucent) clamp to HP.
         int minLossHp = Math.Clamp(r.MinLoss, 0, hp);
