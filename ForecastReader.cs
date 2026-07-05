@@ -97,6 +97,10 @@ internal static class ForecastReader
     }
 
     private static readonly System.Text.RegularExpressions.Regex NumRx = new(@"\d+");
+    // "take ... damage" / "lose ... HP|health" — self-harm, as opposed to attacks that "deal" damage.
+    private static readonly System.Text.RegularExpressions.Regex SelfHarmRx = new(
+        @"\b(take|lose)\b.{0,40}\b(damage|hp|health)\b",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Singleline);
 
     // The number the player sees. The intent's own display label (GetIntentLabel(targets, self)) already
     // applies the attacker's Strength and the target's Vulnerable — DamageCalc alone is the raw base, so
@@ -258,26 +262,53 @@ internal static class ForecastReader
             if (hand == null) return;
             object? cardsObj = GetProp(hand, "Cards") ?? hand; // hand is a CardPile; its list is under .Cards
             if (cardsObj is not IEnumerable cards) return;
+            if (Debug) DebugHand(cards);
             foreach (var card in cards)
             {
                 if (card == null) continue;
                 string tn = card.GetType().Name;
-                int hpLoss = GetInt(card, "HpLoss");
-                if (hpLoss <= 0)
-                {
-                    string? desc = TextHelper.SafeGetText(() =>
-                        GetProp(card, "Description") ?? GetProp(card, "Text") ?? GetProp(card, "Body"));
-                    if (desc != null) hpLoss = ParseHpLoss(desc);
-                }
-                if (hpLoss <= 0) continue;
+                string desc = TextHelper.SafeGetText(() =>
+                    GetProp(card, "Description") ?? GetProp(card, "Text") ?? GetProp(card, "Body")) ?? "";
+
+                // Self-harm cards say "take N damage" / "lose N HP" (as opposed to attacks that "deal" it).
+                bool selfHarm = SelfHarmRx.IsMatch(desc);
+                if (!selfHarm) continue;
+
+                // Amount: a literal in the text if present, else the card's Damage/HpLoss field (the text
+                // usually shows a {Damage} template that doesn't resolve to a number here).
+                int amount = ParseHpLoss(desc);
+                if (amount <= 0) amount = GetInt(card, "HpLoss", "Damage", "BaseDamage");
+                if (amount <= 0) continue;
 
                 string label = TextHelper.SafeGetText(() => GetProp(card, "Title")) ?? tn;
-                bool heldDamage = Contains(tn, "Infection") || Contains(tn, "Parasite");
-                if (heldDamage)
-                    items.Add(new ForecastItem(label, ForecastKind.Dot, 1, hpLoss, blockable: false, conditional: false));
+                // "if this is in your hand" / end-of-turn bite = guaranteed loss; otherwise conditional on play.
+                bool held = Contains(desc, "in your hand") || Contains(desc, "end of your turn") || Contains(tn, "Infection");
+                if (held)
+                    items.Add(new ForecastItem(label, ForecastKind.Dot, 1, amount, blockable: false, conditional: false));
                 else
-                    items.Add(new ForecastItem(label, ForecastKind.SelfCard, 1, hpLoss, blockable: false, conditional: true));
+                    items.Add(new ForecastItem(label, ForecastKind.SelfCard, 1, amount, blockable: false, conditional: true));
             }
+        }
+        catch { }
+    }
+
+    private static string _lastHandDbg = "";
+    private static void DebugHand(IEnumerable cards)
+    {
+        try
+        {
+            var sb = new System.Text.StringBuilder();
+            foreach (var c in cards)
+            {
+                if (c == null) continue;
+                string tn = c.GetType().Name;
+                int hp = GetInt(c, "HpLoss");
+                int dmg = GetInt(c, "Damage", "BaseDamage");
+                string? desc = TextHelper.SafeGetText(() => GetProp(c, "Description") ?? GetProp(c, "Text") ?? GetProp(c, "Body"));
+                sb.Append($"[{tn} HpLoss={hp} Damage={dmg} desc=\"{(desc ?? "").Replace("\n", " ")}\"] ");
+            }
+            string s = sb.ToString();
+            if (s != _lastHandDbg) { _lastHandDbg = s; Godot.GD.Print($"[STS2 Damage] DIAG hand: {s}"); }
         }
         catch { }
     }
