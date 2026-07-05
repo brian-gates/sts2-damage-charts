@@ -570,10 +570,12 @@ public static class DamageChartsMod
                         if (_detail.TakeCloseRequest()) { _detailVisible = false; _detail.SetVisible(false); } // ✕ clicked
 
                     }
-                    else if (_combatResolved)
+                    else if (IsFightEndingNow())
                     {
-                        // The fight is won/lost (or winding down) — drop the always-on HUD now rather than
-                        // leaving it up through the victory/defeat sequence until combat formally ends.
+                        // The fight is genuinely winding down to victory/defeat — drop the always-on HUD.
+                        // Uses a LIVE check (game ending flags / player dead), not the sticky _combatResolved:
+                        // splitting enemies (Phrog -> wrigglers) momentarily clear the board, and a sticky
+                        // latch there would hide the HUD for the rest of the fight.
                         _bars?.Hide(); _tooltip?.Hide(); _detail?.SetVisible(false); _forecast?.Hide(); _forecastLedger?.Hide();
                     }
                     else
@@ -799,6 +801,18 @@ public static class DamageChartsMod
     // Did this combat reach a natural conclusion (win/lose) rather than being abandoned (quit to menu)?
     // The game's own end-of-combat flags are the reliable signal — they're set as combat winds down to
     // victory/defeat but not when combat is torn down by leaving. Creature-death checks are a fallback.
+    // Live "the fight is ending right now" — the game's own victory/defeat flags, or the local player
+    // being dead. Deliberately excludes the all-enemies-dead heuristic so splitting enemies don't read
+    // as resolved mid-fight. Used to hide the in-combat HUD; the sticky _combatResolved drives the summary.
+    private static bool IsFightEndingNow()
+    {
+        try { var cm = CombatManager.Instance; if (cm != null && (cm.IsOverOrEnding || cm.IsEnding)) return true; }
+        catch { }
+        try { if (_localSlot >= 0 && _localSlot < _players.Count && _players[_localSlot]?.Creature?.IsDead == true) return true; }
+        catch { }
+        return false;
+    }
+
     private static bool IsCombatResolved(CombatState cs)
     {
         try
