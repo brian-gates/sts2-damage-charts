@@ -27,7 +27,14 @@ internal sealed class DamageForecastView
     private readonly Panel _bg;
     private readonly Control _barLayer;
     private readonly Label _title;
-    private readonly Label _stats;
+    private readonly RichTextLabel _stats;
+
+    // BBCode hex tags matching the bar segments, so each value reads in its own color.
+    private const string BlockHex = "8cb8ff";  // block = sky blue
+    private const string OstyHex = "c08cf0";   // Osty = violet
+    private const string LossHex = "ff5555";   // loss = red
+    private const string GreenHex = "6bd45c";  // safe
+    private const string GoldHex = "efc851";   // hidden flag
     private readonly ColorRect _track;
     private readonly ColorRect _shield;
     private readonly ColorRect _osty;
@@ -77,7 +84,15 @@ internal sealed class DamageForecastView
         _title.Text = "Incoming Forecast";
         _container.AddChild(_title);
 
-        _stats = UiTheme.MakeLabel(12, UiTheme.Cream);
+        _stats = new RichTextLabel
+        {
+            BbcodeEnabled = true,
+            FitContent = true,
+            ScrollActive = false,
+            AutowrapMode = TextServer.AutowrapMode.Off,
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+        };
+        UiTheme.Apply(_stats, 12, UiTheme.Cream);
         _container.AddChild(_stats);
 
         if (savedPosFrac.HasValue) { _posFrac = savedPosFrac.Value; _posFracInit = true; }
@@ -177,13 +192,13 @@ internal sealed class DamageForecastView
             _title.SetPosition(new Vector2(8 * sc, 4 * sc));
 
             string lossStr = r.MinLoss == r.MaxLoss ? r.MinLoss.ToString() : $"{r.MinLoss}–{r.MaxLoss}";
-            string hidden = r.HasHidden ? "  +?" : "";
-            string osty = r.OstyAbsorb > 0 ? $"   Osty {r.OstyAbsorb}" : "";
+            string hidden = r.HasHidden ? $"  [color=#{GoldHex}]+?[/color]" : "";
+            string block = $"[color=#{BlockHex}]Block {r.Block}[/color]";
+            string osty = r.OstyAbsorb > 0 ? $"   [color=#{OstyHex}]Osty {r.OstyAbsorb}[/color]" : "";
             string statsText = r.IsSafe
-                ? $"Safe ✓   Block {r.Block}{osty}{hidden}"
-                : $"In {r.Incoming}   Block {r.Block}{osty}   Loss {lossStr}{hidden}";
-            var statColor = r.IsLethal ? UiTheme.Red : (r.IsSafe ? Green : UiTheme.Cream);
-            UiTheme.Apply(_stats, F(13, sc), statColor);
+                ? $"[color=#{GreenHex}]Safe ✓[/color]   {block}{osty}{hidden}"
+                : $"In {r.Incoming}{hidden}   {block}{osty}   [color=#{LossHex}]Loss {lossStr}[/color]";
+            UiTheme.Apply(_stats, F(13, sc), UiTheme.Cream);
             _stats.Text = statsText;
             _stats.SetPosition(new Vector2(8 * sc, _headerH + 2 * sc));
 

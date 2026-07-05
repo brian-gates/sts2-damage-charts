@@ -153,6 +153,16 @@ internal static class UiTheme
         lbl.AddThemeConstantOverride("outline_size", 4);
     }
 
+    // For a RichTextLabel driven by BBCode [color] tags, so a single line can mix per-value colors.
+    public static void Apply(RichTextLabel rtl, int fontSize, Color defaultColor)
+    {
+        if (_font != null) rtl.AddThemeFontOverride("normal_font", _font);
+        rtl.AddThemeFontSizeOverride("normal_font_size", Math.Max(1, fontSize));
+        rtl.AddThemeColorOverride("default_color", defaultColor);
+        rtl.AddThemeColorOverride("font_outline_color", Outline);
+        rtl.AddThemeConstantOverride("outline_size", 4);
+    }
+
     private static T? FindFirst<T>(Node start) where T : Node
     {
         try
