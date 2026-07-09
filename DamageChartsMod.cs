@@ -34,7 +34,9 @@ public static class DamageChartsMod
     private static Callable _tickCallable;     // stored so we can disconnect ProcessFrame on disable
     private static readonly string[] HarmonyIds =
         { "com.sts2damagecharts", "com.sts2damagecharts.suppress", "com.sts2damagecharts.deck", "com.sts2damagecharts.powers" };
-    private static bool _showBars = true;
+    // Default OFF: the always-on per-round recap chart read as "too much" for casual players. History
+    // now lives on-demand in the threat panel's hover timeline; opt back in via config "show_bars": true.
+    private static bool _showBars;
     private static bool _showForecast = true;
     private static float? _fcPosXFrac;
     private static float? _fcPosYFrac;
@@ -131,7 +133,7 @@ public static class DamageChartsMod
 
             if (!File.Exists(path))
             {
-                try { File.WriteAllText(path, "{\n  \"enabled\": true,\n  \"hotkey\": \"c\",\n  \"show_bars\": true\n}\n"); }
+                try { File.WriteAllText(path, "{\n  \"enabled\": true,\n  \"hotkey\": \"c\",\n  \"show_bars\": false\n}\n"); }
                 catch { }
                 RememberConfigWriteTime(path);
                 return true;
@@ -141,7 +143,7 @@ public static class DamageChartsMod
             using var doc = JsonDocument.Parse(File.ReadAllText(path));
             var root = doc.RootElement;
             if (root.TryGetProperty("enabled", out var en) && en.ValueKind == JsonValueKind.False) return false;
-            if (root.TryGetProperty("show_bars", out var sb) && sb.ValueKind == JsonValueKind.False) _showBars = false;
+            if (root.TryGetProperty("show_bars", out var sb) && sb.ValueKind == JsonValueKind.True) _showBars = true;
             if (root.TryGetProperty("forecast", out var fc) && fc.ValueKind == JsonValueKind.False) _showForecast = false;
             if (root.TryGetProperty("forecast_pos_x_frac", out var fpx) && fpx.TryGetSingle(out var ffx)) _fcPosXFrac = ffx;
             if (root.TryGetProperty("forecast_pos_y_frac", out var fpy) && fpy.TryGetSingle(out var ffy)) _fcPosYFrac = ffy;
@@ -219,7 +221,7 @@ public static class DamageChartsMod
                     GD.Print($"[STS2 Damage] hotkey reloaded live: {_hotkeySpec}");
                 }
             }
-            bool showBars = !(root.TryGetProperty("show_bars", out var sb) && sb.ValueKind == JsonValueKind.False);
+            bool showBars = root.TryGetProperty("show_bars", out var sb) && sb.ValueKind == JsonValueKind.True;
             if (showBars != _showBars)
             {
                 _showBars = showBars;
@@ -662,7 +664,7 @@ public static class DamageChartsMod
             _forecast.Render(r);
             if (_forecast.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left))) SaveConfig();
             if (!_forecast.IsDragging && _forecast.IsHovered() && _forecast.LastResult is { } last)
-                _forecastLedger?.Render(last, RootMouse());
+                _forecastLedger?.Render(last, _tracker.Snapshot(), _localSlot, cs.RoundNumber, RootMouse());
             else _forecastLedger?.Hide();
             if (ForecastReader.Debug)
             {
@@ -749,6 +751,95 @@ public static class DamageChartsMod
         GD.Print($"[STS2 Damage] combat end (summary={_summaryActive})");
     }
 
+    private static bool _layersDumped;
+
+    // One-shot: locate the game nodes we want to draw onto (player health bar, End Turn button) and log
+    // their type, screen rect, and any readable HP so we can identify the player's bar and anchor overlays.
+    private static void DumpTargetNodes(Node root)
+    {
+        try
+        {
+            foreach (var n in FindByTypeName(root, "NHealthBar"))
+            {
+                string rect = n is Control c ? c.GetGlobalRect().ToString() : "(not Control)";
+                string cr = "";
+                try
+                {
+                    object? creature = InstanceGet(n, "Creature") ?? InstanceGet(n.GetParentOrNull<Node>(), "Creature");
+                    if (creature != null) cr = $" creature.hp={ForecastReaderPeekHp(creature)} isPlayer={InstanceGet(creature, "IsPlayer")}";
+                }
+                catch { }
+                GD.Print($"[STS2 Damage] NODE NHealthBar rect={rect} vis={(n as CanvasItem)?.Visible}{cr}");
+            }
+            foreach (var n in FindByTypeName(root, "NEndTurnButton"))
+            {
+                string rect = n is Control c ? c.GetGlobalRect().ToString() : "(not Control)";
+                GD.Print($"[STS2 Damage] NODE NEndTurnButton type={n.GetType().Name} rect={rect}");
+            }
+        }
+        catch (Exception ex) { GD.PrintErr($"[STS2 Damage] node dump failed: {ex.Message}"); }
+    }
+
+    private static List<Node> FindByTypeName(Node start, string typeName)
+    {
+        var found = new List<Node>();
+        void Walk(Node n)
+        {
+            try
+            {
+                if (n.GetType().Name == typeName) found.Add(n);
+                foreach (var c in n.GetChildren()) Walk(c);
+            }
+            catch { }
+        }
+        Walk(start);
+        return found;
+    }
+
+    private static object? InstanceGet(object? obj, string prop)
+    {
+        if (obj == null) return null;
+        try { return obj.GetType().GetProperty(prop, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(obj); }
+        catch { return null; }
+    }
+
+    private static object? ForecastReaderPeekHp(object creature)
+    {
+        try { return creature.GetType().GetProperty("CurrentHp")?.GetValue(creature); } catch { return null; }
+    }
+
+    // One-shot: log every CanvasLayer in the tree with its Layer number and any hover-tip/preview/global-ui
+    // descendants, so we can place our overlays just below the game's tooltip layer.
+    private static void DumpCanvasLayers(Node node, int depth)
+    {
+        try
+        {
+            if (node is CanvasLayer cl)
+            {
+                string kids = "";
+                foreach (var t in new[] { "NHoverTip", "NCardPreview", "NGlobalUi", "NTooltip", "HoverTip", "Preview", "Modal" })
+                    if (FindDescendantNamed(cl, t)) { kids += t + " "; }
+                GD.Print($"[STS2 Damage] LAYER name='{cl.Name}' layer={cl.Layer} contains=[{kids}]");
+            }
+            foreach (var c in node.GetChildren()) DumpCanvasLayers(c, depth + 1);
+        }
+        catch { }
+    }
+
+    private static bool FindDescendantNamed(Node start, string sub)
+    {
+        try
+        {
+            foreach (var c in start.GetChildren())
+            {
+                if (c.GetType().Name.Contains(sub) || c.Name.ToString().Contains(sub)) return true;
+                if (c is not CanvasLayer && FindDescendantNamed(c, sub)) return true; // don't cross into nested layers
+            }
+        }
+        catch { }
+        return false;
+    }
+
     private static void EnsureViews()
     {
         try
@@ -756,6 +847,7 @@ public static class DamageChartsMod
             var root = ((SceneTree)Engine.GetMainLoop()).Root;
             UiTheme.EnsureFont(root);
             UiTheme.EnsurePanelStyle(root);
+            if (ForecastReader.Debug && !_layersDumped) { _layersDumped = true; DumpCanvasLayers(root, 0); DumpTargetNodes(root); }
             Vector2? savedPos = (_posXFrac.HasValue && _posYFrac.HasValue) ? new Vector2(_posXFrac.Value, _posYFrac.Value) : null;
             if (_bars == null || !_bars.IsValid()) _bars = new DamageChartView(root, savedPos);
             Vector2? fcPos = (_fcPosXFrac.HasValue && _fcPosYFrac.HasValue) ? new Vector2(_fcPosXFrac.Value, _fcPosYFrac.Value) : (Vector2?)null;
