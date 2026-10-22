@@ -234,8 +234,41 @@ Two conclusions from this test:
    *after* the observer/handler are already installed and only disables event reporting; moving the
    suppression ahead of `init()` prevents the observer from ever registering.
 
+## Update 2026-10-22: exact trigger is the native `shutdown` call; not Workshop-specific
+
+**Manual installs are affected too.** On v0.107.1 (macOS, manual `mods/` install) the freeze reproduced
+in 5 of 6 launches, with our mod's hooks disabled and also with only an unrelated C# mod loaded. The
+log and stack are identical to the captures above.
+
+**Trigger:** `SentryService.AfterGameInit()` sees `ShouldStayAliveAfterInit()` return false
+(`[Sentry.NET] Is running modded`) and calls `SentryService.Shutdown()`. That disposes the .NET SDK and
+then calls `shutdown` on the native `SentryInit` node (`[Sentry.GDExtension] Shutting down`). After
+that native shutdown the per-frame CFRunLoop observer is still registered and dereferences a freed
+object: main thread at `libsentry +0x737e8 → +0xcd3b4 → Object::get_instance_id()`, 100% of samples.
+
+**It is a timing race.** Launches that hung had the native shutdown land *before*
+`[INFO] Applying display settings...`; the launch that reached the menu had it land after display
+setup. A slower startup (e.g. a laptop on low battery) makes the bad ordering more likely. This also
+matches the earlier observation that an unmodded run of your test build hung *on quit* with the same
+stack: quitting calls the same native `shutdown`.
+
+**Confirmed by avoiding the call:** a Harmony prefix on `SentryService.Shutdown` that sets
+`SentryService._sentryInit = null` (so `Shutdown` still disposes the .NET SDK and flips `IsEnabled`, but
+skips the native `shutdown`) passed the freeze point in 3 of 3 launches on the same machine, with the
+native shutdown still happening before display setup.
+
+### Suggested fix (smallest)
+In the modded path, don't call the native `shutdown` while the run-loop observer is live. Either leave
+the GDExtension running with the `AlwaysRejectEvent` sampler that `DisableGdExtensionIfModded` already
+installs, or tear the observer down before (or as part of) `shutdown` in sentry-godot. The sentry-godot
+2.0.1 upgrade and the "don't `init()` when modded" options above still apply.
+
 ## Workaround (for mod authors, until fixed)
 
-Distribute via **manual install** (`mods/`) rather than Steam Workshop. Manual installs are unaffected.
-(We are **not** having the mod force-disable the game's Sentry from `Initialize` — that reaches into the
-game's telemetry; the correct fix is game-side, above.)
+~~Distribute via manual install (`mods/`) rather than Steam Workshop. Manual installs are unaffected.~~
+Manual installs are affected too (see the 2026-10-22 update).
+
+Damage Charts now ships the `_sentryInit = null` prefix on `SentryService.Shutdown` described above. This
+supersedes the earlier decision not to touch the game's Sentry from the mod: it does not force-disable or
+re-enable reporting. The game still disables itself; the mod only skips the native teardown call that
+hangs, and the native side keeps rejecting all events as the game intends for modded runs.
