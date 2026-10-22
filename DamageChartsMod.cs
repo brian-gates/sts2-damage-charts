@@ -25,7 +25,7 @@ namespace STS2_DamageCharts;
 public static class DamageChartsMod
 {
     private const string ConfigFileName = "STS2_DamageCharts.conf";
-    private const string BuildTag = "2026-06-21";  // stamped at init so logs identify the loaded DLL
+    private const string BuildTag = "2026-10-22";  // stamped at init so logs identify the loaded DLL
 
     private static readonly Color[] Palette = UiTheme.Players;
 
@@ -84,6 +84,8 @@ public static class DamageChartsMod
 
     public static void Initialize()
     {
+        // Applied before the config check: it protects game startup even when the overlay is disabled.
+        TryApplySentryShutdownWorkaround();
         try
         {
             if (!LoadConfig()) { GD.Print("[STS2 Damage] disabled via config"); return; }
@@ -100,6 +102,49 @@ public static class DamageChartsMod
             GD.Print($"[STS2 Damage] initialized (build {BuildTag}, source_hooks={_sourceHooks})");
         }
         catch (Exception ex) { GD.PrintErr($"[STS2 Damage] init failed: {ex.Message}"); }
+    }
+
+    // ===== Sentry startup-freeze workaround =====
+
+    // When any mod is loaded, SentryService.AfterGameInit calls SentryService.Shutdown(), which disposes
+    // the .NET SDK and then calls `shutdown` on the native sentry-godot node (SentryInit). The native
+    // shutdown leaves its per-frame CFRunLoop observer registered; depending on startup timing that observer
+    // touches a freed object and the main thread hangs before the main menu (stack: libsentry ->
+    // Object::get_instance_id). Reproduces with any C# mod, manual or Workshop install.
+    // Fix: null SentryService._sentryInit just before Shutdown runs, so the game still disposes the .NET SDK
+    // and disables itself but skips the native call. The native side keeps the AlwaysRejectEvent sampler the
+    // game installs for modded runs (DisableGdExtensionIfModded), so nothing extra is reported.
+    // Own Harmony id, deliberately not in HarmonyIds: the overlay's self-disable must not remove it.
+    private static FieldInfo? _sentryInitField;
+
+    private static void TryApplySentryShutdownWorkaround()
+    {
+        try
+        {
+            var svc = AccessTools.TypeByName("MegaCrit.Sts2.Core.Debug.SentryService");
+            var shutdown = svc != null ? AccessTools.DeclaredMethod(svc, "Shutdown") : null;
+            _sentryInitField = svc != null ? AccessTools.Field(svc, "_sentryInit") : null;
+            if (shutdown == null || _sentryInitField == null || !_sentryInitField.IsStatic)
+            {
+                GD.Print("[STS2 Damage] sentry shutdown workaround not applied (game changed?)");
+                return;
+            }
+            new Harmony("com.sts2damagecharts.sentry").Patch(shutdown,
+                prefix: new HarmonyMethod(typeof(DamageChartsMod).GetMethod(nameof(SentryShutdownPrefix), BindingFlags.NonPublic | BindingFlags.Static)));
+            GD.Print("[STS2 Damage] sentry shutdown workaround applied");
+        }
+        catch (Exception ex) { GD.PrintErr($"[STS2 Damage] sentry shutdown workaround skipped: {ex.Message}"); }
+    }
+
+    private static void SentryShutdownPrefix()
+    {
+        try
+        {
+            if (_sentryInitField?.GetValue(null) == null) return;
+            _sentryInitField.SetValue(null, null);
+            GD.Print("[STS2 Damage] skipped native Sentry shutdown (modded-startup freeze workaround)");
+        }
+        catch { /* never block the game's own shutdown path */ }
     }
 
     // ===== Config =====
