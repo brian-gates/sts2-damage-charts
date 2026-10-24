@@ -318,9 +318,12 @@ internal sealed class ForecastLedgerView
 internal static class ForecastIcons
 {
     private const ulong RetryMs = 5000;
+    private const int MaxBuildTries = 12;   // ~1 min of retries; a ModelDb that never answers stops costing scans
+    private const int MaxCachedLabels = 256;
     private static Dictionary<string, object>? _powers, _cards;
     private static ulong _lastBuildTry;
     private static bool _buildTried;
+    private static int _buildTries;
     private static readonly Dictionary<string, Texture2D?> _byLabel = new();
 
     public static Texture2D? For(ForecastItem it)
@@ -349,6 +352,7 @@ internal static class ForecastIcons
         Texture2D? tex = null;
         if (powerFirst) tex = PowerTex(n) ?? CardTex(n);
         else tex = CardTex(n);
+        if (_byLabel.Count >= MaxCachedLabels) _byLabel.Clear();
         _byLabel[key] = tex;
         return tex;
     }
@@ -384,7 +388,8 @@ internal static class ForecastIcons
         if (_powers != null && _cards != null) return true;
         ulong now = Time.GetTicksMsec();
         if (_buildTried && now - _lastBuildTry < RetryMs) return false;
-        _buildTried = true; _lastBuildTry = now;
+        if (_buildTries >= MaxBuildTries) return false;
+        _buildTried = true; _lastBuildTry = now; _buildTries++;
         try
         {
             var db = AccessTools.TypeByName("MegaCrit.Sts2.Core.Models.ModelDb");
