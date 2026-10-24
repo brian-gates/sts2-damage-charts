@@ -478,7 +478,9 @@ internal sealed class DamageDetailView
             float listBottom = LogListBottom(full);
             float logMinH = LogHeadH(full) + LogMinRows * LogLineH(full);
             float chartMinH = full ? 140f * _fontScale : 0f;
-            float belowCols = full ? vgap + chartMinH + vgap + logMinH : vgap + logMinH;
+            // Potions used: one row under the columns, only when any were used this scope.
+            float potH = ps.Potions.Count > 0 ? (full ? 30f * _fontScale : 24f) : 0f;
+            float belowCols = potH + (full ? vgap + chartMinH + vgap + logMinH : vgap + logMinH);
             int srcCount = Math.Max(1, Math.Max(ps.Dealt.Count, ps.Taken.Count));   // empty column = one "—" row
             int histShown = history ? Math.Min(RunFights!.Count, HistoryMaxRows) : 0;
             int fitRows;
@@ -495,6 +497,8 @@ internal sealed class DamageDetailView
             int maxRows = Math.Max(1, srcCount <= rowCap ? rowCap : rowCap - 1);
             int colLines = Math.Min(srcCount, maxRows) + (srcCount > maxRows ? 1 : 0);
             float colBottom = colTop + colHeadH + colLines * rowH;
+            float potY = colBottom + (potH > 0f ? vgap * 0.5f : 0f);
+            if (potH > 0f) colBottom = potY + potH;
 
             float chartTop = 0f, chartH = 0f, logTop;
             if (full)
@@ -533,6 +537,7 @@ internal sealed class DamageDetailView
 
             RenderColumn(ref cur, ref barCur, ref iconCur, leftX, colTop, colW, rowH, maxRows, full, "DEALT", ps.Dealt, ps.DealtTotal, color, false);
             RenderColumn(ref cur, ref barCur, ref iconCur, rightX, colTop, colW, rowH, maxRows, full, "TAKEN", ps.Taken, ps.TakenTotal, UiTheme.Red, true);
+            if (potH > 0f) RenderPotions(ref cur, ref iconCur, leftX, potY, _w - pad * 2f, ps.Potions, full);
 
             if (full && chartH > 0f)
                 RenderRoundChart(ref cur, ref barCur, ref iconCur, chart, palette, pad, chartTop, _w - pad * 2f, chartH, recap);
@@ -1027,6 +1032,47 @@ internal sealed class DamageDetailView
         bar.Visible = true;
         cursor++;
         return bar;
+    }
+
+    // "POTIONS" then each potion used (icon, name, xN when repeated) flowing left to right; whatever doesn't
+    // fit the width collapses into "+ N more".
+    private void RenderPotions(ref int cur, ref int iconCur, float x, float y, float width, List<SourceEntry> potions, bool full)
+    {
+        int textSize = full ? 14 : 12;
+        float iconSz = full ? 22f * _fontScale : 18f;
+        var green = new Color(0.55f, 0.85f, 0.55f);
+        var head = Next(ref cur, textSize, green, FontRole.Bold);
+        head.Text = "POTIONS";
+        head.SetPosition(new Vector2(x, y));
+        float cx = x + (full ? 90f * _fontScale : 66f);
+        float right = x + width;
+        float charW = textSize * _fontScale * 0.55f;   // rough Kreon advance, for fitting only
+        for (int i = 0; i < potions.Count; i++)
+        {
+            var e = potions[i];
+            string label = e.Total > 1 ? $"{e.Name} x{e.Total}" : e.Name;
+            float need = iconSz + 4f + label.Length * charW + 14f;
+            if (cx + need > right && i > 0)
+            {
+                var more = Next(ref cur, textSize, new Color(1f, 1f, 1f, 0.5f));
+                more.Text = $"+ {potions.Count - i} more";
+                more.SetPosition(new Vector2(cx, y));
+                break;
+            }
+            var tex = e.Icon != null ? LoadTex(e.Icon) : null;
+            if (tex != null)
+            {
+                var ic = NextIcon(ref iconCur);
+                ic.Texture = tex;
+                ic.SetPosition(new Vector2(cx, y - 2f));
+                ic.SetSize(new Vector2(iconSz, iconSz));
+                cx += iconSz + 4f;
+            }
+            var lbl = Next(ref cur, textSize, UiTheme.Cream);
+            lbl.Text = label;
+            lbl.SetPosition(new Vector2(cx, y));
+            cx += label.Length * charW + 14f;
+        }
     }
 
     private TextureRect NextIcon(ref int cursor)

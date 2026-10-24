@@ -107,6 +107,7 @@ public static class DamageChartsMod
             tree.Connect(SceneTree.SignalName.ProcessFrame, _tickCallable);
 
             TryApplyDamageHook();
+            TryApplyPotionHook();
             TryApplySuppressHook();
             if (_sourceHooks) TryApplyPowerSourceHooks();
             else GD.Print("[STS2 Damage] power-source hooks DISABLED via config");
@@ -342,6 +343,49 @@ public static class DamageChartsMod
             GD.Print("[STS2 Damage] damage dealer hook applied");
         }
         catch (Exception ex) { GD.PrintErr($"[STS2 Damage] damage hook skipped: {ex.GetType().Name}: {ex.Message}"); }
+    }
+
+    // Potions used: postfix on CombatHistory.PotionUsed (sts2.dll v0.107.1), which the game calls once a potion
+    // has actually resolved, right before it records a PotionUsedEntry. Plain (non-async) method; args are
+    // matched by type, not name: the PotionModel and the optional target Creature.
+    private static void TryApplyPotionHook()
+    {
+        try
+        {
+            var hist = AccessTools.TypeByName("MegaCrit.Sts2.Core.Combat.History.CombatHistory");
+            var method = hist != null ? AccessTools.Method(hist, "PotionUsed") : null;
+            if (method == null) { GD.Print("[STS2 Damage] potion hook not resolved; potions won't be listed"); return; }
+            var postfix = new HarmonyMethod(typeof(DamageChartsMod).GetMethod(nameof(PotionUsedPostfix), BindingFlags.NonPublic | BindingFlags.Static));
+            new Harmony("com.sts2damagecharts").Patch(method, postfix: postfix);
+            GD.Print("[STS2 Damage] potion hook applied");
+        }
+        catch (Exception ex) { GD.PrintErr($"[STS2 Damage] potion hook skipped: {ex.GetType().Name}: {ex.Message}"); }
+    }
+
+    private static void PotionUsedPostfix(object[] __args)
+    {
+        try
+        {
+            PotionModel? potion = null;
+            Creature? target = null;
+            foreach (var a in __args)
+            {
+                if (a is PotionModel p) potion = p;
+                else if (a is Creature c) target = c;
+            }
+            if (potion == null) return;
+            string name = TextHelper.SafeGetText(() => potion.Title) ?? "Potion";
+            int slot = SlotOf(potion.Owner);
+            if (slot < 0) slot = ActiveSlot();
+            string? icon = GameAssets.PotionIconPath(potion);
+            if (icon == null) { try { if (potion.ImagePath is string ip && ResourceLoader.Exists(ip)) icon = ip; } catch { } }
+            _tracker.AddPotion(slot, name, icon);
+            int round = SafeCombatState()?.RoundNumber ?? 0;
+            string onto = target == null ? "" : target.IsPlayer ? (target.Player == potion.Owner ? "" : $" → {MaybeName(target)}")
+                : $" → {TextHelper.SafeGetText(() => target.Monster!.Title) ?? "Enemy"}";
+            _tracker.AddLog(round, $"{name} used{onto}", false);
+        }
+        catch { /* never disrupt the game's potion flow */ }
     }
 
     // The game's hotkey dispatcher (NHotkeyManager._UnhandledInput) opens the deck/pile views on
