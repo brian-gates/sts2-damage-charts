@@ -64,10 +64,11 @@ internal sealed class DamageDetailView
     // _track/_grabber when the textures load. _sbHitL/_sbHitR is the horizontal grab band for UpdateMouse.
     private readonly Panel _nTrack;
     private readonly TextureRect _nCapTop, _nCapBot, _nKnob;
-    private StyleBoxTexture? _nTrackStyle, _nTrackStyleSmall;
+    private StyleBoxTexture? _nTrackStyle, _nTrackStyleSmall, _nTrackApplied;
     private float _sbHitL, _sbHitR;
     // Native backdrop: the game's dark_blur screen-space shader on _dim, eased in on open like NMainMenu.
     private ShaderMaterial? _blurMat;
+    private static readonly StringName BlurLod = "lod", BlurMix = "mix_percentage";
     private float _blurT;
     private readonly Dictionary<string, Texture2D?> _nameIconCache = new();
     // Self-drawn close/back button (full-screen only), animated by us from the poll loop. Interaction is
@@ -847,9 +848,11 @@ internal sealed class DamageDetailView
                     float tx = _sbX + sbW * 0.5f - tw * 0.5f;           // centered on the old bar's line
                     float ks = tw * 1.5f;
                     var cap = GameAssets.Texture(GameAssets.Paths.UiAtlasSprites + (full ? "scrollbar_track_edge2.tres" : "small_scrollbar_track_edge.tres"));
-                    float capH = cap != null ? Math.Min(tw, _trackH * 0.25f) : 0f;
+                    // Caps keep the edge sprite's aspect (scrollbar.tscn: expand_mode fit-height-proportional;
+                    // the large edge is 60x36, the small one square).
+                    float capH = cap != null ? Math.Min(tw * cap.GetHeight() / Math.Max(1f, cap.GetWidth()), _trackH * 0.25f) : 0f;
 
-                    _nTrack.AddThemeStyleboxOverride("panel", track);
+                    if (_nTrackApplied != track) { _nTrack.AddThemeStyleboxOverride("panel", track); _nTrackApplied = track; }
                     _nTrack.Visible = true;
                     _nTrack.SetPosition(new Vector2(tx, _trackY + capH));
                     _nTrack.SetSize(new Vector2(tw, Math.Max(1f, _trackH - capH * 2f)));
@@ -891,8 +894,8 @@ internal sealed class DamageDetailView
                 _blurMat = new ShaderMaterial { Shader = sh };
             if (_blurMat == null) { _dim.Material = null; return; }
             _blurT += (1f - _blurT) * 0.25f;
-            _blurMat.SetShaderParameter("lod", 3f * _blurT);
-            _blurMat.SetShaderParameter("mix_percentage", 0.7f * _blurT);
+            _blurMat.SetShaderParameter(BlurLod, 3f * _blurT);
+            _blurMat.SetShaderParameter(BlurMix, 0.7f * _blurT);
             if (_dim.Material != _blurMat) _dim.Material = _blurMat;
         }
         catch { try { _dim.Material = null; } catch { } }
