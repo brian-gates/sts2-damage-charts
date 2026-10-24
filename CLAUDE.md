@@ -4,9 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A standalone in-combat damage analytics overlay mod for **Slay the Spire 2** (a Godot/C# game). It
-renders an always-on per-round dealt/taken bar chart plus a hotkey-toggled by-source breakdown panel.
-It reads game state directly and depends on no other mod.
+A standalone damage analytics and incoming-damage forecast mod for **Slay the Spire 2** (a Godot/C#
+game). In combat it shows a forecast of HP about to be lost (docked beside the player) and a hotkey-toggled
+by-source breakdown; after combat, a summary beside the rewards list; out of combat, a run recap. The
+per-round dealt/taken chart is optional (`show_bars`). With `native_visuals` on (default) every panel uses
+the game's own fonts, icons and frames via `GameAssets.cs`. It reads game state directly and depends on no
+other mod.
 
 ## Build & install
 
@@ -28,8 +31,10 @@ For Steam Workshop publishing, `scripts/package-workshop.sh` builds Release, sta
 `dist/workshop/content/`, and runs (or prints) MegaCrit's `ModUploader`. It must run locally with the
 Steam client logged in — never CI. See the "Steam Workshop" section of README.md.
 
-**Requires the .NET 9 SDK.** There is no test suite — verification is manual: rebuild, copy the DLL into
-`mods/`, **restart the game** (mods load at startup), and watch in-game. `GD.Print("[STS2 Damage] ...")`
+**Requires the .NET 9 SDK.** Unit tests cover the forecast calculator (`tests/`, `dotnet test
+tests/STS2_DamageCharts.Tests.csproj -p:STS2GameDir=...`); everything else is verified manually: rebuild,
+copy the DLL into `mods/`, **restart the game** (mods load at startup), and watch in-game. Never overwrite
+the DLL in place while the game runs (it is memory-mapped); stage it and `mv` it into place. `GD.Print("[STS2 Damage] ...")`
 lines go to the Godot console/log; the mod self-disables after 5 consecutive per-frame exceptions.
 
 ## Architecture
@@ -47,9 +52,9 @@ is `static` — this is a single mod instance.
    - `DamagePrefix` on `CreatureCmd.Damage(...)` (the unique 6-param overload whose 2nd param is
      `IEnumerable<Creature>`, resolved by reflection in `ResolveDamageMethod`). Card hits use
      `cardSource.Title`; pet/summon hits credit the pet; otherwise falls back to the active-source stamp.
-   - `PowerSourcePrefix` patched onto *every* overridden hook method of every `PowerModel`/`RelicModel`/
-     `OrbModel`/`PotionModel` subclass (`TryApplyPowerSourceHooks`). It reads the power's own `Title`/icon
-     and stamps `_activeSource` for the immediately-following `Damage` call. The stamp is only honored if
+   - `PowerSourcePrefix` (opt-in, `source_hooks`) patched onto the curated `DamageSourceHooks` list of
+     damage-dealing power/relic/orb/potion hook methods (`TryApplyPowerSourceHooks`). It reads the model's
+     own `Title`/icon and stamps `_activeSource` for the immediately-following `Damage` call. The stamp is only honored if
      "fresh" (`ActiveFresh()`, within ~1 frame) so a stale passive-relic stamp can't mislabel a later hit.
    - `DoomKillPrefix` pre-tags doomed creatures by reference, since Doom kills via an animation-delayed
      `CreatureCmd.Kill` where timing-based attribution would fail.

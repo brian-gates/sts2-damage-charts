@@ -1,17 +1,26 @@
 # Damage Charts — Slay the Spire 2 mod
 
-A standalone in-combat damage analytics overlay for [Slay the Spire 2](https://www.megacrit.com/).
+A standalone damage analytics and incoming-damage forecast mod for [Slay the Spire 2](https://www.megacrit.com/).
 
-- **Always-on compact chart** (top-right): grouped bars per round of damage **dealt** (solid) vs
-  **taken** (faded). Per-player colors in multiplayer.
-- **Hotkey-toggled full-screen breakdown** (default **C**, for "combat stats"): a full-screen
-  takeover with two columns — damage **dealt** and **taken** broken down **by source** (each card by
-  name; powers/DoTs like Poison, Doom, Thorns; orbs; relics), with totals and percentages, sorted
-  highest-first, over a tall scrollable combat log (mouse-wheel or drag the scrollbar).
-- **End-of-run recap**: the same hotkey, pressed **out of combat** (e.g. on the run's victory/death
-  screen), opens a run-wide recap — total **dealt / taken / healed / block**, the by-source breakdown,
-  a per-**fight** chart, and the whole run's combat log. The aggregate resets when a new run begins.
-- Single-player and multiplayer. Reads game state directly — no dependency on any other mod.
+- **Incoming-damage forecast** (always on in combat, docked beside your character): the HP you are
+  about to lose this turn and what you'll be left at, as a range when something is uncertain. Counts
+  enemy intents, damage over time, Infection and self-damage cards, Block and Osty, and end-of-turn Block
+  (Plating, Orichalcum, Cloak Clasp); ignores enemies that will die to Poison before they act. Reads
+  **Safe** when nothing can hurt you and pulses when the turn can kill you. Hover it for the per-round
+  HP-lost history and an itemized list of sources.
+- **Combat stats** (hotkey, default **C**): a full-screen breakdown of damage **dealt** and **taken**
+  **by source** (cards, powers like Poison or Thorns, relics, orbs, potions), a per-round chart, the
+  run so far, potions used, and a scrollable combat log (mouse wheel, trackpad or scrollbar).
+- **End-of-combat summary**: a compact version beside the rewards list after each fight, with potions
+  used. C hides and shows it until you move on.
+- **Run recap**: the same hotkey out of combat (e.g. on the victory/death screen) opens a run-wide recap
+  of dealt / taken / healed / block, by source and per fight.
+- **Game-native look**: uses the game's own fonts, icons, hover-tip frames, scrollbars and shaders
+  (loaded from your install, never bundled). Optional **big-moment effects** reuse the game's own
+  damage-number and flash VFX.
+- Optional **always-on per-round chart** of dealt vs taken (`show_bars`).
+- Single-player and multiplayer (per-player colors). Reads game state directly — no dependency on any
+  other mod.
 
 ## Requirements
 
@@ -22,12 +31,15 @@ A standalone in-combat damage analytics overlay for [Slay the Spire 2](https://w
 ## How it works
 
 - **Amounts** come from subscribing to each `Creature.CurrentHpChanged` event (true post-block HP
-  loss). Player-creature drops = taken; enemy drops = dealt; heals ignored.
-- **Source attribution** comes from one Harmony Prefix on the central
-  `CreatureCmd.Damage(..., IEnumerable<Creature> targets, decimal, ValueProp, Creature? dealer,
-  CardModel? cardSource)`. Card damage uses `cardSource.Title`; non-card damage resolves the
-  source from the calling type on the stack (`PoisonPower` → "Poison"). One patch covers every
-  damage source; unknowns bucket as "Other".
+  loss). Player-creature drops = taken; enemy drops = dealt; heals and block are totaled separately.
+- **Source attribution** comes from a Harmony prefix on the central `CreatureCmd.Damage(...)`: card
+  hits use `cardSource.Title`, pet hits credit the pet. With `source_hooks` on, a curated list of the
+  game's damage-dealing power/relic/orb/potion hooks (found by a static call-graph sweep of `sts2.dll`)
+  stamps the source for the hit that follows; otherwise that damage is labeled `Status`/`Other`.
+- **Potions used** come from a postfix on `CombatHistory.PotionUsed`.
+- **The forecast** reads intents, powers, relics and the hand through reflection each frame, read-only.
+- **Startup freeze workaround**: with any mod loaded, the game's Sentry shutdown can hang startup; the
+  mod skips that native call (see [KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md)).
 
 ## Build & install
 
@@ -104,24 +116,29 @@ After the first publish, subscribe in-client and verify the overlay loads in a r
 {
   "enabled": true,
   "hotkey": "c",
-  "show_bars": true
+  "forecast": true,
+  "native_visuals": true
 }
 ```
 
 - `hotkey`: a bare key like `c` (the default) or `f9`, or modifier+key, e.g. `cmd+d`, `shift+d`, `alt+d`, `ctrl+d`.
-- `show_bars`: set `false` to hide the always-on bars and use only the hotkey panel.
-- `run_recap`: set `false` to disable the out-of-combat end-of-run recap (the hotkey then only toggles
-  the in-combat breakdown).
-- `ui_scale`: a number (default `1.0`) that scales the overlay — the always-on chart and the full-screen
-  breakdown/recap (text and spacing) — on top of the automatic resolution scaling. Bump it (e.g. `1.5`)
-  if the text reads too small. Applied live, no restart needed.
+- `forecast`: set `false` to hide the incoming-damage forecast.
+- `forecast_anchor`: `"player"` (default) docks the forecast beside your character; dragging it switches
+  to `"free"` and remembers the spot.
+- `summary_on_combat_end`: set `false` to skip the end-of-combat summary.
+- `run_recap`: set `false` to disable the out-of-combat run recap (the hotkey then only toggles the
+  in-combat breakdown).
+- `show_bars`: **default `false`.** Set `true` for the always-on per-round dealt/taken chart.
+- `ui_scale`: a number (default `1.0`) that scales every panel (text and spacing) on top of the automatic
+  resolution scaling. Bump it (e.g. `1.25`) if text reads too small.
+- `native_visuals`: **default `true`.** Set `false` for the original flat look.
+- `vfx_moments`: **default `false`.** Set `true` for the game's own VFX on a new biggest hit, a fully
+  blocked enemy turn, and a new top damage source.
 - `source_hooks`: **default `false`.** When `true`, damage-over-time and relic/orb/potion hits are
-  attributed by name (Poison, Doom, Thorns, …) instead of the generic `Status`/`Other`. This requires
-  Harmony-patching many game methods, which can intermittently destabilize the game (a hard hang / "Bad
-  IL range"), so it ships off. Enable at your own risk; all other stats work regardless.
+  attributed by name (Poison, Doom, Thorns, …) instead of the generic `Status`/`Other`, via a curated
+  set of patched hooks. Still opt-in while it is verified in game.
 
-Edits to this file are picked up live — change the `hotkey` or `show_bars` and it applies within
-about half a second, no restart needed.
+Edits to this file are picked up live (within about half a second), no restart needed.
 
 ## License
 
