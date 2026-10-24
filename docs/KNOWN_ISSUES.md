@@ -54,16 +54,22 @@ low battery, which likely shifts startup timing), including with `source_hooks: 
 unrelated mod (`STS2_NotTheBees`) loaded. The trigger is `SentryService.AfterGameInit` →
 `ShouldStayAliveAfterInit()` is false when modded → `SentryService.Shutdown()`, which disposes the .NET
 SDK and then calls `shutdown` on the native `SentryInit` node. The native shutdown leaves the per-frame
-CFRunLoop observer registered; when it runs before `Applying display settings...` (a timing race) the
-observer touches a freed object and the main thread hangs on `Object::get_instance_id()` (same stack as
-below). The good launches were the ones where the shutdown landed after display setup. This also explains
-the earlier unmodded hang *on quit*: quitting calls the same native `shutdown`.
+CFRunLoop observer registered, and every hang sampled had the main thread stuck in that observer on
+`Object::get_instance_id()` (same stack as below), apparently touching an object the shutdown freed.
+Whether a given launch hangs is timing-dependent and **not** predicted by log order: an earlier note here
+said hangs happen when the shutdown lands before `Applying display settings...`, but 4 later passing
+launches had that same order (corrected 2026-10-23). The bad streak (5/6) coincided with a nearly empty
+laptop battery; after charging, 4/4 launches of the unpatched build passed, so the trigger condition is
+not pinned down. The earlier unmodded hang *on quit* is likely the same thing: quitting calls the same
+native `shutdown`.
 **Workaround (in `DamageChartsMod.TryApplySentryShutdownWorkaround`):** a Harmony prefix on
 `SentryService.Shutdown` nulls `SentryService._sentryInit` first, so the game still disposes the .NET
 SDK and disables itself but skips the native `shutdown` call. The native side keeps the
 `AlwaysRejectEvent` sampler the game installs for modded runs, so nothing extra is reported. Applied
-before the config check and under its own Harmony id. Verified: 3/3 direct launches passed the freeze
-point (log: `skipped native Sentry shutdown`). Untested: quitting from the menu, and Workshop installs.
+before the config check and under its own Harmony id. Evidence so far: 3/3 direct launches passed the
+freeze point during the bad streak, and 2/2 via the Workshop load path (log: `skipped native Sentry
+shutdown`); the unpatched build also passed 4/4 once the streak ended, so this is suggestive, not proof.
+Untested: quitting from the menu.
 Trade-off: the native crash handler stays loaded, so a real native crash may hang on exit (the
 sentry-godot #230/#441 behaviour below) instead of exiting cleanly.
 
