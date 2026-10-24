@@ -21,6 +21,8 @@ internal sealed class DamageDetailView
     private const float SummaryWidth = 480f;
     private const float SummaryHeight = 540f;
     private const int SummaryMaxRows = 10;
+    private const int HistoryMaxRows = 6;   // most recent prior fights listed in the run-history band
+    private const int LogMinRows = 4;       // the log always keeps at least this many lines
 
     private readonly Node _root;
     private readonly CanvasLayer _layer;
@@ -339,6 +341,16 @@ internal sealed class DamageDetailView
         return null;
     }
 
+    // Shared vertical metrics, so Render's stacking math matches what RenderLog / RenderHistoryBand draw.
+    private float LogHeadH(bool full) => full ? 28f * _fontScale : 22f;     // "Combat Log" heading -> first line
+    private float LogLineH(bool full) => full ? 22f * _fontScale : 16f;
+    // _bottomReserve already measures the full distance from the screen bottom to keep clear of the close
+    // button (don't also subtract pad — that double-counted and wasted ~a pad of log height).
+    private float LogListBottom(bool full) => _h - (full ? _bottomReserve : 10f);
+    private float HistRowH => 22f * _fontScale;
+    // Title + column heads + `shown` fight rows + the TOTAL row.
+    private float HistoryBandHeight(int shown) => 26f * _fontScale + HistRowH * (shown + 2);
+
     // Top padding (viewport px) that pushes full-screen content below the game's top bar (~8% of
     // viewport height, letterbox-excluded) while the dim backdrop stays full-bleed. 9% leaves a hair.
     private static float TopBarInset(Vector2 vp) => Math.Max(48f, vp.Y * 0.09f);
@@ -397,28 +409,12 @@ internal sealed class DamageDetailView
             float pad = full ? Math.Max(28f, _w * 0.05f) : 14f;
             float gap = full ? pad : 12f;
             float headerY = full ? top + pad * 0.6f : 8f;
-            float colTop = headerY + (full ? 48f * _fontScale : 32f);
-            // Recap reserves a totals band (Dealt/Taken/Healed/Block) between the header and the columns.
-            // The in-combat view instead reserves a run-history band (per prior combat). They never
-            // co-occur (recap is out of combat), so they share the same slot below the header.
             bool recap = full && RecapMode;
             bool history = full && !recap && ShowRunHistory && RunFights != null && RunFights.Count > 0;
-            float bandTop = colTop;
-            int histShown = history ? Math.Min(RunFights!.Count, 6) : 0;
-            if (recap) colTop += 56f * _fontScale;
-            else if (history) colTop += (34f + (histShown + 1) * 16f) * _fontScale;
             float colW = (_w - pad * 2f - gap) * 0.5f;
             float leftX = pad;
             float rightX = pad + colW + gap;
-            // Full-screen stacks three bands within the padded content area: by-source columns, the
-            // Damage/Round chart, then the log.
-            float chartTop = full ? top + (_h - top) * 0.32f : 0f;
-            float logTop = full ? top + (_h - top) * 0.58f : 296f;
             float rowH = full ? 26f * _fontScale : 22f;
-            // Column rows: as many as fit between the column head and the next band.
-            int maxRows = full
-                ? Math.Max(3, (int)((chartTop - pad - (colTop + 24f)) / rowH))
-                : SummaryMaxRows;
 
             // Close/back button, full-screen only: a self-drawn button (bottom-left, like deck/map) that we
             // animate ourselves — fades + scales in on open, grows/brightens on hover, depresses on press.
@@ -470,6 +466,54 @@ internal sealed class DamageDetailView
             var ps = (slot < snap.PerPlayer.Length) ? snap.PerPlayer[slot] : new PlayerSources();
             var color = palette[Math.Min(slot, palette.Length - 1)];
 
+            // ----- Vertical layout: sections stack top-down, each below the previous one's real bottom -----
+            // Header, then the recap totals or run-history band (they never co-occur: recap is out of
+            // combat), then the Dealt/Taken columns, then (full only) the Damage/Round chart, then the log.
+            // Source rows (and history rows, when space is tight) are capped so the chart keeps a minimum
+            // plot and the log keeps LogMinRows; leftover height is split between chart and log.
+            float vgap = full ? 20f * _fontScale : 12f;
+            float colTop = headerY + (full ? 48f * _fontScale : 32f);
+            float bandTop = colTop;
+            float colHeadH = full ? 30f * _fontScale : 24f;          // column heading -> first row (RenderColumn)
+            float listBottom = LogListBottom(full);
+            float logMinH = LogHeadH(full) + LogMinRows * LogLineH(full);
+            float chartMinH = full ? 140f * _fontScale : 0f;
+            float belowCols = full ? vgap + chartMinH + vgap + logMinH : vgap + logMinH;
+            int srcCount = Math.Max(1, Math.Max(ps.Dealt.Count, ps.Taken.Count));   // empty column = one "—" row
+            int histShown = history ? Math.Min(RunFights!.Count, HistoryMaxRows) : 0;
+            int fitRows;
+            while (true)
+            {
+                float bandH = recap ? 56f * _fontScale + vgap : history ? HistoryBandHeight(histShown) + vgap : 0f;
+                fitRows = (int)((listBottom - belowCols - (colTop + bandH + colHeadH)) / rowH);
+                // Give up history rows (oldest first; the TOTAL row stays) before squeezing sources below 3.
+                if (!history || histShown == 0 || fitRows >= Math.Min(srcCount, 3)) { colTop += bandH; break; }
+                histShown--;
+            }
+            int rowCap = full ? fitRows : Math.Min(fitRows, SummaryMaxRows);
+            // Overflowing columns spend their last line on "+ N more".
+            int maxRows = Math.Max(1, srcCount <= rowCap ? rowCap : rowCap - 1);
+            int colLines = Math.Min(srcCount, maxRows) + (srcCount > maxRows ? 1 : 0);
+            float colBottom = colTop + colHeadH + colLines * rowH;
+
+            float chartTop = 0f, chartH = 0f, logTop;
+            if (full)
+            {
+                // The chart keeps its usual proportional slot when the columns are short, and otherwise
+                // follows them down, never past the point that would leave the log under its minimum.
+                chartTop = Math.Max(colBottom + vgap, top + (_h - top) * 0.32f);
+                chartTop = Math.Max(colBottom + vgap, Math.Min(chartTop, listBottom - logMinH - vgap - chartMinH));
+                float extra = listBottom - chartTop - chartMinH - vgap - logMinH;
+                if (extra >= 0f)
+                {
+                    float chartPrefH = Math.Max(chartMinH, (_h - top) * 0.26f - vgap);
+                    chartH = chartMinH + Math.Min(chartPrefH - chartMinH, extra * 0.5f);
+                    logTop = chartTop + chartH + vgap;
+                }
+                else logTop = colBottom + vgap;   // extreme ui_scale on a tiny viewport: drop the chart, keep the log
+            }
+            else logTop = Math.Max(296f, colBottom + vgap);
+
             int cur = 0, barCur = 0, iconCur = 0;
             string who = (snap.PlayerCount > 1 && slot < snap.Labels.Length) ? $" — {snap.Labels[slot]}" : "";
 
@@ -490,8 +534,8 @@ internal sealed class DamageDetailView
             RenderColumn(ref cur, ref barCur, ref iconCur, leftX, colTop, colW, rowH, maxRows, full, "DEALT", ps.Dealt, ps.DealtTotal, color, false);
             RenderColumn(ref cur, ref barCur, ref iconCur, rightX, colTop, colW, rowH, maxRows, full, "TAKEN", ps.Taken, ps.TakenTotal, UiTheme.Red, true);
 
-            if (full)
-                RenderRoundChart(ref cur, ref barCur, ref iconCur, chart, palette, pad, chartTop, _w - pad * 2f, logTop - chartTop - 10f, recap);
+            if (full && chartH > 0f)
+                RenderRoundChart(ref cur, ref barCur, ref iconCur, chart, palette, pad, chartTop, _w - pad * 2f, chartH, recap);
 
             RenderLog(ref cur, snap.Log, full, pad, logTop);
 
@@ -538,7 +582,8 @@ internal sealed class DamageDetailView
         Color[] cols = { dim, UiTheme.Cream, UiTheme.Red, heal, block };
 
         int n = fights.Count;
-        var head = Next(ref cur, 13, UiTheme.Gold, FontRole.Bold);
+        // Sized like the by-source columns below it (16 heading, 14 rows) rather than as fine print.
+        var head = Next(ref cur, 16, UiTheme.Gold, FontRole.Bold);
         head.Text = $"RUN SO FAR — {n} prior fight{(n == 1 ? "" : "s")}";
         head.SetPosition(new Vector2(x, top));
 
@@ -547,10 +592,10 @@ internal sealed class DamageDetailView
         float[] cx = { x, x + fightW, x + fightW + statW, x + fightW + statW * 2f, x + fightW + statW * 3f };
         string[] heads = { "FIGHT", "DEALT", "TAKEN", "HEAL", "BLOCK" };
 
-        float chY = top + 16f * _fontScale;
+        float chY = top + 26f * _fontScale;
         for (int i = 0; i < heads.Length; i++)
         {
-            var h = Next(ref cur, 11, new Color(cols[i].R, cols[i].G, cols[i].B, 0.7f), FontRole.Bold);
+            var h = Next(ref cur, 13, new Color(cols[i].R, cols[i].G, cols[i].B, 0.7f), FontRole.Bold);
             h.Text = heads[i];
             h.SetPosition(new Vector2(cx[i], chY));
         }
@@ -558,8 +603,8 @@ internal sealed class DamageDetailView
         long td = 0, tt = 0, th = 0, tb = 0;
         foreach (var f in fights) { td += f.Dealt; tt += f.Taken; th += f.Heal; tb += f.Block; }
 
-        float rowH = 16f * _fontScale;
-        float y = top + 34f * _fontScale;
+        float rowH = HistRowH;
+        float y = chY + rowH;
         int start = Math.Max(0, n - shown);
         for (int i = start; i < n; i++)
         {
@@ -567,7 +612,7 @@ internal sealed class DamageDetailView
             string[] vals = { f.Fight.ToString(), f.Dealt.ToString(), f.Taken.ToString(), f.Heal.ToString(), f.Block.ToString() };
             for (int c = 0; c < vals.Length; c++)
             {
-                var lbl = Next(ref cur, 12, cols[c], FontRole.Numeric);
+                var lbl = Next(ref cur, 14, cols[c], FontRole.Numeric);
                 lbl.Text = vals[c];
                 lbl.SetPosition(new Vector2(cx[c], y));
             }
@@ -576,7 +621,7 @@ internal sealed class DamageDetailView
         string[] totals = { "TOTAL", td.ToString(), tt.ToString(), th.ToString(), tb.ToString() };
         for (int c = 0; c < totals.Length; c++)
         {
-            var lbl = Next(ref cur, 12, c == 0 ? UiTheme.Gold : cols[c], FontRole.Numeric);
+            var lbl = Next(ref cur, 14, c == 0 ? UiTheme.Gold : cols[c], FontRole.Numeric);
             lbl.Text = totals[c];
             lbl.SetPosition(new Vector2(cx[c], y));
         }
@@ -786,11 +831,9 @@ internal sealed class DamageDetailView
         head.Text = "Combat Log";
         head.SetPosition(new Vector2(leftX, top));
 
-        float listTop = top + (full ? 28f * _fontScale : 22f);
-        // _bottomReserve already measures the full distance from the screen bottom to keep clear of the
-        // close button (don't also subtract pad — that double-counted and wasted ~a pad of log height).
-        float listBottom = _h - (full ? _bottomReserve : 10f);
-        float lineH = full ? 22f * _fontScale : 16f;
+        float listTop = top + LogHeadH(full);
+        float listBottom = LogListBottom(full);
+        float lineH = LogLineH(full);
         float regionH = listBottom - listTop;
         _visible = Math.Max(1, (int)(regionH / lineH));
 
