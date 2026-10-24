@@ -38,6 +38,7 @@ internal sealed class PlayerSources
     public long TakenTotal;
     public long HealTotal;   // total HP healed this scope (no by-source breakdown)
     public long BlockTotal;  // total block gained this scope (no by-source breakdown)
+    public List<SourceEntry> Potions = new();  // potions used this scope: name, times used, icon
 }
 
 internal sealed class ChartRow
@@ -87,6 +88,7 @@ internal sealed class DamageTracker
     private readonly Dictionary<(int Round, int Slot), List<DealtSeg>> _dealtSegs = new();
     private readonly Dictionary<int, long> _healByPlayer = new();   // slot -> total healed
     private readonly Dictionary<int, long> _blockByPlayer = new();  // slot -> total block gained
+    private readonly Dictionary<int, Dictionary<string, long>> _potionsByPlayer = new(); // slot -> potion -> uses
     private readonly List<LogEntry> _log = new();
     private const int LogCap = 500;
     private const int LogShow = 300; // detail panel scrolls through this much history
@@ -106,6 +108,7 @@ internal sealed class DamageTracker
             _dealtSegs.Clear();
             _healByPlayer.Clear();
             _blockByPlayer.Clear();
+            _potionsByPlayer.Clear();
             _log.Clear();
             _maxRound = 0;
             _playerCount = Math.Max(1, playerCount);
@@ -137,6 +140,20 @@ internal sealed class DamageTracker
     public void AddHealed(int slot, int amount) => AddTotal(_healByPlayer, slot, amount);
 
     public void AddBlock(int slot, int amount) => AddTotal(_blockByPlayer, slot, amount);
+
+    // A potion drunk/thrown this combat. Counted per player (not damage, so it stays out of the bars)
+    // and shares the source-icon map so the summary can show its art.
+    public void AddPotion(int slot, string name, string? icon)
+    {
+        if (slot < 0 || string.IsNullOrEmpty(name)) return;
+        lock (_lock)
+        {
+            if (!_potionsByPlayer.TryGetValue(slot, out var map)) { map = new Dictionary<string, long>(); _potionsByPlayer[slot] = map; }
+            map.TryGetValue(name, out long cur);
+            map[name] = cur + 1;
+            if (icon != null && !_sourceIcon.ContainsKey(name)) _sourceIcon[name] = icon;
+        }
+    }
 
     private void AddTotal(Dictionary<int, long> byPlayer, int slot, int amount)
     {
@@ -210,6 +227,7 @@ internal sealed class DamageTracker
                 ps.Taken = SortedList(_takenBySource, s, out ps.TakenTotal);
                 _healByPlayer.TryGetValue(s, out ps.HealTotal);
                 _blockByPlayer.TryGetValue(s, out ps.BlockTotal);
+                ps.Potions = SortedList(_potionsByPlayer, s, out _);
                 perPlayer[s] = ps;
             }
             int from = Math.Max(0, _log.Count - LogShow);

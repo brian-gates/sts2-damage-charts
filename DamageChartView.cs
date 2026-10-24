@@ -25,10 +25,16 @@ internal sealed class DamageChartView
     private const float BaseHeaderH = 24f;
     private const int MaxGroups = 6;
     private const float BaseMaxIcon = 34f;
+    private const float ChartFrameAlpha = 0.92f; // always-on: let a sliver of the fight show through
 
     private readonly CanvasLayer _layer;
     private readonly Control _container;
     private readonly Panel _bg;
+    private readonly Panel _frameShadow;  // native_visuals: the game's hover-tip frame + its drop shadow
+    private readonly Panel _frame;
+    private bool _frameStyled;
+    private readonly StyleBoxEmpty _emptyBox = new();
+    private bool _native;                 // this render uses the game's look (frame loaded, native_visuals on)
     private readonly Control _gridLayer;
     private readonly Control _barLayer;
     private readonly Control _iconLayer;
@@ -72,6 +78,12 @@ internal sealed class DamageChartView
         _bg.MouseFilter = Control.MouseFilterEnum.Stop; // block click-through over the panel
         _bg.SetPosition(Vector2.Zero);
         _container.AddChild(_bg);
+
+        // Native frame sits where _bg does (only one of the two is visible), styled once its art loads.
+        _frameShadow = NativeLook.MakeFramePanel();
+        _container.AddChild(_frameShadow);
+        _frame = NativeLook.MakeFramePanel();
+        _container.AddChild(_frame);
 
         // Gridlines sit just above the bg and below the bars.
         _gridLayer = new Control { MouseFilter = Control.MouseFilterEnum.Ignore };
@@ -203,7 +215,24 @@ internal sealed class DamageChartView
             _gridLayer.SetSize(new Vector2(_w, _h));
             _barLayer.SetSize(new Vector2(_w, _h));
             _iconLayer.SetSize(new Vector2(_w, _h));
-            UiTheme.RestylePanel(_bg, 0.5f, sc);
+            _native = NativeLook.EnsureFrame(_frame, _frameShadow, ref _frameStyled);
+            if (_native)
+            {
+                // _bg stays (it blocks click-through to the game) but draws nothing; the frame is the visual.
+                _bg.Visible = true;
+                _bg.AddThemeStyleboxOverride("panel", _emptyBox);
+                NativeLook.LayoutFrame(_frame, _frameShadow, _w, _h, sc, ChartFrameAlpha);
+            }
+            else
+            {
+                _bg.Visible = true;
+                NativeLook.HideFrame(_frame, _frameShadow);
+                UiTheme.RestylePanel(_bg, 0.5f, sc);
+            }
+            // Native: keep content clear of the frame's bevelled border (the flat look needs no inset).
+            float ix = _native ? 6f * sc : 0f, iy = _native ? 5f * sc : 0f;
+            var numFont = _native ? GameAssets.NumericFont : null;
+            var boldFont = _native ? GameAssets.KreonBold : null;
 
             float inset = TopInset(_vp);
             _topInset = inset;
@@ -216,27 +245,28 @@ internal sealed class DamageChartView
             float py = Math.Clamp(_posFrac.Y * _vp.Y, inset, Math.Max(inset, _vp.Y - _h));
             _container.SetPosition(new Vector2(px, py));
 
-            UiTheme.Apply(_title, F(14, sc), new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.85f));
-            _title.SetPosition(new Vector2(8 * sc, 4 * sc));
+            if (_native) NativeLook.Style(_title, F(15, sc), UiTheme.Gold, numFont, 0);
+            else { NativeLook.Reset(_title); UiTheme.Apply(_title, F(14, sc), new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.85f)); }
+            _title.SetPosition(new Vector2(8 * sc + ix, 4 * sc + iy));
 
             int labelCur = 0, barCur = 0, iconCur = 0, gridCur = 0;
             float maxIcon = BaseMaxIcon * sc;
 
-            float plotTop = 26 * sc;
+            float plotTop = 26 * sc + iy;
             if (snap.PlayerCount > 1)
             {
-                float lx = 8 * sc;
+                float lx = 8 * sc + ix;
                 for (int s = 0; s < snap.PlayerCount && s < palette.Length; s++)
                 {
-                    var lbl = NextLabel(ref labelCur, F(11, sc), palette[s]);
+                    var lbl = NextLabel(ref labelCur, F(11, sc), palette[s], boldFont);
                     lbl.Text = "■ " + (s < snap.Labels.Length ? snap.Labels[s] : $"P{s + 1}");
-                    lbl.SetPosition(new Vector2(lx, 20 * sc));
+                    lbl.SetPosition(new Vector2(lx, 20 * sc + iy));
                     lx += Math.Min(100 * sc, lbl.Text.Length * 6f * sc + 14 * sc);
                 }
-                plotTop = 40 * sc;
+                plotTop = 40 * sc + iy;
             }
 
-            float plotLeft = 30 * sc, plotRight = _w - 8 * sc, plotBottom = _h - 18 * sc; // left gutter for Y-axis values
+            float plotLeft = 30 * sc + ix, plotRight = _w - 8 * sc - ix, plotBottom = _h - 18 * sc - iy; // left gutter for Y-axis values
             float plotW = plotRight - plotLeft, plotH = plotBottom - plotTop;
 
             int total = snap.Rows.Count;
@@ -269,9 +299,9 @@ internal sealed class DamageChartView
                 gl.Color = new Color(1f, 1f, 1f, g == 0 ? 0.22f : 0.10f);
                 gl.SetPosition(new Vector2(plotLeft, yLine));
                 gl.SetSize(new Vector2(plotW, Math.Max(1f, sc)));
-                var vl = NextLabel(ref labelCur, F(13, sc), axisColor);
+                var vl = NextLabel(ref labelCur, F(13, sc), axisColor, numFont);
                 vl.Text = ((long)Math.Round(frac * maxVal)).ToString();
-                vl.SetPosition(new Vector2(3 * sc, yLine - 7 * sc));
+                vl.SetPosition(new Vector2(3 * sc + ix, yLine - 7 * sc));
             }
 
             // Constant bar width regardless of round count: size each round group to the chart's capacity
@@ -308,7 +338,7 @@ internal sealed class DamageChartView
 
                         if (a.Icon != null && bh >= 10 * sc && dealtW >= 14 * sc)
                         {
-                            var tex = LoadTex(a.Icon);
+                            var tex = _native ? NativeLook.Icon(a.Icon) : LoadTex(a.Icon);
                             if (tex != null)
                             {
                                 float isz = Math.Min(Math.Min(dealtW - 2f, bh - 2f), maxIcon);
@@ -320,7 +350,7 @@ internal sealed class DamageChartView
                         }
                         if (a.Count > 1 && bh >= 13 * sc && dealtW >= 16 * sc)
                         {
-                            var xn = NextLabel(ref labelCur, F(11, sc), UiTheme.Cream);
+                            var xn = NextLabel(ref labelCur, F(11, sc), UiTheme.Cream, numFont, onBar: true);
                             xn.Text = $"x{a.Count}";
                             xn.SetPosition(new Vector2(dealtX + dealtW - 16 * sc, yTop - bh + 1 * sc));
                         }
@@ -337,7 +367,7 @@ internal sealed class DamageChartView
                     }
                 }
 
-                var rl = NextLabel(ref labelCur, F(13, sc), new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.6f));
+                var rl = NextLabel(ref labelCur, F(13, sc), new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.6f), numFont);
                 rl.Text = row.Round.ToString();
                 rl.SetPosition(new Vector2(groupX + groupW * 0.5f - 4 * sc, plotBottom + 3 * sc));
             }
@@ -371,12 +401,15 @@ internal sealed class DamageChartView
         return list;
     }
 
-    private Label NextLabel(ref int cursor, int fontSize, Color color)
+    // nativeFont/onBar only matter in native mode: the game's font for this role (null keeps UiTheme's) and
+    // whether the text sits on a coloured bar (keeps a dark outline there; panel text uses the hover-tip shadow).
+    private Label NextLabel(ref int cursor, int fontSize, Color color, Font? nativeFont = null, bool onBar = false)
     {
         Label lbl;
         if (cursor < _labels.Count) lbl = _labels[cursor];
         else { lbl = UiTheme.MakeLabel(fontSize, color); _container.AddChild(lbl); _labels.Add(lbl); }
-        UiTheme.Apply(lbl, fontSize, color);
+        if (_native) NativeLook.Style(lbl, fontSize, color, nativeFont, onBar ? 4 : 0);
+        else { NativeLook.Reset(lbl); UiTheme.Apply(lbl, fontSize, color); }
         lbl.Visible = true;
         cursor++;
         return lbl;
@@ -436,4 +469,101 @@ internal sealed class DamageChartView
     {
         for (int i = from; i < nodes.Count; i++) nodes[i].Visible = false;
     }
+}
+
+// The game's hover-tip look (scenes/ui/hover_tip.tscn), shared by the chart and its hover popup. Used only
+// while GameAssets.Enabled and the frame art loads; otherwise both views keep their original flat look.
+//
+// Why reproduce instead of instantiating hover_tip.tscn: its labels are the game's MegaLabel /
+// MegaRichTextLabel scripts, whose _Ready asserts theme overrides, applies the locale font substitution
+// and auto-sizes; and the scene is one Title + one Description, while we need icon/name/amount rows that
+// re-layout every frame. Copying its texture, 9-slice, insets, fonts and colours gives the same look with
+// plain Godot nodes and no game code running on our side.
+internal static class NativeLook
+{
+    // images/ui/hover_tip.png is 320x96 but hover_tip.tscn samples a 339x107 region, so the frame's right
+    // 19px / bottom 11px are transparent (room for its +8px shadow). Oversize the frame by that much so the
+    // VISIBLE box lines up with our rect.
+    public const float OverhangX = 19f, OverhangY = 11f;
+    // Text insets from the visible box: hover_tip.tscn's TextContainer (L22 T16 R45 B28) minus the overhang.
+    public const float InsetL = 22f, InsetT = 16f, InsetR = 26f, InsetB = 17f;
+    // hover_tip.tscn Title/Description: font_shadow_color (0,0,0,0.25098), shadow offset (3,2) at size 22.
+    private static readonly Color ShadowColor = new(0f, 0f, 0f, 0.25098f);
+    private const string MetaKey = "sts2dc_native";
+
+    public static Panel MakeFramePanel() => new() { MouseFilter = Control.MouseFilterEnum.Ignore, Visible = false };
+
+    // Styles frame + shadow once their art loads. False => caller keeps its fallback look this frame.
+    public static bool EnsureFrame(Panel frame, Panel shadow, ref bool styled)
+    {
+        if (!GameAssets.Enabled) return false;
+        if (styled) return true;
+        try
+        {
+            var bg = GameAssets.NativePanel();
+            var sh = GameAssets.NativePanelShadow();
+            if (bg == null || sh == null) return false;
+            frame.AddThemeStyleboxOverride("panel", bg);
+            shadow.AddThemeStyleboxOverride("panel", sh);
+            styled = true;
+        }
+        catch { }
+        return styled;
+    }
+
+    // The 9-slice margins are in texture pixels, so draw the frame at 1080p size and scale the node instead,
+    // keeping the bevel proportional at any resolution.
+    public static void LayoutFrame(Panel frame, Panel shadow, float w, float h, float sc, float alpha)
+    {
+        var size = new Vector2(w / sc + OverhangX, h / sc + OverhangY);
+        Fit(shadow, size, sc, alpha);
+        Fit(frame, size, sc, alpha);
+    }
+
+    private static void Fit(Panel p, Vector2 size, float sc, float alpha)
+    {
+        p.Scale = new Vector2(sc, sc);
+        p.SetPosition(Vector2.Zero);
+        p.SetSize(size);
+        p.SelfModulate = new Color(1f, 1f, 1f, alpha);
+        p.Visible = true;
+    }
+
+    public static void HideFrame(Panel frame, Panel shadow)
+    {
+        frame.Visible = false;
+        shadow.Visible = false;
+    }
+
+    // UiTheme.Apply plus the hover-tip treatment: the game font for this role, a soft drop shadow, and an
+    // outline only where asked (text over bars).
+    public static void Style(Label lbl, int fontSize, Color color, Font? font, int outlineSize)
+    {
+        UiTheme.Apply(lbl, fontSize, color);
+        if (font != null) lbl.AddThemeFontOverride("font", font);
+        lbl.AddThemeConstantOverride("outline_size", outlineSize);
+        lbl.AddThemeColorOverride("font_shadow_color", ShadowColor);
+        lbl.AddThemeConstantOverride("shadow_offset_x", Math.Max(1, (int)Math.Round(fontSize * 3f / 22f)));
+        lbl.AddThemeConstantOverride("shadow_offset_y", Math.Max(1, (int)Math.Round(fontSize * 2f / 22f)));
+        lbl.SetMeta(MetaKey, true);
+    }
+
+    // Undo Style (and any alignment/sizing the native layout set) so a pooled label renders exactly as the
+    // fallback look expects. No-op for labels that were never native-styled.
+    public static void Reset(Label lbl)
+    {
+        if (!lbl.HasMeta(MetaKey)) return;
+        lbl.RemoveMeta(MetaKey);
+        lbl.RemoveThemeFontOverride("font");
+        lbl.RemoveThemeColorOverride("font_shadow_color");
+        lbl.RemoveThemeConstantOverride("shadow_offset_x");
+        lbl.RemoveThemeConstantOverride("shadow_offset_y");
+        lbl.HorizontalAlignment = HorizontalAlignment.Left;
+        lbl.VerticalAlignment = VerticalAlignment.Top;
+        lbl.TextOverrunBehavior = TextServer.OverrunBehavior.NoTrimming;
+        lbl.Size = Vector2.Zero; // shrink back to the text's minimum size
+    }
+
+    // Source icons are res:// paths captured from the game's own models (PackedIconPath / PortraitPath).
+    public static Texture2D? Icon(string? path) => string.IsNullOrEmpty(path) ? null : GameAssets.Texture(path);
 }

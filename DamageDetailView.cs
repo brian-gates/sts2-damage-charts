@@ -12,11 +12,17 @@ namespace STS2_DamageCharts;
 // Native ScrollContainers can't be used (no engine GUI callbacks reach our CanvasLayer), so the
 // log scrolls via a poll-driven draggable scrollbar plus mouse-wheel routed in from the mod's
 // input hook (see ScrollBy).
+// With native_visuals on (GameAssets), it borrows the game's own look: Kreon fonts (the glyph-spaced
+// numeric variant for totals), the hover-tip panel for the summary, the main menu's dark_blur backstop
+// for the takeover, the scrollbar art from scenes/ui/scrollbar.tscn, and an icon on every source row.
+// Each piece falls back to the original look on its own when its asset is missing.
 internal sealed class DamageDetailView
 {
     private const float SummaryWidth = 480f;
     private const float SummaryHeight = 540f;
     private const int SummaryMaxRows = 10;
+    private const int HistoryMaxRows = 6;   // most recent prior fights listed in the run-history band
+    private const int LogMinRows = 4;       // the log always keeps at least this many lines
 
     private readonly Node _root;
     private readonly CanvasLayer _layer;
@@ -29,7 +35,9 @@ internal sealed class DamageDetailView
     private bool _panelVisible;
     private readonly Control _inputBlock;  // full-screen Stop-filter blocker (full takeover only)
     private readonly ColorRect _dim;      // full-screen dim backdrop (interactive mode only)
+    private readonly Panel _bgShadow;     // native hover-tip drop shadow behind _bg (native summary only)
     private readonly Panel _bg;           // themed panel (summary mode)
+    private bool _nativePanel;            // _bg/_bgShadow restyled with the game's hover-tip art
     private readonly Control _barLayer;   // behind text
     private readonly List<Label> _labels = new();
     private readonly List<ColorRect> _bars = new();
@@ -54,6 +62,17 @@ internal sealed class DamageDetailView
     // Manually-scrolled combat log with a custom, polling-driven scrollbar plus wheel (ScrollBy).
     private readonly ColorRect _track;
     private readonly ColorRect _grabber;
+    // Native scrollbar (game art): tinted track body + end caps, and the fixed-size knob. Used instead of
+    // _track/_grabber when the textures load. _sbHitL/_sbHitR is the horizontal grab band for UpdateMouse.
+    private readonly Panel _nTrack;
+    private readonly TextureRect _nCapTop, _nCapBot, _nKnob;
+    private StyleBoxTexture? _nTrackStyle, _nTrackStyleSmall, _nTrackApplied;
+    private float _sbHitL, _sbHitR;
+    // Native backdrop: the game's dark_blur screen-space shader on _dim, eased in on open like NMainMenu.
+    private ShaderMaterial? _blurMat;
+    private static readonly StringName BlurLod = "lod", BlurMix = "mix_percentage";
+    private float _blurT;
+    private readonly Dictionary<string, Texture2D?> _nameIconCache = new();
     // Self-drawn close/back button (full-screen only), animated by us from the poll loop. Interaction is
     // poll-based via _closeRect (the native NBackButton's hover/press animations never fire on our layer).
     private readonly Panel _btn;
@@ -111,6 +130,9 @@ internal sealed class DamageDetailView
         _dim = new ColorRect { Color = new Color(0f, 0f, 0f, 0.82f), MouseFilter = Control.MouseFilterEnum.Ignore, Visible = false };
         _container.AddChild(_dim);
 
+        _bgShadow = new Panel { MouseFilter = Control.MouseFilterEnum.Ignore, Visible = false };
+        _container.AddChild(_bgShadow);
+
         _bg = UiTheme.MakePanel(0.86f, 1f);
         _bg.SetPosition(Vector2.Zero);
         _bg.SetSize(new Vector2(_w, _h));
@@ -127,6 +149,12 @@ internal sealed class DamageDetailView
         _container.AddChild(_track);
         _grabber = new ColorRect { Color = new Color(UiTheme.Gold.R, UiTheme.Gold.G, UiTheme.Gold.B, 0.65f), MouseFilter = Control.MouseFilterEnum.Ignore, Visible = false };
         _container.AddChild(_grabber);
+        _nTrack = new Panel { MouseFilter = Control.MouseFilterEnum.Ignore, Visible = false };
+        _container.AddChild(_nTrack);
+        _nCapTop = MakeSbRect(false);
+        _nCapBot = MakeSbRect(false);
+        _nCapBot.FlipV = true;                       // scrollbar.tscn: TrackBot is the same edge, flipped
+        _nKnob = MakeSbRect(true);
 
         // Close/back button (full-screen only); clicks detected by polling in UpdateMouse. Added last → on
         // top. Visual only (MouseFilter.Ignore); we animate it ourselves in Render.
@@ -147,6 +175,21 @@ internal sealed class DamageDetailView
         _container.AddChild(_btnGlyph);
     }
 
+    private TextureRect MakeSbRect(bool knob)
+    {
+        var r = new TextureRect
+        {
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+            ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+            // The game draws its knob at a fixed size, keep-aspect, centered; caps stretch to their box.
+            StretchMode = knob ? TextureRect.StretchModeEnum.KeepAspectCentered : TextureRect.StretchModeEnum.Scale,
+            Visible = false,
+        };
+        if (!knob) r.SelfModulate = GameAssets.ScrollTrackTint;
+        _container.AddChild(r);
+        return r;
+    }
+
     // The full-screen blocker eats the wheel (it's MouseFilter.Stop), so scroll the log from here.
     private void OnBlockerGuiInput(InputEvent e)
     {
@@ -157,8 +200,21 @@ internal sealed class DamageDetailView
                 if (mb.ButtonIndex == MouseButton.WheelUp) { ScrollBy(-3); _inputBlock.AcceptEvent(); }
                 else if (mb.ButtonIndex == MouseButton.WheelDown) { ScrollBy(3); _inputBlock.AcceptEvent(); }
             }
+            else if (e is InputEventPanGesture pg) { ScrollByPan(pg.Delta.Y); _inputBlock.AcceptEvent(); }
         }
         catch { }
+    }
+
+    // macOS trackpads send two-finger scrolling as InputEventPanGesture, never as wheel buttons. Mirror
+    // Godot's ScrollContainer (one unit of pan delta = 1/8 page) and carry the fractional remainder.
+    private float _panAccum;
+    public void ScrollByPan(float deltaY)
+    {
+        _panAccum += deltaY * Math.Max(1, _visible) / 8f;
+        int rows = (int)_panAccum;
+        if (rows == 0) return;
+        _panAccum -= rows;
+        ScrollBy(rows);
     }
 
     // Consumed by the mod: true once after a click on the close button.
@@ -184,9 +240,9 @@ internal sealed class DamageDetailView
             _btnHovered = overClose;
             _btnPressed = overClose && leftDown;
             if (leftDown && !_leftLast && overClose) _closeRequested = true;
-            // Summary mode: only the ✕ is interactive (no scrollbar). Stop after close detection.
-            if (SummaryMode) { _leftLast = leftDown; return; }
-            bool overTrackX = m.X >= _sbX - 6f && m.X <= _sbX + 12f;
+            // The scrollbar is draggable in summary mode too: the summary's input catcher covers the panel,
+            // so a click on the track never reaches the rewards screen underneath.
+            bool overTrackX = m.X >= _sbHitL && m.X <= _sbHitR;
             bool overGrabber = overTrackX && m.Y >= _grabberY && m.Y <= _grabberY + _grabberH;
             bool overTrack = overTrackX && m.Y >= _trackY && m.Y <= _trackY + _trackH;
 
@@ -216,7 +272,7 @@ internal sealed class DamageDetailView
     public bool Visible => IsValid() && _panelVisible;
     public void SetVisible(bool v)
     {
-        if (v && !_panelVisible) { _btnShow = 0f; _btnHover = 0f; _btnPress = 0f; _btnHovered = false; _btnPressed = false; }
+        if (v && !_panelVisible) { _btnShow = 0f; _btnHover = 0f; _btnPress = 0f; _btnHovered = false; _btnPressed = false; _blurT = 0f; }
         _panelVisible = v;
         if (!IsValid()) return;
         _layer.Visible = v;
@@ -285,6 +341,16 @@ internal sealed class DamageDetailView
         return null;
     }
 
+    // Shared vertical metrics, so Render's stacking math matches what RenderLog / RenderHistoryBand draw.
+    private float LogHeadH(bool full) => full ? 28f * _fontScale : 22f;     // "Combat Log" heading -> first line
+    private float LogLineH(bool full) => full ? 22f * _fontScale : 16f;
+    // _bottomReserve already measures the full distance from the screen bottom to keep clear of the close
+    // button (don't also subtract pad — that double-counted and wasted ~a pad of log height).
+    private float LogListBottom(bool full) => _h - (full ? _bottomReserve : 10f);
+    private float HistRowH => 22f * _fontScale;
+    // Title + column heads + `shown` fight rows + the TOTAL row.
+    private float HistoryBandHeight(int shown) => 26f * _fontScale + HistRowH * (shown + 2);
+
     // Top padding (viewport px) that pushes full-screen content below the game's top bar (~8% of
     // viewport height, letterbox-excluded) while the dim backdrop stays full-bleed. 9% leaves a hair.
     private static float TopBarInset(Vector2 vp) => Math.Max(48f, vp.Y * 0.09f);
@@ -320,7 +386,7 @@ internal sealed class DamageDetailView
             }
             _container.SetSize(new Vector2(_w, _h));
             _dim.Visible = full;
-            if (full) { _dim.SetPosition(Vector2.Zero); _dim.SetSize(new Vector2(_w, _h)); }
+            if (full) { _dim.SetPosition(Vector2.Zero); _dim.SetSize(new Vector2(_w, _h)); UpdateBlur(); }
             // Input-catcher: full-screen under the takeover (suppresses stray game tooltips), or just over
             // the summary panel (so the mouse wheel scrolls the summary log instead of the rewards screen
             // underneath eating it). Outside the summary panel stays click-through.
@@ -329,33 +395,26 @@ internal sealed class DamageDetailView
             else if (SummaryMode) { _inputBlock.SetPosition(_container.Position); _inputBlock.SetSize(new Vector2(_w, _h)); }
             _bg.Visible = !full;
             if (!full) { _bg.SetPosition(Vector2.Zero); _bg.SetSize(new Vector2(_w, _h)); }
+            _bgShadow.Visible = false;
+            if (!full && EnsureNativePanel())
+            {
+                // The hover-tip frame's art sits in its outer margins (content inset L22 T16 R45 B28), so
+                // grow the frame outward around the unchanged content layout instead of shifting the text.
+                var r = new Rect2(-12f, -8f, _w + 47f, _h + 26f);
+                _bg.SetPosition(r.Position); _bg.SetSize(r.Size);
+                _bgShadow.Visible = true; _bgShadow.SetPosition(r.Position); _bgShadow.SetSize(r.Size);
+            }
             _barLayer.SetSize(new Vector2(_w, _h));
 
             float pad = full ? Math.Max(28f, _w * 0.05f) : 14f;
             float gap = full ? pad : 12f;
             float headerY = full ? top + pad * 0.6f : 8f;
-            float colTop = headerY + (full ? 48f * _fontScale : 32f);
-            // Recap reserves a totals band (Dealt/Taken/Healed/Block) between the header and the columns.
-            // The in-combat view instead reserves a run-history band (per prior combat). They never
-            // co-occur (recap is out of combat), so they share the same slot below the header.
             bool recap = full && RecapMode;
             bool history = full && !recap && ShowRunHistory && RunFights != null && RunFights.Count > 0;
-            float bandTop = colTop;
-            int histShown = history ? Math.Min(RunFights!.Count, 6) : 0;
-            if (recap) colTop += 56f * _fontScale;
-            else if (history) colTop += (34f + (histShown + 1) * 16f) * _fontScale;
             float colW = (_w - pad * 2f - gap) * 0.5f;
             float leftX = pad;
             float rightX = pad + colW + gap;
-            // Full-screen stacks three bands within the padded content area: by-source columns, the
-            // Damage/Round chart, then the log.
-            float chartTop = full ? top + (_h - top) * 0.32f : 0f;
-            float logTop = full ? top + (_h - top) * 0.58f : 296f;
             float rowH = full ? 26f * _fontScale : 22f;
-            // Column rows: as many as fit between the column head and the next band.
-            int maxRows = full
-                ? Math.Max(3, (int)((chartTop - pad - (colTop + 24f)) / rowH))
-                : SummaryMaxRows;
 
             // Close/back button, full-screen only: a self-drawn button (bottom-left, like deck/map) that we
             // animate ourselves — fades + scales in on open, grows/brightens on hover, depresses on press.
@@ -407,10 +466,62 @@ internal sealed class DamageDetailView
             var ps = (slot < snap.PerPlayer.Length) ? snap.PerPlayer[slot] : new PlayerSources();
             var color = palette[Math.Min(slot, palette.Length - 1)];
 
+            // ----- Vertical layout: sections stack top-down, each below the previous one's real bottom -----
+            // Header, then the recap totals or run-history band (they never co-occur: recap is out of
+            // combat), then the Dealt/Taken columns, then (full only) the Damage/Round chart, then the log.
+            // Source rows (and history rows, when space is tight) are capped so the chart keeps a minimum
+            // plot and the log keeps LogMinRows; leftover height is split between chart and log.
+            float vgap = full ? 20f * _fontScale : 12f;
+            float colTop = headerY + (full ? 48f * _fontScale : 32f);
+            float bandTop = colTop;
+            float colHeadH = full ? 30f * _fontScale : 24f;          // column heading -> first row (RenderColumn)
+            float listBottom = LogListBottom(full);
+            float logMinH = LogHeadH(full) + LogMinRows * LogLineH(full);
+            float chartMinH = full ? 140f * _fontScale : 0f;
+            // Potions used: one row under the columns, only when any were used this scope.
+            float potH = ps.Potions.Count > 0 ? (full ? 30f * _fontScale : 24f) : 0f;
+            float belowCols = potH + (full ? vgap + chartMinH + vgap + logMinH : vgap + logMinH);
+            int srcCount = Math.Max(1, Math.Max(ps.Dealt.Count, ps.Taken.Count));   // empty column = one "—" row
+            int histShown = history ? Math.Min(RunFights!.Count, HistoryMaxRows) : 0;
+            int fitRows;
+            while (true)
+            {
+                float bandH = recap ? 56f * _fontScale + vgap : history ? HistoryBandHeight(histShown) + vgap : 0f;
+                fitRows = (int)((listBottom - belowCols - (colTop + bandH + colHeadH)) / rowH);
+                // Give up history rows (oldest first; the TOTAL row stays) before squeezing sources below 3.
+                if (!history || histShown == 0 || fitRows >= Math.Min(srcCount, 3)) { colTop += bandH; break; }
+                histShown--;
+            }
+            int rowCap = full ? fitRows : Math.Min(fitRows, SummaryMaxRows);
+            // Overflowing columns spend their last line on "+ N more".
+            int maxRows = Math.Max(1, srcCount <= rowCap ? rowCap : rowCap - 1);
+            int colLines = Math.Min(srcCount, maxRows) + (srcCount > maxRows ? 1 : 0);
+            float colBottom = colTop + colHeadH + colLines * rowH;
+            float potY = colBottom + (potH > 0f ? vgap * 0.5f : 0f);
+            if (potH > 0f) colBottom = potY + potH;
+
+            float chartTop = 0f, chartH = 0f, logTop;
+            if (full)
+            {
+                // The chart keeps its usual proportional slot when the columns are short, and otherwise
+                // follows them down, never past the point that would leave the log under its minimum.
+                chartTop = Math.Max(colBottom + vgap, top + (_h - top) * 0.32f);
+                chartTop = Math.Max(colBottom + vgap, Math.Min(chartTop, listBottom - logMinH - vgap - chartMinH));
+                float extra = listBottom - chartTop - chartMinH - vgap - logMinH;
+                if (extra >= 0f)
+                {
+                    float chartPrefH = Math.Max(chartMinH, (_h - top) * 0.26f - vgap);
+                    chartH = chartMinH + Math.Min(chartPrefH - chartMinH, extra * 0.5f);
+                    logTop = chartTop + chartH + vgap;
+                }
+                else logTop = colBottom + vgap;   // extreme ui_scale on a tiny viewport: drop the chart, keep the log
+            }
+            else logTop = Math.Max(296f, colBottom + vgap);
+
             int cur = 0, barCur = 0, iconCur = 0;
             string who = (snap.PlayerCount > 1 && slot < snap.Labels.Length) ? $" — {snap.Labels[slot]}" : "";
 
-            var header = Next(ref cur, full ? 22 : 16, UiTheme.Gold);
+            var header = Next(ref cur, full ? 22 : 16, UiTheme.Gold, FontRole.Bold);
             header.Text = recap
                 ? $"Run Recap{who}     ({HotkeyHint} to close)"
                 : SummaryMode
@@ -424,11 +535,12 @@ internal sealed class DamageDetailView
             else if (history)
                 RenderHistoryBand(ref cur, pad, bandTop, _w - pad * 2f, RunFights!, histShown);
 
-            RenderColumn(ref cur, ref barCur, ref iconCur, leftX, colTop, colW, rowH, maxRows, full, "DEALT", ps.Dealt, ps.DealtTotal, color);
-            RenderColumn(ref cur, ref barCur, ref iconCur, rightX, colTop, colW, rowH, maxRows, full, "TAKEN", ps.Taken, ps.TakenTotal, UiTheme.Red);
+            RenderColumn(ref cur, ref barCur, ref iconCur, leftX, colTop, colW, rowH, maxRows, full, "DEALT", ps.Dealt, ps.DealtTotal, color, false);
+            RenderColumn(ref cur, ref barCur, ref iconCur, rightX, colTop, colW, rowH, maxRows, full, "TAKEN", ps.Taken, ps.TakenTotal, UiTheme.Red, true);
+            if (potH > 0f) RenderPotions(ref cur, ref iconCur, leftX, potY, _w - pad * 2f, ps.Potions, full);
 
-            if (full)
-                RenderRoundChart(ref cur, ref barCur, ref iconCur, chart, palette, pad, chartTop, _w - pad * 2f, logTop - chartTop - 10f, recap);
+            if (full && chartH > 0f)
+                RenderRoundChart(ref cur, ref barCur, ref iconCur, chart, palette, pad, chartTop, _w - pad * 2f, chartH, recap);
 
             RenderLog(ref cur, snap.Log, full, pad, logTop);
 
@@ -455,10 +567,10 @@ internal sealed class DamageDetailView
         for (int i = 0; i < stats.Length; i++)
         {
             float cx = x + i * cellW;
-            var cap = Next(ref cur, 12, new Color(stats[i].Color.R, stats[i].Color.G, stats[i].Color.B, 0.75f));
+            var cap = Next(ref cur, 12, new Color(stats[i].Color.R, stats[i].Color.G, stats[i].Color.B, 0.75f), FontRole.Bold);
             cap.Text = stats[i].Caption;
             cap.SetPosition(new Vector2(cx, top));
-            var val = Next(ref cur, 26, stats[i].Color);
+            var val = Next(ref cur, 26, stats[i].Color, FontRole.Numeric);
             val.Text = stats[i].Value.ToString();
             val.SetPosition(new Vector2(cx, top + 16f * _fontScale));
         }
@@ -475,7 +587,8 @@ internal sealed class DamageDetailView
         Color[] cols = { dim, UiTheme.Cream, UiTheme.Red, heal, block };
 
         int n = fights.Count;
-        var head = Next(ref cur, 13, UiTheme.Gold);
+        // Sized like the by-source columns below it (16 heading, 14 rows) rather than as fine print.
+        var head = Next(ref cur, 16, UiTheme.Gold, FontRole.Bold);
         head.Text = $"RUN SO FAR — {n} prior fight{(n == 1 ? "" : "s")}";
         head.SetPosition(new Vector2(x, top));
 
@@ -484,10 +597,10 @@ internal sealed class DamageDetailView
         float[] cx = { x, x + fightW, x + fightW + statW, x + fightW + statW * 2f, x + fightW + statW * 3f };
         string[] heads = { "FIGHT", "DEALT", "TAKEN", "HEAL", "BLOCK" };
 
-        float chY = top + 16f * _fontScale;
+        float chY = top + 26f * _fontScale;
         for (int i = 0; i < heads.Length; i++)
         {
-            var h = Next(ref cur, 11, new Color(cols[i].R, cols[i].G, cols[i].B, 0.7f));
+            var h = Next(ref cur, 13, new Color(cols[i].R, cols[i].G, cols[i].B, 0.7f), FontRole.Bold);
             h.Text = heads[i];
             h.SetPosition(new Vector2(cx[i], chY));
         }
@@ -495,8 +608,8 @@ internal sealed class DamageDetailView
         long td = 0, tt = 0, th = 0, tb = 0;
         foreach (var f in fights) { td += f.Dealt; tt += f.Taken; th += f.Heal; tb += f.Block; }
 
-        float rowH = 16f * _fontScale;
-        float y = top + 34f * _fontScale;
+        float rowH = HistRowH;
+        float y = chY + rowH;
         int start = Math.Max(0, n - shown);
         for (int i = start; i < n; i++)
         {
@@ -504,7 +617,7 @@ internal sealed class DamageDetailView
             string[] vals = { f.Fight.ToString(), f.Dealt.ToString(), f.Taken.ToString(), f.Heal.ToString(), f.Block.ToString() };
             for (int c = 0; c < vals.Length; c++)
             {
-                var lbl = Next(ref cur, 12, cols[c]);
+                var lbl = Next(ref cur, 14, cols[c], FontRole.Numeric);
                 lbl.Text = vals[c];
                 lbl.SetPosition(new Vector2(cx[c], y));
             }
@@ -513,7 +626,7 @@ internal sealed class DamageDetailView
         string[] totals = { "TOTAL", td.ToString(), tt.ToString(), th.ToString(), tb.ToString() };
         for (int c = 0; c < totals.Length; c++)
         {
-            var lbl = Next(ref cur, 12, c == 0 ? UiTheme.Gold : cols[c]);
+            var lbl = Next(ref cur, 14, c == 0 ? UiTheme.Gold : cols[c], FontRole.Numeric);
             lbl.Text = totals[c];
             lbl.SetPosition(new Vector2(cx[c], y));
         }
@@ -521,9 +634,9 @@ internal sealed class DamageDetailView
 
     private void RenderColumn(ref int cur, ref int barCur, ref int iconCur, float x, float top, float colW,
                               float rowH, int maxRows, bool full, string title,
-                              List<SourceEntry> entries, long total, Color accent)
+                              List<SourceEntry> entries, long total, Color accent, bool taken)
     {
-        var head = Next(ref cur, full ? 16 : 13, accent);
+        var head = Next(ref cur, full ? 16 : 13, accent, FontRole.Numeric);
         head.Text = $"{title}   {total}";
         head.SetPosition(new Vector2(x, top));
 
@@ -556,24 +669,38 @@ internal sealed class DamageDetailView
             bar.SetPosition(new Vector2(x - 2f, y - 1f));
             bar.SetSize(new Vector2(Math.Max(bw, 2f), rowH - 4f));
 
-            // Card/relic icon at the row head, if we have art for this source.
+            // Card/relic icon at the row head, if we have art for this source (native_visuals: else a
+            // best-effort game icon from the source's name / an enemy-attack intent icon; else text only).
             float textX = x;
-            if (e.Icon != null)
+            var tex = e.Icon != null ? LoadTex(e.Icon) : null;
+            tex ??= FallbackIcon(e.Name, e.Total, taken);
+            if (tex != null)
             {
-                var tex = LoadTex(e.Icon);
-                if (tex != null)
-                {
-                    var ic = NextIcon(ref iconCur);
-                    ic.Texture = tex;
-                    ic.SetPosition(new Vector2(x, y - 1f));
-                    ic.SetSize(new Vector2(iconSz, iconSz));
-                    textX = x + iconSz + 4f;
-                }
+                var ic = NextIcon(ref iconCur);
+                ic.Texture = tex;
+                ic.SetPosition(new Vector2(x, y - 1f));
+                ic.SetSize(new Vector2(iconSz, iconSz));
+                textX = x + iconSz + 4f;
             }
 
-            var row = Next(ref cur, textSize, UiTheme.Cream);
-            row.Text = $"{Truncate(e.Name, full ? 24 : 18)}  {e.Total} ({pct}%)";
-            row.SetPosition(new Vector2(textX, y));
+            if (GameAssets.NumericFont != null)
+            {
+                // Native: name on the left, total + share right-aligned in the game's numeric Kreon.
+                var name = Next(ref cur, textSize, UiTheme.Cream);
+                name.Text = Truncate(e.Name, full ? 24 : 18);
+                name.SetPosition(new Vector2(textX, y));
+                var val = Next(ref cur, textSize, UiTheme.Cream, FontRole.Numeric);
+                val.Text = $"{e.Total} ({pct}%)";
+                val.HorizontalAlignment = HorizontalAlignment.Right;
+                val.SetPosition(new Vector2(textX, y));
+                val.SetSize(new Vector2(Math.Max(0f, x + colW - 6f - textX), 0f));
+            }
+            else
+            {
+                var row = Next(ref cur, textSize, UiTheme.Cream);
+                row.Text = $"{Truncate(e.Name, full ? 24 : 18)}  {e.Total} ({pct}%)";
+                row.SetPosition(new Vector2(textX, y));
+            }
             y += rowH;
         }
         if (entries.Count > shown)
@@ -590,7 +717,7 @@ internal sealed class DamageDetailView
                                   float x, float top, float w, float h, bool recap = false)
     {
         const int Cap = 12;             // show the most recent rounds (or fights); older scroll off
-        var head = Next(ref cur, 16, UiTheme.Gold);
+        var head = Next(ref cur, 16, UiTheme.Gold, FontRole.Bold);
         head.Text = recap ? "Damage / Fight" : "Damage / Round";
         head.SetPosition(new Vector2(x, top));
 
@@ -638,8 +765,8 @@ internal sealed class DamageDetailView
         var glT = NextBar(ref barCur); glT.Color = new Color(1f, 1f, 1f, 0.10f);
         glT.SetPosition(new Vector2(plotLeft, plotTop)); glT.SetSize(new Vector2(plotW, 1f));
         var axisColor = new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.55f);
-        var peak = Next(ref cur, 14, axisColor); peak.Text = maxVal.ToString(); peak.SetPosition(new Vector2(x, plotTop - 6f));
-        var zero = Next(ref cur, 14, axisColor); zero.Text = "0"; zero.SetPosition(new Vector2(x, plotBottom - 6f));
+        var peak = Next(ref cur, 14, axisColor, FontRole.Numeric); peak.Text = maxVal.ToString(); peak.SetPosition(new Vector2(x, plotTop - 6f));
+        var zero = Next(ref cur, 14, axisColor, FontRole.Numeric); zero.Text = "0"; zero.SetPosition(new Vector2(x, plotBottom - 6f));
 
         // Each round group is only as wide as it needs to be (~ability-icon width per cell), left-
         // aligned, rather than stretched across the whole band.
@@ -696,7 +823,7 @@ internal sealed class DamageDetailView
                 }
             }
 
-            var rl = Next(ref cur, 14, new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.6f));
+            var rl = Next(ref cur, 14, new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.6f), FontRole.Numeric);
             rl.Text = row.Round.ToString();
             rl.SetPosition(new Vector2(groupX + groupW * 0.5f - 4f, plotBottom + 4f));
         }
@@ -705,15 +832,13 @@ internal sealed class DamageDetailView
     private void RenderLog(ref int cur, LogEntry[] log, bool full, float pad, float top)
     {
         float leftX = full ? pad : 14f;
-        var head = Next(ref cur, full ? 16 : 13, UiTheme.Gold);
+        var head = Next(ref cur, full ? 16 : 13, UiTheme.Gold, FontRole.Bold);
         head.Text = "Combat Log";
         head.SetPosition(new Vector2(leftX, top));
 
-        float listTop = top + (full ? 28f * _fontScale : 22f);
-        // _bottomReserve already measures the full distance from the screen bottom to keep clear of the
-        // close button (don't also subtract pad — that double-counted and wasted ~a pad of log height).
-        float listBottom = _h - (full ? _bottomReserve : 10f);
-        float lineH = full ? 22f * _fontScale : 16f;
+        float listTop = top + LogHeadH(full);
+        float listBottom = LogListBottom(full);
+        float lineH = LogLineH(full);
         float regionH = listBottom - listTop;
         _visible = Math.Max(1, (int)(regionH / lineH));
 
@@ -738,7 +863,7 @@ internal sealed class DamageDetailView
         for (int i = _logOffset; i < rows.Count && i < _logOffset + _visible; i++)
         {
             var r = rows[i];
-            var lbl = Next(ref cur, r.Sep ? sepSize : lineSize, r.Color);
+            var lbl = Next(ref cur, r.Sep ? sepSize : lineSize, r.Color, r.Sep ? FontRole.Bold : FontRole.Body);
             lbl.Text = r.Text;
             lbl.SetPosition(new Vector2(r.Sep ? leftX : leftX + 4f, y));
             y += lineH;
@@ -748,7 +873,12 @@ internal sealed class DamageDetailView
         _trackY = listTop; _trackH = regionH;
         _sbX = _w - (full ? pad : 12f);
         float sbW = full ? 8f : 6f;
-        if (_maxOffset > 0)
+        _sbHitL = _sbX - 6f; _sbHitR = _sbX + 12f;
+        if (RenderNativeScrollbar(full, sbW, rows.Count))
+        {
+            _track.Visible = false; _grabber.Visible = false;
+        }
+        else if (_maxOffset > 0)
         {
             _grabberH = Math.Max(24f, _trackH * _visible / rows.Count);
             _grabberY = _trackY + (_trackH - _grabberH) * ((float)_logOffset / _maxOffset);
@@ -756,6 +886,142 @@ internal sealed class DamageDetailView
             _grabber.Visible = true; _grabber.SetPosition(new Vector2(_sbX, _grabberY)); _grabber.SetSize(new Vector2(sbW, _grabberH));
         }
         else { _track.Visible = false; _grabber.Visible = false; _grabberH = 0f; }
+    }
+
+    // The game's scrollbar (scenes/ui/scrollbar.tscn): a tinted track body with square end caps (the
+    // same edge sprite, flipped at the bottom) and a fixed-size knob that rides it, 1.5x the track width
+    // (the game's 72px knob on a 48px track). Large art in the takeover, the small set in the summary.
+    // False (and native pieces hidden) when native_visuals is off, the art is missing, or nothing scrolls;
+    // the caller then draws the original ColorRect bar.
+    private bool RenderNativeScrollbar(bool full, float sbW, int rowCount)
+    {
+        bool ok = false;
+        try
+        {
+            if (_maxOffset > 0 && GameAssets.Enabled)
+            {
+                var track = full ? (_nTrackStyle ??= GameAssets.ScrollTrackStyle(false))
+                                 : (_nTrackStyleSmall ??= GameAssets.ScrollTrackStyle(true));
+                var knob = GameAssets.ScrollHandleTexture(!full);
+                if (track != null && knob != null)
+                {
+                    float tw = full ? 18f * _fontScale : 10f;
+                    float tx = _sbX + sbW * 0.5f - tw * 0.5f;           // centered on the old bar's line
+                    float ks = tw * 1.5f;
+                    var cap = GameAssets.Texture(GameAssets.Paths.UiAtlasSprites + (full ? "scrollbar_track_edge2.tres" : "small_scrollbar_track_edge.tres"));
+                    // Caps keep the edge sprite's aspect (scrollbar.tscn: expand_mode fit-height-proportional;
+                    // the large edge is 60x36, the small one square).
+                    float capH = cap != null ? Math.Min(tw * cap.GetHeight() / Math.Max(1f, cap.GetWidth()), _trackH * 0.25f) : 0f;
+
+                    if (_nTrackApplied != track) { _nTrack.AddThemeStyleboxOverride("panel", track); _nTrackApplied = track; }
+                    _nTrack.Visible = true;
+                    _nTrack.SetPosition(new Vector2(tx, _trackY + capH));
+                    _nTrack.SetSize(new Vector2(tw, Math.Max(1f, _trackH - capH * 2f)));
+                    _nCapTop.Visible = _nCapBot.Visible = cap != null;
+                    if (cap != null)
+                    {
+                        _nCapTop.Texture = cap; _nCapBot.Texture = cap;
+                        _nCapTop.SetPosition(new Vector2(tx, _trackY)); _nCapTop.SetSize(new Vector2(tw, capH));
+                        _nCapBot.SetPosition(new Vector2(tx, _trackY + _trackH - capH)); _nCapBot.SetSize(new Vector2(tw, capH));
+                    }
+
+                    // Fixed-size knob: same travel math as the old grabber (drag maps over _trackH - _grabberH).
+                    _grabberH = Math.Min(ks, _trackH);
+                    _grabberY = _trackY + (_trackH - _grabberH) * ((float)_logOffset / _maxOffset);
+                    _nKnob.Texture = knob;
+                    _nKnob.Visible = true;
+                    _nKnob.SetPosition(new Vector2(tx + tw * 0.5f - ks * 0.5f, _grabberY));
+                    _nKnob.SetSize(new Vector2(ks, _grabberH));
+
+                    _sbHitL = Math.Min(_sbHitL, tx + tw * 0.5f - ks * 0.5f);
+                    _sbHitR = Math.Max(_sbHitR, tx + tw * 0.5f + ks * 0.5f);
+                    ok = true;
+                }
+            }
+        }
+        catch { ok = false; }
+        if (!ok) { _nTrack.Visible = false; _nCapTop.Visible = false; _nCapBot.Visible = false; _nKnob.Visible = false; }
+        return ok;
+    }
+
+    // Takeover backdrop: the game's own screen-space blur (shaders/dark_blur.gdshader, uniforms lod and
+    // mix_percentage), eased in to NMainMenu's backstop values (lod 3, mix 0.7) like its 0.25s tween. The
+    // shader overwrites COLOR, so the ColorRect's dim color only shows when it's absent (the fallback).
+    private void UpdateBlur()
+    {
+        try
+        {
+            if (_blurMat == null && GameAssets.Shader(GameAssets.Paths.DarkBlurShader) is Shader sh)
+                _blurMat = new ShaderMaterial { Shader = sh };
+            if (_blurMat == null) { _dim.Material = null; return; }
+            _blurT += (1f - _blurT) * 0.25f;
+            _blurMat.SetShaderParameter(BlurLod, 3f * _blurT);
+            _blurMat.SetShaderParameter(BlurMix, 0.7f * _blurT);
+            if (_dim.Material != _blurMat) _dim.Material = _blurMat;
+        }
+        catch { try { _dim.Material = null; } catch { } }
+    }
+
+    // Summary frame: the game's hover-tip panel art (plus its drop shadow), applied once when available.
+    private bool EnsureNativePanel()
+    {
+        if (_nativePanel) return true;
+        try
+        {
+            var panel = GameAssets.NativePanel();
+            if (panel == null) return false;
+            var shadow = GameAssets.NativePanelShadow();
+            _bg.AddThemeStyleboxOverride("panel", panel);
+            if (shadow != null) _bgShadow.AddThemeStyleboxOverride("panel", shadow);
+            else _bgShadow.AddThemeStyleboxOverride("panel", new StyleBoxEmpty());
+            _nativePanel = true;
+        }
+        catch { }
+        return _nativePanel;
+    }
+
+    // native_visuals fallback for a source row with no stamped icon. Taken-side labels never carry an icon
+    // and pets/statuses may not, so first try the game's own sprite for the name (English titles map onto
+    // power/relic/potion atlas entries, e.g. "Poison" -> poison_power.tres); else, for damage taken from a
+    // named attacker, the enemy attack-intent icon sized by the game's thresholds. Null = text-only row.
+    private Texture2D? FallbackIcon(string name, long total, bool taken)
+    {
+        if (!GameAssets.Enabled || string.IsNullOrEmpty(name)) return null;
+        try
+        {
+            if (!_nameIconCache.TryGetValue(name, out var tex)) { tex = NameIcon(name); _nameIconCache[name] = tex; }
+            if (tex != null) return tex;
+            if (taken && name is not ("Status" or "Other" or "Unknown"))
+                return GameAssets.IntentAttackIcon((int)Math.Min(total, int.MaxValue));
+        }
+        catch { }
+        return null;
+    }
+
+    private static Texture2D? NameIcon(string name)
+    {
+        var sb = new System.Text.StringBuilder(name.Length);
+        foreach (char ch in name.Trim().ToLowerInvariant())
+        {
+            if (ch is >= 'a' and <= 'z' or >= '0' and <= '9') sb.Append(ch);
+            else if ((ch == ' ' || ch == '-' || ch == '_') && sb.Length > 0 && sb[^1] != '_') sb.Append('_');
+        }
+        string slug = sb.ToString().Trim('_');
+        if (slug.Length == 0) return null;
+        // Probe with Exists first so names that aren't game entries (monsters, cards) don't each log a
+        // GameAssets "unavailable" line.
+        foreach (var p in new[]
+        {
+            $"res://images/atlases/power_atlas.sprites/{slug}_power.tres",
+            $"res://images/atlases/power_atlas.sprites/{slug}.tres",
+            $"res://images/atlases/relic_atlas.sprites/{slug}.tres",
+            $"res://images/atlases/potion_atlas.sprites/{slug}.tres",
+        })
+        {
+            try { if (ResourceLoader.Exists(p) && GameAssets.Texture(p) is Texture2D t) return t; }
+            catch { }
+        }
+        return null;
     }
 
     private ColorRect NextBar(ref int cursor)
@@ -766,6 +1032,47 @@ internal sealed class DamageDetailView
         bar.Visible = true;
         cursor++;
         return bar;
+    }
+
+    // "POTIONS" then each potion used (icon, name, xN when repeated) flowing left to right; whatever doesn't
+    // fit the width collapses into "+ N more".
+    private void RenderPotions(ref int cur, ref int iconCur, float x, float y, float width, List<SourceEntry> potions, bool full)
+    {
+        int textSize = full ? 14 : 12;
+        float iconSz = full ? 22f * _fontScale : 18f;
+        var green = new Color(0.55f, 0.85f, 0.55f);
+        var head = Next(ref cur, textSize, green, FontRole.Bold);
+        head.Text = "POTIONS";
+        head.SetPosition(new Vector2(x, y));
+        float cx = x + (full ? 90f * _fontScale : 66f);
+        float right = x + width;
+        float charW = textSize * _fontScale * 0.55f;   // rough Kreon advance, for fitting only
+        for (int i = 0; i < potions.Count; i++)
+        {
+            var e = potions[i];
+            string label = e.Total > 1 ? $"{e.Name} x{e.Total}" : e.Name;
+            float need = iconSz + 4f + label.Length * charW + 14f;
+            if (cx + need > right && i > 0)
+            {
+                var more = Next(ref cur, textSize, new Color(1f, 1f, 1f, 0.5f));
+                more.Text = $"+ {potions.Count - i} more";
+                more.SetPosition(new Vector2(cx, y));
+                break;
+            }
+            var tex = e.Icon != null ? LoadTex(e.Icon) : null;
+            if (tex != null)
+            {
+                var ic = NextIcon(ref iconCur);
+                ic.Texture = tex;
+                ic.SetPosition(new Vector2(cx, y - 2f));
+                ic.SetSize(new Vector2(iconSz, iconSz));
+                cx += iconSz + 4f;
+            }
+            var lbl = Next(ref cur, textSize, UiTheme.Cream);
+            lbl.Text = label;
+            lbl.SetPosition(new Vector2(cx, y));
+            cx += label.Length * charW + 14f;
+        }
     }
 
     private TextureRect NextIcon(ref int cursor)
@@ -803,14 +1110,26 @@ internal sealed class DamageDetailView
     // In the full-screen takeover, force a content color fully opaque (only the backdrop stays dim).
     private Color Opaque(Color c) => _opaque ? new Color(c.R, c.G, c.B, 1f) : c;
 
-    private Label Next(ref int cursor, int fontSize, Color color)
+    // Which game Kreon a label gets under native_visuals (Body = UiTheme's font, unchanged when off).
+    private enum FontRole { Body, Bold, Numeric }
+
+    private Label Next(ref int cursor, int fontSize, Color color, FontRole role = FontRole.Body)
     {
         if (_opaque) color = new Color(color.R, color.G, color.B, 1f);
         int fs = Math.Max(1, (int)Math.Round(fontSize * _fontScale));
         Label lbl;
         if (cursor < _labels.Count) lbl = _labels[cursor];
         else { lbl = UiTheme.MakeLabel(fs, color); _container.AddChild(lbl); _labels.Add(lbl); }
+        if (GameAssets.Enabled)
+        {
+            // Pooled labels may have been a right-aligned value or a bold/numeric one last frame.
+            lbl.RemoveThemeFontOverride("font");
+            lbl.HorizontalAlignment = HorizontalAlignment.Left;
+            lbl.SetSize(Vector2.Zero);
+        }
         UiTheme.Apply(lbl, fs, color);
+        if (role != FontRole.Body && (role == FontRole.Bold ? GameAssets.KreonBold : GameAssets.NumericFont) is Font f)
+            lbl.AddThemeFontOverride("font", f);
         lbl.Visible = true;
         cursor++;
         return lbl;

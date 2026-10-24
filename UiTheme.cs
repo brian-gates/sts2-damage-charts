@@ -69,13 +69,17 @@ internal static class UiTheme
         p.AddThemeStyleboxOverride("panel", PanelStyle(bgAlpha, scale));
     }
 
-    // --- Game font (lifted once from a live game label; falls back to the default font) ---
+    // --- Game font (GameAssets' Kreon when native_visuals is on, else lifted once from a live game label,
+    //     else the default font) ---
     private static Font? _font;
     private static bool _resolved;
 
     public static void EnsureFont(Node? sceneRoot)
     {
         if (_resolved || sceneRoot == null) return;
+        // native_visuals: load the game's own Kreon straight from its pack; else lift it live as before.
+        var native = GameAssets.KreonRegular;
+        if (native != null) { _font = native; _resolved = true; return; }
         try
         {
             var rtl = FindFirst<RichTextLabel>(sceneRoot);
@@ -151,6 +155,16 @@ internal static class UiTheme
         lbl.AddThemeColorOverride("font_color", color);
         lbl.AddThemeColorOverride("font_outline_color", Outline);
         lbl.AddThemeConstantOverride("outline_size", 4);
+    }
+
+    // For a RichTextLabel driven by BBCode [color] tags, so a single line can mix per-value colors.
+    public static void Apply(RichTextLabel rtl, int fontSize, Color defaultColor)
+    {
+        if (_font != null) rtl.AddThemeFontOverride("normal_font", _font);
+        rtl.AddThemeFontSizeOverride("normal_font_size", Math.Max(1, fontSize));
+        rtl.AddThemeColorOverride("default_color", defaultColor);
+        rtl.AddThemeColorOverride("font_outline_color", Outline);
+        rtl.AddThemeConstantOverride("outline_size", 4);
     }
 
     private static T? FindFirst<T>(Node start) where T : Node

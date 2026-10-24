@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <!-- CI/dev machines may only have the .NET 10 runtime installed; roll the net9.0 test host forward. -->
+    <RollForward>Major</RollForward>
+    <Nullable>enable</Nullable>
+    <LangVersion>12.0</LangVersion>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>STS2_DamageCharts.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <!-- Compile the pure calculator directly (it has no Godot/game refs), so tests need no game DLLs. -->
+  <ItemGroup>
+    <Compile Include="../DamageForecast.cs" Link="DamageForecast.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+</Project>
