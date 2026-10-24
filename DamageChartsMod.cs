@@ -397,6 +397,12 @@ public static class DamageChartsMod
                 if (mb.ButtonIndex == MouseButton.WheelUp) { _detail.ScrollBy(-3); return false; }
                 if (mb.ButtonIndex == MouseButton.WheelDown) { _detail.ScrollBy(3); return false; }
             }
+            // Trackpad two-finger scroll arrives as a pan gesture on macOS, not as wheel buttons.
+            if (inputEvent is InputEventPanGesture pg && (_detailVisible || _summaryActive || _recapVisible) && _detail != null)
+            {
+                _detail.ScrollByPan(pg.Delta.Y);
+                return false;
+            }
         }
         catch { }
         return true;

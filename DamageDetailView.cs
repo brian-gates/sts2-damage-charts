@@ -198,8 +198,21 @@ internal sealed class DamageDetailView
                 if (mb.ButtonIndex == MouseButton.WheelUp) { ScrollBy(-3); _inputBlock.AcceptEvent(); }
                 else if (mb.ButtonIndex == MouseButton.WheelDown) { ScrollBy(3); _inputBlock.AcceptEvent(); }
             }
+            else if (e is InputEventPanGesture pg) { ScrollByPan(pg.Delta.Y); _inputBlock.AcceptEvent(); }
         }
         catch { }
+    }
+
+    // macOS trackpads send two-finger scrolling as InputEventPanGesture, never as wheel buttons. Mirror
+    // Godot's ScrollContainer (one unit of pan delta = 1/8 page) and carry the fractional remainder.
+    private float _panAccum;
+    public void ScrollByPan(float deltaY)
+    {
+        _panAccum += deltaY * Math.Max(1, _visible) / 8f;
+        int rows = (int)_panAccum;
+        if (rows == 0) return;
+        _panAccum -= rows;
+        ScrollBy(rows);
     }
 
     // Consumed by the mod: true once after a click on the close button.
