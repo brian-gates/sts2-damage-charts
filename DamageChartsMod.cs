@@ -198,6 +198,7 @@ public static class DamageChartsMod
             if (root.TryGetProperty("ui_scale", out var us) && us.ValueKind == JsonValueKind.Number && us.TryGetSingle(out float uss)) _uiScale = Math.Clamp(uss, 0.5f, 4f);
             if (root.TryGetProperty("source_hooks", out var shk) && shk.ValueKind == JsonValueKind.True) _sourceHooks = true;
             if (root.TryGetProperty("native_visuals", out var nv) && nv.ValueKind == JsonValueKind.False) GameAssets.Enabled = false;
+            if (root.TryGetProperty("vfx_moments", out var vm) && vm.ValueKind == JsonValueKind.True) VfxMoments.Enabled = true;
             if (root.TryGetProperty("hotkey", out var hk) && hk.ValueKind == JsonValueKind.String)
             {
                 _hotkeySpec = hk.GetString() ?? _hotkeySpec;
@@ -230,6 +231,7 @@ public static class DamageChartsMod
                 ["forecast_pos_x_frac"] = _fcForecastPosRounded().X,
                 ["forecast_pos_y_frac"] = _fcForecastPosRounded().Y,
                 ["native_visuals"] = GameAssets.Enabled,
+                ["vfx_moments"] = VfxMoments.Enabled,
             };
             if (ForecastReader.Debug) dict["forecast_debug"] = true;
             File.WriteAllText(path, JsonSerializer.Serialize(dict, new JsonSerializerOptions { WriteIndented = true }));
@@ -274,6 +276,7 @@ public static class DamageChartsMod
                 _showBars = showBars;
                 if (!_showBars) _bars?.Hide();
             }
+            VfxMoments.Enabled = root.TryGetProperty("vfx_moments", out var vm) && vm.ValueKind == JsonValueKind.True;
         }
         catch (Exception ex) { GD.PrintErr($"[STS2 Damage] config reload failed: {ex.Message}"); }
     }
@@ -592,7 +595,7 @@ public static class DamageChartsMod
             }
             else label = "Status"; // unattributed non-card damage
             foreach (var t in targets)
-                if (t != null) _pending[t] = (label, dealer, icon);
+                if (t != null) { _pending[t] = (label, dealer, icon); VfxMoments.NoteAttack(t, dealer); }
         }
         catch { /* never disrupt damage resolution */ }
     }
@@ -638,7 +641,9 @@ public static class DamageChartsMod
                     // dead)? If the player abandons the fight instead, this stays false and we suppress the
                     // end-of-combat summary.
                     if (!_combatResolved && IsCombatResolved(cs)) _combatResolved = true;
-                    if (IsBlockingUiOpen())
+                    bool blocking = IsBlockingUiOpen();
+                    VfxMoments.Tick(cs.RoundNumber, blocking || _detailVisible);
+                    if (blocking)
                     {
                         // A game menu/modal/overlay is on top — get out of its way.
                         _bars?.Hide(); _tooltip?.Hide(); _detail?.SetVisible(false); _forecast?.Hide(); _forecastLedger?.Hide();
@@ -812,6 +817,7 @@ public static class DamageChartsMod
         _frozenForecast = null;
         _localSlot = localSlot;
         _tracker.Reset(_players.Count, labels, localSlot);
+        VfxMoments.Reset(me);
         _pending.Clear();
         UnsubscribeAll();
         EnsureViews();
@@ -1025,6 +1031,7 @@ public static class DamageChartsMod
         if (_disabled) return;
         try
         {
+            VfxMoments.OnBlockChanged(creature, oldBlock, newBlock);
             int gained = newBlock - oldBlock;
             if (gained <= 0 || !creature.IsPlayer) return; // only block *gained*, players only
             int slot = SlotOf(creature.Player);
@@ -1065,6 +1072,7 @@ public static class DamageChartsMod
                     : (pend.Label ?? ConsumeActive().Label ?? "Unknown");
                 string victim = MaybeName(creature);
                 _tracker.AddTaken(round, slot, lost, attacker);
+                VfxMoments.OnTaken(creature, lost);
                 _tracker.AddLog(round, $"{attacker} → {victim}  {lost}", true);
                 return;
             }
@@ -1080,6 +1088,7 @@ public static class DamageChartsMod
             if (pend.Label != null) { src = pend.Label; icon = pend.Icon; }
             else { var a = ConsumeActive(); src = a.Label ?? "Status"; icon = a.Icon; } // Doom/Kill & other non-Damage paths
             _tracker.AddDealt(round, dslot, lost, src, icon);
+            if (dslot == _localSlot) VfxMoments.OnDealt(creature, lost, src, icon);
             _tracker.AddLog(round, $"{src} → {TextHelper.SafeGetText(() => creature.Monster!.Title) ?? "Enemy"}  {lost}", false);
         }
         catch { /* overlay must never break combat */ }
