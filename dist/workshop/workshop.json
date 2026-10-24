@@ -1,8 +1,8 @@
 {
   "title": "Damage Charts",
-  "description": "Live in-combat damage analytics overlay: an always-on per-round dealt/taken bar chart, a hotkey-toggled (default C) breakdown of damage dealt and taken by source (cards, Poison, Doom, etc.), and an end-of-run recap. Single-player and multiplayer. Standalone — depends on no other mod.\n\nNote: by-source attribution for damage-over-time, relics, orbs, and potions ships disabled by default for stability, so that damage is labelled generically (Status/Other); opt in via the source_hooks config at your own risk. All other stats are always tracked.",
+  "description": "Damage analytics and an incoming-damage forecast for Slay the Spire 2.\n\n- Incoming forecast, docked beside your character: the HP you're about to lose this turn and what you'll be left at (a range when uncertain). Counts enemy intents, damage over time, self-damage cards, Block, Osty and end-of-turn Block (Plating, Orichalcum, Cloak Clasp), and ignores enemies that will die to Poison first. Reads Safe when nothing can hurt you; hover it for the per-round history and itemized sources.\n- Combat stats (default C): damage dealt and taken by source, a per-round chart, potions used and a scrollable combat log.\n- End-of-combat summary beside the rewards list, and a run recap out of combat.\n- Uses the game's own fonts, icons and frames; optional big-moment effects with the game's own VFX.\n\nSingle-player and multiplayer. Standalone, depends on no other mod. By-name attribution for damage-over-time, relic, orb and potion hits is opt-in via the source_hooks config.",
   "visibility": "private",
-  "changeNote": "Initial release.",
+  "changeNote": "Incoming-damage forecast docked beside your character; potions in the combat summary; the game's own fonts, icons and frames; trackpad scrolling; summary only beside the rewards list; layout fixes.",
   "tags": [],
   "dependencies": []
 }
