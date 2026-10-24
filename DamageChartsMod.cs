@@ -504,7 +504,7 @@ public static class DamageChartsMod
         {
             var prefix = new HarmonyMethod(typeof(DamageChartsMod).GetMethod(nameof(PowerSourcePrefix), BindingFlags.NonPublic | BindingFlags.Static));
             var doomPrefix = new HarmonyMethod(typeof(DamageChartsMod).GetMethod(nameof(DoomKillPrefix), BindingFlags.NonPublic | BindingFlags.Static));
-            try { var dp = "res://images/atlases/power_atlas.sprites/doom.tres"; if (ResourceLoader.Exists(dp)) _doomIcon = dp; } catch { }
+            try { var dp = "res://images/atlases/power_atlas.sprites/doom_power.tres"; if (ResourceLoader.Exists(dp)) _doomIcon = dp; } catch { }
             var h = new Harmony("com.sts2damagecharts.powers");
 
             // Doom kills via CreatureCmd.Kill (animation-delayed) — pre-tag the doomed creatures by
