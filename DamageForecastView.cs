@@ -128,6 +128,10 @@ internal sealed class DamageForecastView
     public void Dispose() { if (IsValid()) _layer.QueueFree(); }
     public Vector2 PositionFraction => _posFrac;
     public bool IsDragging => _dragging;
+    // Docked mode: sit beside the local player's creature (AnchorRect, viewport coords; null = not found,
+    // fall back to the saved fraction). A drag that moves the panel turns docking off.
+    public bool AnchorToPlayer { get; set; } = true;
+    public Rect2? AnchorRect { get; set; }
 
     public bool IsHovered()
     {
@@ -168,7 +172,7 @@ internal sealed class DamageForecastView
             else if (!leftDown && _leftLast)
             {
                 bool moved = (global - _pressStart).Length() > 5f;
-                if (_dragging) { _dragging = false; if (moved) savedNow = true; }
+                if (_dragging) { _dragging = false; if (moved) { savedNow = true; AnchorToPlayer = false; } }
             }
             _leftLast = leftDown;
         }
@@ -203,6 +207,17 @@ internal sealed class DamageForecastView
                 _posFrac = new Vector2(_vp.X > 0 ? margin / _vp.X : 0.02f,
                                        _vp.Y > 0 ? Math.Max(margin, inset) / _vp.Y : 0.02f);
                 _posFracInit = true;
+            }
+            if (AnchorToPlayer && !_dragging && AnchorRect is Rect2 hb && _vp.X > 0 && _vp.Y > 0)
+            {
+                // Left of the player's hitbox, bottom-aligned with it (the HP bar sits just below); flip to
+                // the right side if the player stands too close to the left edge. Kept as the fraction so a
+                // drag starts from where the panel is drawn.
+                float gap = 16f * sc;
+                float ax = hb.Position.X - gap - _w;
+                if (ax < margin) ax = hb.End.X + gap;
+                float ay = hb.End.Y - _h;
+                _posFrac = new Vector2(ax / _vp.X, ay / _vp.Y);
             }
             float px = Math.Clamp(_posFrac.X * _vp.X, 0f, Math.Max(0f, _vp.X - _w));
             float py = Math.Clamp(_posFrac.Y * _vp.Y, inset, Math.Max(inset, _vp.Y - _h));

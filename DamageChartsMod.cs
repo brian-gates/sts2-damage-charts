@@ -40,6 +40,9 @@ public static class DamageChartsMod
     private static bool _showForecast = true;
     private static float? _fcPosXFrac;
     private static float? _fcPosYFrac;
+    // Forecast placement: "player" (default) docks it beside the local player's creature, clear of enemy
+    // intents; "free" uses the dragged/saved fraction. Dragging the panel switches to free.
+    private static bool _fcAnchorPlayer = true;
     private static string _lastForecastLog = "";
 
     private static readonly DamageTracker _tracker = new();
@@ -192,6 +195,7 @@ public static class DamageChartsMod
             if (root.TryGetProperty("forecast", out var fc) && fc.ValueKind == JsonValueKind.False) _showForecast = false;
             if (root.TryGetProperty("forecast_pos_x_frac", out var fpx) && fpx.TryGetSingle(out var ffx)) _fcPosXFrac = ffx;
             if (root.TryGetProperty("forecast_pos_y_frac", out var fpy) && fpy.TryGetSingle(out var ffy)) _fcPosYFrac = ffy;
+            _fcAnchorPlayer = !(root.TryGetProperty("forecast_anchor", out var fan) && fan.ValueKind == JsonValueKind.String && fan.GetString() == "free");
             if (root.TryGetProperty("forecast_debug", out var fdb) && fdb.ValueKind == JsonValueKind.True) ForecastReader.Debug = true;
             if (root.TryGetProperty("summary_on_combat_end", out var su) && su.ValueKind == JsonValueKind.False) _summaryOnEnd = false;
             if (root.TryGetProperty("run_recap", out var rr) && rr.ValueKind == JsonValueKind.False) _recapEnabled = false;
@@ -230,6 +234,7 @@ public static class DamageChartsMod
                 ["forecast"] = _showForecast,
                 ["forecast_pos_x_frac"] = _fcForecastPosRounded().X,
                 ["forecast_pos_y_frac"] = _fcForecastPosRounded().Y,
+                ["forecast_anchor"] = _fcAnchorPlayer ? "player" : "free",
                 ["native_visuals"] = GameAssets.Enabled,
                 ["vfx_moments"] = VfxMoments.Enabled,
             };
@@ -745,6 +750,48 @@ public static class DamageChartsMod
         SafeTeardown();
     }
 
+    // Viewport rect of the local player's creature hitbox: NCombatRoom.Instance.GetCreatureNode(creature).Hitbox
+    // (verified in sts2.dll v0.107.1). The reflection lookup runs at most every ~30 frames and only until the
+    // node is found; after that we read the cached Control each frame through plain Godot calls.
+    private static PropertyInfo? _roomInstanceProp, _hitboxProp;
+    private static MethodInfo? _getCreatureNode;
+    private static bool _anchorResolved;
+    private static Control? _anchorHitbox;
+    private static Creature? _anchorCreature;
+    private static long _anchorLookupFrame = -1000;
+
+    private static Rect2? LocalPlayerHitboxRect()
+    {
+        try
+        {
+            Creature? me = (_localSlot >= 0 && _localSlot < _players.Count) ? _players[_localSlot]?.Creature : null;
+            if (me == null) return null;
+            if (_anchorHitbox == null || !GodotObject.IsInstanceValid(_anchorHitbox) || !ReferenceEquals(_anchorCreature, me))
+            {
+                _anchorHitbox = null;
+                if (_frame - _anchorLookupFrame < 30) return null;
+                _anchorLookupFrame = _frame;
+                if (!_anchorResolved)
+                {
+                    _anchorResolved = true;
+                    var room = AccessTools.TypeByName("MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom");
+                    _roomInstanceProp = room != null ? AccessTools.Property(room, "Instance") : null;
+                    _getCreatureNode = room != null ? AccessTools.Method(room, "GetCreatureNode", new[] { typeof(Creature) }) : null;
+                    var node = AccessTools.TypeByName("MegaCrit.Sts2.Core.Nodes.Combat.NCreature");
+                    _hitboxProp = node != null ? AccessTools.Property(node, "Hitbox") : null;
+                }
+                var inst = _roomInstanceProp?.GetValue(null);
+                if (inst == null || _getCreatureNode == null || _hitboxProp == null) return null;
+                var creatureNode = _getCreatureNode.Invoke(inst, new object[] { me });
+                if (creatureNode == null || _hitboxProp.GetValue(creatureNode) is not Control hb) return null;
+                _anchorHitbox = hb; _anchorCreature = me;
+            }
+            var xf = _anchorHitbox.GetGlobalTransformWithCanvas();
+            return new Rect2(xf.Origin, _anchorHitbox.Size * xf.Scale);
+        }
+        catch { _anchorHitbox = null; return null; }
+    }
+
     private static void UpdateForecast(CombatState cs)
     {
         try
@@ -757,8 +804,14 @@ public static class DamageChartsMod
             // value instead of letting the shown loss climb as the animation resolves.
             if (ForecastReader.IsPlanningPhase(_players, _localSlot) || _frozenForecast == null) _frozenForecast = r;
             r = _frozenForecast.Value;
+            _forecast.AnchorToPlayer = _fcAnchorPlayer;
+            _forecast.AnchorRect = _fcAnchorPlayer ? LocalPlayerHitboxRect() : null;
             _forecast.Render(r);
-            if (_forecast.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left))) SaveConfig();
+            if (_forecast.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left)))
+            {
+                _fcAnchorPlayer = _forecast.AnchorToPlayer;   // a drag undocks it
+                SaveConfig();
+            }
             if (!_forecast.IsDragging && _forecast.IsHovered() && _forecast.LastResult is { } last)
                 _forecastLedger?.Render(last, _tracker.Snapshot(), _localSlot, cs.RoundNumber, RootMouse());
             else _forecastLedger?.Hide();
