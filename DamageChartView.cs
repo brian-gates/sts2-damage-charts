@@ -516,14 +516,17 @@ internal static class NativeLook
     public static void LayoutFrame(Panel frame, Panel shadow, float w, float h, float sc, float alpha)
     {
         var size = new Vector2(w / sc + OverhangX, h / sc + OverhangY);
-        foreach (var p in new[] { shadow, frame })
-        {
-            p.Scale = new Vector2(sc, sc);
-            p.SetPosition(Vector2.Zero);
-            p.SetSize(size);
-            p.SelfModulate = new Color(1f, 1f, 1f, alpha);
-            p.Visible = true;
-        }
+        Fit(shadow, size, sc, alpha);
+        Fit(frame, size, sc, alpha);
+    }
+
+    private static void Fit(Panel p, Vector2 size, float sc, float alpha)
+    {
+        p.Scale = new Vector2(sc, sc);
+        p.SetPosition(Vector2.Zero);
+        p.SetSize(size);
+        p.SelfModulate = new Color(1f, 1f, 1f, alpha);
+        p.Visible = true;
     }
 
     public static void HideFrame(Panel frame, Panel shadow)
@@ -557,6 +560,7 @@ internal static class NativeLook
         lbl.RemoveThemeConstantOverride("shadow_offset_y");
         lbl.HorizontalAlignment = HorizontalAlignment.Left;
         lbl.VerticalAlignment = VerticalAlignment.Top;
+        lbl.TextOverrunBehavior = TextServer.OverrunBehavior.NoTrimming;
         lbl.Size = Vector2.Zero; // shrink back to the text's minimum size
     }
 

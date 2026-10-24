@@ -237,6 +237,10 @@ internal sealed class DamageTooltipView
     {
         l.HorizontalAlignment = align;
         l.VerticalAlignment = VerticalAlignment.Center;
+        // Text columns end in an ellipsis instead of running under the amount column or past the frame;
+        // amounts never trim. (Trimming also lets the label shrink below its text width to fit the slot.)
+        l.TextOverrunBehavior = align == HorizontalAlignment.Left
+            ? TextServer.OverrunBehavior.TrimEllipsis : TextServer.OverrunBehavior.NoTrimming;
         l.SetPosition(new Vector2(x, y));
         l.Size = Vector2.Zero; // re-fit, then widen to the slot (never narrower than the text)
         l.SetSize(new Vector2(w, h));
@@ -252,7 +256,7 @@ internal sealed class DamageTooltipView
 
     private Label NextNative(ref int cursor, int fontSize, Color color, Font? font)
     {
-        var lbl = Next(ref cursor, fontSize, color);
+        var lbl = Take(ref cursor, fontSize, color);
         NativeLook.Style(lbl, fontSize, color, font, 0);
         return lbl;
     }
@@ -262,11 +266,17 @@ internal sealed class DamageTooltipView
 
     private Label Next(ref int cursor, int fontSize, Color color)
     {
+        var lbl = Take(ref cursor, fontSize, color);
+        NativeLook.Reset(lbl); // the flat look gets an untouched label
+        UiTheme.Apply(lbl, fontSize, color);
+        return lbl;
+    }
+
+    private Label Take(ref int cursor, int fontSize, Color color)
+    {
         Label lbl;
         if (cursor < _labels.Count) lbl = _labels[cursor];
         else { lbl = UiTheme.MakeLabel(fontSize, color); _container.AddChild(lbl); _labels.Add(lbl); }
-        NativeLook.Reset(lbl); // NextNative re-styles; the flat look gets an untouched label
-        UiTheme.Apply(lbl, fontSize, color);
         lbl.Visible = true;
         cursor++;
         return lbl;
