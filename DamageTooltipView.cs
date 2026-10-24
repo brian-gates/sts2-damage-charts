@@ -18,6 +18,7 @@ internal sealed class DamageTooltipView
     private const float NativeIcon = 26f;
 
     private readonly CanvasLayer _layer;
+    public float UiScaleMul = 1f;   // config ui_scale, like the other views
     private readonly Control _container;
     private readonly Panel _bg;
     private readonly Panel _frameShadow;
@@ -57,7 +58,7 @@ internal sealed class DamageTooltipView
             _layer.Visible = true;
             Vector2 vp;
             try { vp = _container.GetViewportRect().Size; } catch { vp = new Vector2(1920, 1080); }
-            float sc = UiTheme.Scale(vp);
+            float sc = UiTheme.Scale(vp) * Math.Clamp(UiScaleMul, 0.5f, 4f);
             int cur = 0, iconCur = 0;
             Vector2 size = NativeLook.EnsureFrame(_frame, _frameShadow, ref _frameStyled)
                 ? RenderNative(info, sc, ref cur, ref iconCur)

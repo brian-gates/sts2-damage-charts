@@ -24,6 +24,7 @@ internal sealed class ForecastLedgerView
     private static readonly Color RangeCol = new(UiTheme.Red.R, UiTheme.Red.G, UiTheme.Red.B, 0.42f);
 
     private readonly CanvasLayer _layer;
+    public float UiScaleMul = 1f;   // config ui_scale, like the other views
     private readonly Control _container;
     private readonly Panel _shadow;   // hover-tip drop shadow; only shown with the native panel
     private readonly Panel _bg;
@@ -69,7 +70,7 @@ internal sealed class ForecastLedgerView
             _layer.Visible = true;
             Vector2 vp;
             try { vp = _container.GetViewportRect().Size; } catch { vp = new Vector2(1920, 1080); }
-            float sc = UiTheme.Scale(vp);
+            float sc = UiTheme.Scale(vp) * Math.Clamp(UiScaleMul, 0.5f, 4f);
             if (!_nativePanel) _nativePanel = ForecastStyle.TryNativePanel(_bg, _shadow);
             if (!_nativePanel) UiTheme.RestylePanel(_bg, 0.95f, sc);
             // The hover-tip frame is ~8px thick; keep text clear of it.

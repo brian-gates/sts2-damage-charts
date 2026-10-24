@@ -700,6 +700,7 @@ public static class DamageChartsMod
                             // Poll-based drag + click + hover (no input overrides).
                             if (_bars.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left))) SaveConfig();
                             if (_bars.TakeClick()) { _detailVisible = !_detailVisible; _detail?.SetVisible(_detailVisible); } // click chart → toggle details
+                            if (_tooltip != null) _tooltip.UiScaleMul = _uiScale;
                             if (!_bars.IsDragging && _bars.TryGetHover(out var hv)) _tooltip?.Render(hv, RootMouse());
                             else _tooltip?.Hide();
                         }
@@ -814,6 +815,8 @@ public static class DamageChartsMod
             // value instead of letting the shown loss climb as the animation resolves.
             if (ForecastReader.IsPlanningPhase(_players, _localSlot) || _frozenForecast == null) _frozenForecast = r;
             r = _frozenForecast.Value;
+            _forecast.UiScaleMul = _uiScale;
+            if (_forecastLedger != null) _forecastLedger.UiScaleMul = _uiScale;
             _forecast.AnchorToPlayer = _fcAnchorPlayer;
             _forecast.AnchorRect = _fcAnchorPlayer ? LocalPlayerHitboxRect() : null;
             _forecast.Render(r);
