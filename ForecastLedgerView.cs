@@ -96,7 +96,7 @@ internal sealed class ForecastLedgerView
                 y += 17f * sc;
 
                 int scaleMax = 1;
-                foreach (var rd in rounds) scaleMax = Math.Max(scaleMax, Math.Max(rd.Loss, rd.Potential));
+                foreach (var rd in rounds) scaleMax = Math.Max(scaleMax, Math.Max(Math.Max(rd.Loss, rd.Potential), rd.MaxL));
 
                 float labelW = 22f * sc, barX = pad + labelW, barW = W - barX - pad;
                 float barH = 12f * sc, barRowH = 17f * sc;
