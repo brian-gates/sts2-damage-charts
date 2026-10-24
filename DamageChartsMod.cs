@@ -688,6 +688,8 @@ public static class DamageChartsMod
                             if (!_bars.IsDragging && _bars.TryGetHover(out var hv)) _tooltip?.Render(hv, RootMouse());
                             else _tooltip?.Hide();
                         }
+                        // Its CanvasLayer starts visible; never rendered, its title would sit alone at (0,0).
+                        else _bars?.Hide();
                         if (_showForecast) UpdateForecast(cs);
                     }
                 }
