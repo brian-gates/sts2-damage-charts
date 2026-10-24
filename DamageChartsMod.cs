@@ -178,7 +178,7 @@ public static class DamageChartsMod
 
             if (!File.Exists(path))
             {
-                try { File.WriteAllText(path, "{\n  \"enabled\": true,\n  \"hotkey\": \"c\",\n  \"show_bars\": false\n}\n"); }
+                try { File.WriteAllText(path, "{\n  \"enabled\": true,\n  \"hotkey\": \"c\",\n  \"show_bars\": false,\n  \"native_visuals\": true\n}\n"); }
                 catch { }
                 RememberConfigWriteTime(path);
                 return true;
@@ -197,6 +197,7 @@ public static class DamageChartsMod
             if (root.TryGetProperty("run_recap", out var rr) && rr.ValueKind == JsonValueKind.False) _recapEnabled = false;
             if (root.TryGetProperty("ui_scale", out var us) && us.ValueKind == JsonValueKind.Number && us.TryGetSingle(out float uss)) _uiScale = Math.Clamp(uss, 0.5f, 4f);
             if (root.TryGetProperty("source_hooks", out var shk) && shk.ValueKind == JsonValueKind.True) _sourceHooks = true;
+            if (root.TryGetProperty("native_visuals", out var nv) && nv.ValueKind == JsonValueKind.False) GameAssets.Enabled = false;
             if (root.TryGetProperty("hotkey", out var hk) && hk.ValueKind == JsonValueKind.String)
             {
                 _hotkeySpec = hk.GetString() ?? _hotkeySpec;
@@ -228,6 +229,7 @@ public static class DamageChartsMod
                 ["forecast"] = _showForecast,
                 ["forecast_pos_x_frac"] = _fcForecastPosRounded().X,
                 ["forecast_pos_y_frac"] = _fcForecastPosRounded().Y,
+                ["native_visuals"] = GameAssets.Enabled,
             };
             if (ForecastReader.Debug) dict["forecast_debug"] = true;
             File.WriteAllText(path, JsonSerializer.Serialize(dict, new JsonSerializerOptions { WriteIndented = true }));

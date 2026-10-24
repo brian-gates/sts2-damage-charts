@@ -69,13 +69,17 @@ internal static class UiTheme
         p.AddThemeStyleboxOverride("panel", PanelStyle(bgAlpha, scale));
     }
 
-    // --- Game font (lifted once from a live game label; falls back to the default font) ---
+    // --- Game font (GameAssets' Kreon when native_visuals is on, else lifted once from a live game label,
+    //     else the default font) ---
     private static Font? _font;
     private static bool _resolved;
 
     public static void EnsureFont(Node? sceneRoot)
     {
         if (_resolved || sceneRoot == null) return;
+        // native_visuals: load the game's own Kreon straight from its pack; else lift it live as before.
+        var native = GameAssets.KreonRegular;
+        if (native != null) { _font = native; _resolved = true; return; }
         try
         {
             var rtl = FindFirst<RichTextLabel>(sceneRoot);
