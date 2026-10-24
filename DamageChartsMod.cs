@@ -71,6 +71,7 @@ public static class DamageChartsMod
     private static bool _detailVisible;
     private static bool _summaryActive;       // auto end-of-combat summary showing
     private static bool _summaryAvailable;    // post-combat moment (until the map opens): the hotkey toggles the summary
+    private static bool _rewardsSeen;         // the rewards list has been on top during this post-combat moment
     private static bool _summaryOnEnd = true; // config
     private static bool _recapVisible;        // on-demand run recap takeover showing (out of combat)
     private static bool _recapEnabled = true; // config
@@ -768,14 +769,23 @@ public static class DamageChartsMod
             }
             else if (_summaryActive && _detail != null)
             {
-                // End-of-combat summary: shown over the rewards moment (click-through), hidden while a
+                // End-of-combat summary: shown beside the rewards list (click-through), hidden while a
                 // menu is up, dismissed once the player moves on to the map (or via Cmd+D / next fight).
                 _bars?.Hide(); _tooltip?.Hide(); _forecast?.Hide(); _forecastLedger?.Hide();
                 _detail.RecapMode = false; _detail.ShowRunHistory = false;
+                string? top = TopOverlayName();
                 if (IsMapOpen()) { _summaryActive = false; _summaryAvailable = false; _detail.SetVisible(false); }
-                else if (IsMenuOpen() || IsOverlayAboveRewards()) { _detail.SetVisible(false); }
+                else if (IsMenuOpen() || top != "NRewardsScreen")
+                {
+                    // The summary belongs to the rewards list only. Something over it (a card choice) hides it
+                    // for now; an empty stack after the list was shown means the player proceeded, which ends
+                    // the moment. Never shown where no rewards list appears (e.g. after an act boss).
+                    _detail.SetVisible(false);
+                    if (top == null && _rewardsSeen) { _summaryActive = false; _summaryAvailable = false; }
+                }
                 else
                 {
+                    _rewardsSeen = true;
                     _detail.SummaryMode = true; _detail.SetVisible(true);
                     _detail.Render(_tracker.SourceSnapshot(), _tracker.Snapshot(), Palette);
                     _detail.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left));
@@ -895,7 +905,7 @@ public static class DamageChartsMod
             {
                 _detailVisible = !_detailVisible; _detail?.SetVisible(_detailVisible);
             }
-            else if (_summaryAvailable && !IsMapOpen())
+            else if (_summaryAvailable && !IsMapOpen() && TopOverlayName() == "NRewardsScreen")
             {
                 // Still on the rewards moment: the hotkey toggles the compact summary (the recap is for later).
                 _summaryActive = !_summaryActive;
@@ -958,6 +968,7 @@ public static class DamageChartsMod
         // only for a real win/loss — not when the player abandons combat (e.g. quits to the menu).
         _summaryActive = _summaryOnEnd && _combatResolved && _tracker.HasData();
         _summaryAvailable = _summaryActive;
+        _rewardsSeen = false;
         if (!_summaryActive) _detail?.SetVisible(false);
         GD.Print($"[STS2 Damage] combat end (summary={_summaryActive})");
     }
@@ -1299,19 +1310,18 @@ public static class DamageChartsMod
         catch { return false; }
     }
 
-    // Something pushed over the rewards list (e.g. "Choose a Card": NCardRewardSelectionScreen.ShowScreen
-    // calls NOverlayStack.Push). The summary shares the screen with the rewards list only; over a card
-    // choice it would cover the leftmost card, so it waits until the player is back on the list.
-    private static bool IsOverlayAboveRewards()
+    // Type name of the top overlay screen (NOverlayStack.Instance.Peek()), or null if none. The rewards list
+    // (NRewardsScreen) is pushed in ShowScreen and removed when the player proceeds; a card choice
+    // (NCardRewardSelectionScreen) is pushed on top of it.
+    private static string? TopOverlayName()
     {
         try
         {
             ResolveBlockers();
             var stack = GetInstance(_tOverlay);
-            var top = stack?.GetType().GetMethod("Peek", Type.EmptyTypes)?.Invoke(stack, null);
-            return top != null && top.GetType().Name != "NRewardsScreen";
+            return stack?.GetType().GetMethod("Peek", Type.EmptyTypes)?.Invoke(stack, null)?.GetType().Name;
         }
-        catch { return false; }
+        catch { return null; }
     }
 
     // The map is open → the player has left the post-combat moment.
