@@ -728,7 +728,7 @@ public static class DamageChartsMod
                 _bars?.Hide(); _tooltip?.Hide(); _forecast?.Hide(); _forecastLedger?.Hide();
                 _detail.RecapMode = false; _detail.ShowRunHistory = false;
                 if (IsMapOpen()) { _summaryActive = false; _detail.SetVisible(false); }
-                else if (IsMenuOpen()) { _detail.SetVisible(false); }
+                else if (IsMenuOpen() || IsOverlayAboveRewards()) { _detail.SetVisible(false); }
                 else
                 {
                     _detail.SummaryMode = true; _detail.SetVisible(true);
@@ -1248,6 +1248,21 @@ public static class DamageChartsMod
     private static bool IsBlockingUiOpen()
     {
         try { return IsMenuOpen() || InstanceMemberNotNull(_tOverlay, "Peek", isMethod: true); }
+        catch { return false; }
+    }
+
+    // Something pushed over the rewards list (e.g. "Choose a Card": NCardRewardSelectionScreen.ShowScreen
+    // calls NOverlayStack.Push). The summary shares the screen with the rewards list only; over a card
+    // choice it would cover the leftmost card, so it waits until the player is back on the list.
+    private static bool IsOverlayAboveRewards()
+    {
+        try
+        {
+            ResolveBlockers();
+            var stack = GetInstance(_tOverlay);
+            var top = stack?.GetType().GetMethod("Peek", Type.EmptyTypes)?.Invoke(stack, null);
+            return top != null && top.GetType().Name != "NRewardsScreen";
+        }
         catch { return false; }
     }
 
