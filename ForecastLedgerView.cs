@@ -200,8 +200,7 @@ internal sealed class ForecastLedgerView
 
             float height = y + pad;
             _container.SetSize(new Vector2(W, height));
-            _bg.SetSize(new Vector2(W, height));
-            _shadow.SetSize(new Vector2(W, height));
+            ForecastStyle.SizeFrame(_bg, _shadow, W, height, sc, _nativePanel);
             _barLayer.SetSize(new Vector2(W, height));
 
             float off = 44f * sc;

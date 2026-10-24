@@ -190,10 +190,9 @@ internal sealed class DamageForecastView
             float margin = BaseMargin * sc;
 
             _container.SetSize(new Vector2(_w, _h));
-            _bg.SetSize(new Vector2(_w, _h));
-            _shadow.SetSize(new Vector2(_w, _h));
             _barLayer.SetSize(new Vector2(_w, _h));
             if (!_nativePanel) _nativePanel = ForecastStyle.TryNativePanel(_bg, _shadow);
+            ForecastStyle.SizeFrame(_bg, _shadow, _w, _h, sc, _nativePanel);
             if (!_nativePanel) UiTheme.RestylePanel(_bg, 0.5f, sc);
             Font? numFont = GameAssets.NumericFont;  // null when native_visuals is off or the font is missing
 
@@ -350,6 +349,17 @@ internal static class ForecastStyle
 
     // The game's hover-tip frame (GameAssets.NativePanel) plus its drop shadow. Returns false (and leaves
     // the panel alone) when the art is unavailable, so the caller keeps restyling with UiTheme.
+    // The hover-tip art samples a region 19x11px larger than the texture (transparent right/bottom), and its
+    // 9-slice margins are texture pixels. Like NativeLook.LayoutFrame: draw at 1x plus that overhang and scale
+    // the node, so the VISIBLE frame is exactly w x h. Fallback panels keep their plain w x h size.
+    public static void SizeFrame(Panel bg, Panel shadow, float w, float h, float sc, bool native)
+    {
+        var scale = native ? new Vector2(sc, sc) : Vector2.One;
+        var size = native ? new Vector2(w / sc + NativeLook.OverhangX, h / sc + NativeLook.OverhangY) : new Vector2(w, h);
+        bg.Scale = scale; bg.SetSize(size);
+        shadow.Scale = scale; shadow.SetSize(size);
+    }
+
     public static bool TryNativePanel(Panel bg, Panel shadow)
     {
         try
