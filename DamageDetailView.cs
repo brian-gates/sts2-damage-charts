@@ -225,8 +225,8 @@ internal sealed class DamageDetailView
             _btnHovered = overClose;
             _btnPressed = overClose && leftDown;
             if (leftDown && !_leftLast && overClose) _closeRequested = true;
-            // Summary mode: only the ✕ is interactive (no scrollbar). Stop after close detection.
-            if (SummaryMode) { _leftLast = leftDown; return; }
+            // The scrollbar is draggable in summary mode too: the summary's input catcher covers the panel,
+            // so a click on the track never reaches the rewards screen underneath.
             bool overTrackX = m.X >= _sbHitL && m.X <= _sbHitR;
             bool overGrabber = overTrackX && m.Y >= _grabberY && m.Y <= _grabberY + _grabberH;
             bool overTrack = overTrackX && m.Y >= _trackY && m.Y <= _trackY + _trackH;
