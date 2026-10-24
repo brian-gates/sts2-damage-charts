@@ -45,7 +45,7 @@ internal static class VfxMoments
     private static Player? _me;
     // Best hit
     private static int _best;
-    private static (Creature Target, int Amount, ulong Frame, ulong At)? _pendingBest;
+    private static (Creature Target, Vector2? At0, int Amount, ulong Frame, ulong At)? _pendingBest;
     private static ulong _lastBestMs;
     // Perfect block (per enemy turn, evaluated when the round number advances)
     private static int _round = -1;
@@ -112,8 +112,10 @@ internal static class VfxMoments
             if (amount > _best)
             {
                 // The first hit of a fight sets the bar silently; only beating a previous best is a moment.
+                // Keep the anchor from the moment of the hit too: big hits are often killing blows, and a
+                // dying creature's node stops being interactable before the moment gets to spawn.
                 if (_best > 0 && amount >= MinBestHit)
-                    _pendingBest = (target, amount, Engine.GetProcessFrames(), now);
+                    _pendingBest = (target, SpawnPos(target), amount, Engine.GetProcessFrames(), now);
                 _best = amount;
             }
 
@@ -158,7 +160,7 @@ internal static class VfxMoments
             if (_pendingBest is { } b && Engine.GetProcessFrames() - b.Frame >= BestSettleFrames && now - _lastBestMs >= BestCooldownMs)
             {
                 _pendingBest = null;
-                if (SpawnBestHit(b.Target, b.Amount)) { _lastBestMs = now; _lastAnyMs = now; }
+                if (SpawnBestHit(b.Target, b.At0, b.Amount)) { _lastBestMs = now; _lastAnyMs = now; }
                 return;
             }
             if (_pendingBlockAt.HasValue)
@@ -176,11 +178,11 @@ internal static class VfxMoments
         catch { }
     }
 
-    private static bool SpawnBestHit(Creature target, int amount)
+    private static bool SpawnBestHit(Creature target, Vector2? atHit, int amount)
     {
         if (GameAssets.Scene(GameAssets.Paths.DamageNumScene) == null) return false;
         var container = VfxContainer();
-        var at = SpawnPos(target);
+        var at = SpawnPos(target) ?? atHit;   // the Create(Vector2, int) overload never touches the creature
         if (container == null || at == null || _mDamageNumCreate == null) return false;
         // The game spawns its own number at VfxSpawnPosition + (0,-100); start ours well above it.
         if (_mDamageNumCreate.Invoke(null, new object[] { at.Value + new Vector2(0f, -250f), amount }) is not Node2D vfx) return false;
@@ -228,8 +230,12 @@ internal static class VfxMoments
         holder.GlobalPosition = at.Value + new Vector2(-size / 2f, -260f - size / 2f);
         holder.AddChild(flash);
         flash.TreeExited += () => { try { if (GodotObject.IsInstanceValid(holder)) holder.QueueFree(); } catch { } };
-        if (_mFlashStart.Invoke(flash, null) is Task t)
-            t.ContinueWith(x => _ = x.Exception, TaskContinuationOptions.OnlyOnFaulted);
+        try
+        {
+            if (_mFlashStart.Invoke(flash, null) is Task t)
+                t.ContinueWith(x => _ = x.Exception, TaskContinuationOptions.OnlyOnFaulted);
+        }
+        catch { holder.QueueFree(); return false; }   // never started => it would never free itself
         return true;
     }
 
