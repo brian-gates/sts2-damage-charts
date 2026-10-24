@@ -47,12 +47,33 @@ internal static class ForecastReader
             {
                 if (enemy == null) continue;
                 try { if (!enemy.IsAlive) continue; } catch { }
+                if (DiesToPoisonBeforeActing(enemy)) continue;
                 if (!TryReadEnemy(enemy, items)) hasHidden = true;
             }
         }
         catch { }
 
         return new ForecastInputs(hp, maxHp, block, ostyAbsorb, hasHidden, items, endTurnBlock);
+    }
+
+    // Mirrors the game's own check (NHealthBar.IsPoisonLethal, which turns the enemy's HP bar green):
+    // HasPower<PoisonPower> and PoisonPower.CalculateTotalDamageNextTurn() >= CurrentHp. Poison ticks at the
+    // start of the enemy's turn (PoisonPower.AfterSideTurnStart), before it acts, so its intents never land.
+    // Doom is not treated this way: its kill timing relative to the enemy's attack isn't verified.
+    private static bool DiesToPoisonBeforeActing(Creature enemy)
+    {
+        try
+        {
+            if (GetProp(enemy, "Powers") is not IEnumerable powers) return false;
+            foreach (var p in powers)
+            {
+                if (p == null || p.GetType().Name != "PoisonPower") continue;
+                int dmg = Invoke(p, "CalculateTotalDamageNextTurn") is int i ? i : 0;
+                return dmg > 0 && dmg >= enemy.CurrentHp;
+            }
+        }
+        catch { }
+        return false;
     }
 
     // Block the player gains at the end of their turn, before the enemy turn, assuming they end the turn
