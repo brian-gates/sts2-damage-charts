@@ -243,19 +243,22 @@ log and stack are identical to the captures above.
 **Trigger:** `SentryService.AfterGameInit()` sees `ShouldStayAliveAfterInit()` return false
 (`[Sentry.NET] Is running modded`) and calls `SentryService.Shutdown()`. That disposes the .NET SDK and
 then calls `shutdown` on the native `SentryInit` node (`[Sentry.GDExtension] Shutting down`). After
-that native shutdown the per-frame CFRunLoop observer is still registered and dereferences a freed
-object: main thread at `libsentry +0x737e8 → +0xcd3b4 → Object::get_instance_id()`, 100% of samples.
+that native shutdown the per-frame CFRunLoop observer is still registered, and in every hang we sampled
+the main thread was stuck in it at `libsentry +0x737e8 → +0xcd3b4 → Object::get_instance_id()`, 100% of
+samples. Our reading (not directly observed) is that the observer touches an object the shutdown freed.
 
-**It is a timing race.** Launches that hung had the native shutdown land *before*
-`[INFO] Applying display settings...`; the launch that reached the menu had it land after display
-setup. A slower startup (e.g. a laptop on low battery) makes the bad ordering more likely. This also
-matches the earlier observation that an unmodded run of your test build hung *on quit* with the same
-stack: quitting calls the same native `shutdown`.
+**Timing-dependent; the condition is not pinned down.** An earlier version of this update said hangs
+happen when the native shutdown lands *before* `[INFO] Applying display settings...`. That was wrong:
+4 later launches had the same order and reached the menu (corrected 2026-10-23). The 5-of-6 bad streak
+coincided with a nearly empty laptop battery; after charging, 4 of 4 launches without any workaround
+passed (Workshop load path). The earlier observation that an unmodded run of your test build hung *on
+quit* with the same stack is likely related: quitting calls the same native `shutdown`.
 
-**Confirmed by avoiding the call:** a Harmony prefix on `SentryService.Shutdown` that sets
-`SentryService._sentryInit = null` (so `Shutdown` still disposes the .NET SDK and flips `IsEnabled`, but
-skips the native `shutdown`) passed the freeze point in 3 of 3 launches on the same machine, with the
-native shutdown still happening before display setup.
+**Consistent with avoiding the call (not conclusive):** a Harmony prefix on `SentryService.Shutdown` that
+sets `SentryService._sentryInit = null` (so `Shutdown` still disposes the .NET SDK and flips `IsEnabled`,
+but skips the native `shutdown`) passed the freeze point in 3 of 3 launches during the bad streak, and 2 of
+2 later via the Workshop load path. Because the unpatched build also passed once the streak ended, this
+is evidence for the trigger, not proof.
 
 ### Suggested fix (smallest)
 In the modded path, don't call the native `shutdown` while the run-loop observer is live. Either leave
