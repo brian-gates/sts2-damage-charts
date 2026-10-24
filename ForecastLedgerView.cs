@@ -76,17 +76,13 @@ internal sealed class ForecastLedgerView
             // The hover-tip frame is ~8px thick; keep text clear of it.
             float W = BaseWidth * sc, rowH = 20f * sc, pad = (_nativePanel ? 13f : 8f) * sc;
             _sc = sc;
-            _titleFont = GameAssets.NumericFont;  // hover_tip Title: kreon_bold_glyph_space_one
             _bodyFont = GameAssets.BodyFont;      // hover_tip Description: kreon_regular_glyph_space_one
 
             int cur = 0, rect = 0, icon = 0;
             float y = pad;
 
-            var head = Next(ref cur, F(15, sc), _titleFont != null ? ForecastStyle.TitleGold : UiTheme.Gold, _titleFont);
-            head.Text = "Incoming Forecast";
-            head.SetPosition(new Vector2(pad, y));
-            y += 24f * sc;
-
+            // No title or In/Block/Loss footer: the forecast panel this hovers already shows them. The ledger
+            // adds only what the panel can't: the per-round history and the itemized sources.
             // ---- Timeline: HP lost per round (frozen history + live current round) ----
             var rounds = BuildRounds(r, history, localSlot, currentRound);
             if (rounds.Count > 0)
@@ -182,23 +178,6 @@ internal sealed class ForecastLedgerView
                 y += rowH;
             }
 
-            var sep = Next(ref cur, F(11, sc), new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.4f), _bodyFont);
-            sep.Text = "─────────";
-            sep.SetPosition(new Vector2(pad, y));
-            y += rowH;
-
-            string lossStr = r.MinLoss == r.MaxLoss ? r.MinLoss.ToString() : $"{r.MinLoss}–{r.MaxLoss}";
-            string ostyStr = r.OstyAbsorb > 0 ? $"   Osty {r.OstyAbsorb}" : "";
-            var foot = Next(ref cur, F(13, sc), r.IsLethal ? UiTheme.Red : UiTheme.Cream, GameAssets.NumericFont);
-            foot.Text = $"In {r.Incoming}   Block {r.Block}{ostyStr}   Loss {lossStr}";
-            foot.SetPosition(new Vector2(pad, y));
-            y += 20f * sc;
-            int after = r.CurrentHp - r.MaxLoss; // net-negative when lethal = mitigation still needed
-            var hp = Next(ref cur, F(13, sc), r.IsLethal ? UiTheme.Red : UiTheme.Gold, GameAssets.NumericFont);
-            hp.Text = $"HP {r.CurrentHp} → {after} after";
-            hp.SetPosition(new Vector2(pad, y));
-            y += 22f * sc;
-
             float height = y + pad;
             _container.SetSize(new Vector2(W, height));
             ForecastStyle.SizeFrame(_bg, _shadow, W, height, sc, _nativePanel);
@@ -261,7 +240,7 @@ internal sealed class ForecastLedgerView
     private static string Truncate(string s, int n) => s.Length <= n ? s : s[..(n - 1)] + "…";
 
     private float _sc = 1f;
-    private Font? _titleFont, _bodyFont;
+    private Font? _bodyFont;
 
     // font: a game font to use instead of UiTheme's (null keeps the current look). With one, the label
     // takes the hover tip's text treatment: no outline, soft 25% black shadow.
