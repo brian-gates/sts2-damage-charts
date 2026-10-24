@@ -70,6 +70,7 @@ public static class DamageChartsMod
     private static ForecastResult? _frozenForecast;  // last planning-phase value, held during the enemy turn
     private static bool _detailVisible;
     private static bool _summaryActive;       // auto end-of-combat summary showing
+    private static bool _summaryAvailable;    // post-combat moment (until the map opens): the hotkey toggles the summary
     private static bool _summaryOnEnd = true; // config
     private static bool _recapVisible;        // on-demand run recap takeover showing (out of combat)
     private static bool _recapEnabled = true; // config
@@ -771,7 +772,7 @@ public static class DamageChartsMod
                 // menu is up, dismissed once the player moves on to the map (or via Cmd+D / next fight).
                 _bars?.Hide(); _tooltip?.Hide(); _forecast?.Hide(); _forecastLedger?.Hide();
                 _detail.RecapMode = false; _detail.ShowRunHistory = false;
-                if (IsMapOpen()) { _summaryActive = false; _detail.SetVisible(false); }
+                if (IsMapOpen()) { _summaryActive = false; _summaryAvailable = false; _detail.SetVisible(false); }
                 else if (IsMenuOpen() || IsOverlayAboveRewards()) { _detail.SetVisible(false); }
                 else
                 {
@@ -894,10 +895,11 @@ public static class DamageChartsMod
             {
                 _detailVisible = !_detailVisible; _detail?.SetVisible(_detailVisible);
             }
-            else if (_summaryActive)
+            else if (_summaryAvailable && !IsMapOpen())
             {
-                // The end-of-combat summary takes priority: the hotkey dismisses it (next press opens recap).
-                _summaryActive = false; _detail?.SetVisible(false);
+                // Still on the rewards moment: the hotkey toggles the compact summary (the recap is for later).
+                _summaryActive = !_summaryActive;
+                if (!_summaryActive) _detail?.SetVisible(false);
             }
             else if (_recapEnabled && _run.HasData())
             {
@@ -929,6 +931,7 @@ public static class DamageChartsMod
         }
 
         _summaryActive = false; // a new fight clears any lingering end-of-combat summary
+        _summaryAvailable = false;
         _recapVisible = false;   // the recap is an out-of-combat view
         _combatResolved = false; // until enemies/player actually die, this combat hasn't ended naturally
         _allEnemiesDeadFrames = 0;
@@ -954,6 +957,7 @@ public static class DamageChartsMod
         // Auto-show the breakdown as an end-of-combat summary (until dismissed / map / next fight), but
         // only for a real win/loss — not when the player abandons combat (e.g. quits to the menu).
         _summaryActive = _summaryOnEnd && _combatResolved && _tracker.HasData();
+        _summaryAvailable = _summaryActive;
         if (!_summaryActive) _detail?.SetVisible(false);
         GD.Print($"[STS2 Damage] combat end (summary={_summaryActive})");
     }
