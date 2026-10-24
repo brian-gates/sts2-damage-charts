@@ -25,7 +25,7 @@ namespace STS2_DamageCharts;
 public static class DamageChartsMod
 {
     private const string ConfigFileName = "STS2_DamageCharts.conf";
-    private const string BuildTag = "2026-06-21";  // stamped at init so logs identify the loaded DLL
+    private const string BuildTag = "2026-10-22";  // stamped at init so logs identify the loaded DLL
 
     private static readonly Color[] Palette = UiTheme.Players;
 
@@ -71,10 +71,10 @@ public static class DamageChartsMod
     private static bool _recapVisible;        // on-demand run recap takeover showing (out of combat)
     private static bool _recapEnabled = true; // config
     private static float _uiScale = 1f;       // config: extra font/spacing multiplier for the takeover
-    // Power/relic/orb/potion source-attribution Harmony hooks. Default OFF: the blanket patching of every
-    // hook method (~791) can intermittently deadlock the CLR's reflection/JIT (observed as a hard hang and
-    // "Bad IL range" errors). With it off, DoT/relic damage is labeled "Status"/"Other" but the mod is
-    // stable. Opt in via config to get by-name attribution at that risk. See issue tracker for the fix.
+    // Power/relic/orb/potion source-attribution Harmony hooks. Default OFF: the old blanket patching of every
+    // hook method (~791) could intermittently deadlock the CLR's reflection/JIT (hard hang, "Bad IL range").
+    // It now patches only the curated DamageSourceHooks list; stays opt-in until labels are verified in game.
+    // With it off, DoT/relic damage is labeled "Status"/"Other". See docs/KNOWN_ISSUES.md.
     private static bool _sourceHooks;
     private static bool _combatResolved;      // this combat reached a win/loss (not abandoned)
     private static int _localSlot;            // local player's slot for this combat
@@ -93,6 +93,8 @@ public static class DamageChartsMod
 
     public static void Initialize()
     {
+        // Applied before the config check: it protects game startup even when the overlay is disabled.
+        TryApplySentryShutdownWorkaround();
         try
         {
             if (!LoadConfig()) { GD.Print("[STS2 Damage] disabled via config"); return; }
@@ -109,6 +111,49 @@ public static class DamageChartsMod
             GD.Print($"[STS2 Damage] initialized (build {BuildTag}, source_hooks={_sourceHooks})");
         }
         catch (Exception ex) { GD.PrintErr($"[STS2 Damage] init failed: {ex.Message}"); }
+    }
+
+    // ===== Sentry startup-freeze workaround =====
+
+    // When any mod is loaded, SentryService.AfterGameInit calls SentryService.Shutdown(), which disposes
+    // the .NET SDK and then calls `shutdown` on the native sentry-godot node (SentryInit). The native
+    // shutdown leaves its per-frame CFRunLoop observer registered; depending on startup timing that observer
+    // touches a freed object and the main thread hangs before the main menu (stack: libsentry ->
+    // Object::get_instance_id). Reproduces with any C# mod, manual or Workshop install.
+    // Fix: null SentryService._sentryInit just before Shutdown runs, so the game still disposes the .NET SDK
+    // and disables itself but skips the native call. The native side keeps the AlwaysRejectEvent sampler the
+    // game installs for modded runs (DisableGdExtensionIfModded), so nothing extra is reported.
+    // Own Harmony id, deliberately not in HarmonyIds: the overlay's self-disable must not remove it.
+    private static FieldInfo? _sentryInitField;
+
+    private static void TryApplySentryShutdownWorkaround()
+    {
+        try
+        {
+            var svc = AccessTools.TypeByName("MegaCrit.Sts2.Core.Debug.SentryService");
+            var shutdown = svc != null ? AccessTools.DeclaredMethod(svc, "Shutdown") : null;
+            _sentryInitField = svc != null ? AccessTools.Field(svc, "_sentryInit") : null;
+            if (shutdown == null || _sentryInitField == null || !_sentryInitField.IsStatic)
+            {
+                GD.Print("[STS2 Damage] sentry shutdown workaround not applied (game changed?)");
+                return;
+            }
+            new Harmony("com.sts2damagecharts.sentry").Patch(shutdown,
+                prefix: new HarmonyMethod(typeof(DamageChartsMod).GetMethod(nameof(SentryShutdownPrefix), BindingFlags.NonPublic | BindingFlags.Static)));
+            GD.Print("[STS2 Damage] sentry shutdown workaround applied");
+        }
+        catch (Exception ex) { GD.PrintErr($"[STS2 Damage] sentry shutdown workaround skipped: {ex.Message}"); }
+    }
+
+    private static void SentryShutdownPrefix()
+    {
+        try
+        {
+            if (_sentryInitField?.GetValue(null) == null) return;
+            _sentryInitField.SetValue(null, null);
+            GD.Print("[STS2 Damage] skipped native Sentry shutdown (modded-startup freeze workaround)");
+        }
+        catch { /* never block the game's own shutdown path */ }
     }
 
     // ===== Config =====
@@ -382,72 +427,108 @@ public static class DamageChartsMod
         return null;
     }
 
-    // Patch every PowerModel subclass's turn-start hook (where DoTs like Poison deal damage). The
-    // prefix reads the power's own Title/icon from __instance — no stack walking — and stashes it as
-    // the active source for the Damage call that immediately follows.
+    // The model methods that can change a creature's HP in combat, i.e. the only hooks worth stamping.
+    // Generated by a static call-graph sweep of sts2.dll v0.107.1 (REA inspect-managed-members over every
+    // Powers/Relics/Orbs/Potions type, following async state machines and same-type helpers to
+    // CreatureCmd.Damage/Kill/SetCurrentHp/LoseMaxHp). Pickup-time AfterObtained hooks and Fur Coat's
+    // SetCurrentHp are left out. Re-run the sweep after game updates; missing names are skipped and logged.
+    // Patching only these (instead of every hook override, ~791 methods) avoids the metadata corruption /
+    // CLR deadlock described in docs/KNOWN_ISSUES.md.
+    private static readonly (string Type, string[] Methods)[] DamageSourceHooks =
+    {
+        ("Orbs.DarkOrb", new[] { "Evoke" }),
+        ("Orbs.GlassOrb", new[] { "Evoke", "Passive" }),
+        ("Orbs.LightningOrb", new[] { "ApplyLightningDamage", "Evoke", "Passive" }),
+        ("Potions.ExplosiveAmpoule", new[] { "OnUse" }),
+        ("Potions.FirePotion", new[] { "OnUse" }),
+        ("Potions.FoulPotion", new[] { "OnUse" }),
+        ("Potions.PotionShapedRock", new[] { "OnUse" }),
+        ("Powers.BlackHolePower", new[] { "AfterCardPlayed", "AfterStarsGained", "DealDamageToAllEnemies" }),
+        ("Powers.ConstrictPower", new[] { "AfterSideTurnEnd" }),
+        ("Powers.CrimsonMantlePower", new[] { "AfterPlayerTurnStart" }),
+        ("Powers.DemisePower", new[] { "AfterSideTurnEnd" }),
+        ("Powers.DisintegrationPower", new[] { "AfterSideTurnEndLate" }),
+        ("Powers.DoomPower", new[] { "BeforeSideTurnEnd" }),
+        ("Powers.FlameBarrierPower", new[] { "AfterDamageReceived" }),
+        ("Powers.GalvanicPower", new[] { "AfterCardPlayed" }),
+        ("Powers.GravityPower", new[] { "AfterCardPlayed" }),
+        ("Powers.HailstormPower", new[] { "BeforeSideTurnEnd" }),
+        ("Powers.HauntPower", new[] { "AfterCardPlayed" }),
+        ("Powers.InfernoPower", new[] { "AfterDamageReceived", "AfterPlayerTurnStart" }),
+        ("Powers.JuggernautPower", new[] { "AfterBlockGained" }),
+        ("Powers.MagicBombPower", new[] { "AfterSideTurnEnd" }),
+        ("Powers.NecroMasteryPower", new[] { "AfterCurrentHpChanged" }),
+        ("Powers.OutbreakPower", new[] { "AfterPowerAmountChanged" }),
+        ("Powers.PanachePower", new[] { "AfterCardPlayed" }),
+        ("Powers.PaperCutsPower", new[] { "AfterDamageGiven" }),
+        ("Powers.PoisonPower", new[] { "AfterSideTurnStart" }),
+        ("Powers.ReflectPower", new[] { "AfterDamageReceived" }),
+        ("Powers.RollingBoulderPower", new[] { "AfterPlayerTurnStart", "DoDamage" }),
+        ("Powers.SandpitPower", new[] { "AfterRemoved" }),
+        ("Powers.SerpentFormPower", new[] { "AfterCardPlayed" }),
+        ("Powers.SleightOfFleshPower", new[] { "AfterPowerAmountChanged" }),
+        ("Powers.SmokestackPower", new[] { "AfterCardGeneratedForCombat" }),
+        ("Powers.SpeedsterPower", new[] { "AfterCardDrawn" }),
+        ("Powers.StranglePower", new[] { "AfterCardPlayed" }),
+        ("Powers.TheBombPower", new[] { "BeforeSideTurnEnd" }),
+        ("Powers.TheGambitPower", new[] { "AfterDamageReceived" }),
+        ("Powers.ThornsPower", new[] { "BeforeDamageReceived" }),
+        ("Powers.ThunderPower", new[] { "AfterOrbEvoked" }),
+        ("Relics.CharonsAshes", new[] { "AfterCardExhausted" }),
+        ("Relics.FestivePopper", new[] { "AfterPlayerTurnStart" }),
+        ("Relics.ForgottenSoul", new[] { "AfterCardExhausted" }),
+        ("Relics.Kusarigama", new[] { "AfterCardPlayed" }),
+        ("Relics.LetterOpener", new[] { "AfterCardPlayed" }),
+        ("Relics.LostWisp", new[] { "AfterCardPlayed" }),
+        ("Relics.MercuryHourglass", new[] { "AfterPlayerTurnStart" }),
+        ("Relics.Metronome", new[] { "AfterOrbChanneled" }),
+        ("Relics.MrStruggles", new[] { "AfterPlayerTurnStart" }),
+        ("Relics.ParryingShield", new[] { "AfterSideTurnEnd" }),
+        ("Relics.RoyalPoison", new[] { "AfterPlayerTurnStart" }),
+        ("Relics.ScreamingFlagon", new[] { "BeforeSideTurnEnd" }),
+        ("Relics.StoneCalendar", new[] { "BeforeSideTurnEnd" }),
+        ("Relics.Tingsha", new[] { "AfterCardDiscarded" }),
+    };
+
+    // Patch the curated damage-dealing hooks (DamageSourceHooks). The prefix reads the model's own
+    // Title/icon from __instance — no stack walking — and stashes it as the active source for the Damage
+    // call that immediately follows.
     private static void TryApplyPowerSourceHooks()
     {
         try
         {
-            var bases = new List<Type>();
-            foreach (var name in new[]
-            {
-                "MegaCrit.Sts2.Core.Models.PowerModel",  // Poison, Thorns, Black Hole, ...
-                "MegaCrit.Sts2.Core.Models.RelicModel",  // Potion Shaped Rock, ...
-                "MegaCrit.Sts2.Core.Models.OrbModel",    // Lightning, ...
-                "MegaCrit.Sts2.Core.Models.PotionModel", // attack potions, ...
-            })
-            {
-                var bt = AccessTools.TypeByName(name);
-                if (bt != null) bases.Add(bt);
-            }
-            if (bases.Count == 0) { GD.Print("[STS2 Damage] source base types not found; non-card names disabled"); return; }
-
             var prefix = new HarmonyMethod(typeof(DamageChartsMod).GetMethod(nameof(PowerSourcePrefix), BindingFlags.NonPublic | BindingFlags.Static));
             var doomPrefix = new HarmonyMethod(typeof(DamageChartsMod).GetMethod(nameof(DoomKillPrefix), BindingFlags.NonPublic | BindingFlags.Static));
             try { var dp = "res://images/atlases/power_atlas.sprites/doom.tres"; if (ResourceLoader.Exists(dp)) _doomIcon = dp; } catch { }
             var h = new Harmony("com.sts2damagecharts.powers");
 
-            Type[] types;
-            try { types = typeof(CombatManager).Assembly.GetTypes(); }
-            catch (ReflectionTypeLoadException ex) { types = ex.Types.Where(t => t != null).ToArray()!; }
+            // Doom kills via CreatureCmd.Kill (animation-delayed) — pre-tag the doomed creatures by
+            // reference so the kill-time HP loss is labeled "Doom" regardless of timing.
+            var doom = AccessTools.TypeByName("MegaCrit.Sts2.Core.Models.Powers.DoomPower");
+            var dk = doom != null ? AccessTools.DeclaredMethod(doom, "DoomKill") : null;
+            if (dk != null) { try { h.Patch(dk, prefix: doomPrefix); } catch { } }
 
-            // Patch every overridden hook method (void/Task) on each power subclass — e.g.
-            // AfterSideTurnStart (Poison), BeforeDamageReceived (Thorns), AfterCardPlayed /
-            // AfterStarsGained (Black Hole), etc. The prefix stamps that power as the active source
-            // for the Damage call that follows, so all damaging powers get named without a hardcoded list.
             int n = 0;
-            foreach (var t in types)
+            var missing = new List<string>();
+            foreach (var (typeName, methods) in DamageSourceHooks)
             {
-                if (t == null || t.IsAbstract) continue;
-                bool isSource = false;
-                foreach (var bt in bases) if (t.IsSubclassOf(bt)) { isSource = true; break; }
-                if (!isSource) continue;
-
-                // Doom kills via CreatureCmd.Kill (animation-delayed) — pre-tag the doomed creatures by
-                // reference so the kill-time HP loss is labeled "Doom" regardless of timing.
-                if (t.Name == "DoomPower")
+                var t = AccessTools.TypeByName("MegaCrit.Sts2.Core.Models." + typeName);
+                if (t == null) { missing.Add(typeName); continue; }
+                foreach (var name in methods)
                 {
-                    var dk = AccessTools.DeclaredMethod(t, "DoomKill");
-                    if (dk != null) { try { h.Patch(dk, prefix: doomPrefix); } catch { } }
-                }
-
-                foreach (var m in t.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
-                {
-                    try
+                    bool found = false;
+                    foreach (var m in t.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
                     {
-                        if (m.IsSpecialName || m.IsAbstract || m.IsGenericMethod) continue;
-                        var baseDecl = m.GetBaseDefinition().DeclaringType;
-                        if (baseDecl == m.DeclaringType || baseDecl == typeof(object)) continue; // only real hook overrides
-                        var rt = m.ReturnType;
-                        if (rt != typeof(void) && !typeof(System.Threading.Tasks.Task).IsAssignableFrom(rt)) continue;
-                        h.Patch(m, prefix: prefix);
-                        n++;
+                        if (m.Name != name || m.IsAbstract || m.IsGenericMethod) continue;
+                        found = true;
+                        try { h.Patch(m, prefix: prefix); n++; }
+                        catch { }
                     }
-                    catch { }
+                    if (!found) missing.Add(typeName + "." + name);
                 }
             }
             GD.Print($"[STS2 Damage] power-source hooks applied to {n} methods");
+            if (missing.Count > 0) GD.Print($"[STS2 Damage] power-source hooks not found (game changed?): {string.Join(", ", missing)}");
         }
         catch (Exception ex) { GD.PrintErr($"[STS2 Damage] power-source hooks skipped: {ex.Message}"); }
     }

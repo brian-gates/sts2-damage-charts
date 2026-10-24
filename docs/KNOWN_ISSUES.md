@@ -32,9 +32,42 @@ Notes for whoever picks it up:
 - Candidates to investigate: a curated set of known damage-dealing hook methods; patching only safe
   method shapes; or a different game-side signal.
 
-## Steam Workshop install hard-freezes the game (game-side Sentry bug, NOT our mod)
+**Update 2026-10-22: curated hook list (in testing).** The blanket patch is replaced by
+`DamageSourceHooks`: 59 methods on 52 types that a static call-graph sweep of `sts2.dll` v0.107.1 found
+can reach `CreatureCmd.Damage`/`Kill`/`SetCurrentHp`/`LoseMaxHp` (via REA `inspect-managed-members`,
+following async state machines and same-type helpers). Pickup-time `AfterObtained` hooks and Fur Coat
+are excluded. Missing names are logged as "not found (game changed?)"; re-run the sweep after patches.
+Status so far: 59/59 resolve and patch on v0.107.1; several combats ran without `Bad IL range` errors.
+The startup freezes seen during this testing were the Sentry bug below (they reproduced with
+`source_hooks: false` and with a different mod loaded alone), not these hooks. `source_hooks` still
+defaults to `false` until by-name labels are confirmed in game.
+Known gap: 11 of the hooks await (animation/`Cmd.Wait`) before dealing damage (The Bomb, Magic Bomb,
+Thunder, Serpent Form, Panache, Inferno turn-start, Explosive Ampoule, The Gambit, Sandpit, Precarious
+Shears, Doom's kill path), so their stamp can be older than the 1-frame `ActiveFresh()` window and the
+hit may still read "Status". Doom is covered separately by `DoomKillPrefix`.
 
-**Status:** Root cause **confirmed** by bisection. This is a **MegaCrit / game-side bug**, not fixable
+## Modded startup hard-freezes the game (game-side Sentry bug, NOT our mod)
+
+**Update 2026-10-22: trigger pinned down, workaround shipped in the mod.** This is **not
+Workshop-specific**. It reproduced 5 times in 6 launches with a **manual** `mods/` install (machine on
+low battery, which likely shifts startup timing), including with `source_hooks: false` and with only an
+unrelated mod (`STS2_NotTheBees`) loaded. The trigger is `SentryService.AfterGameInit` →
+`ShouldStayAliveAfterInit()` is false when modded → `SentryService.Shutdown()`, which disposes the .NET
+SDK and then calls `shutdown` on the native `SentryInit` node. The native shutdown leaves the per-frame
+CFRunLoop observer registered; when it runs before `Applying display settings...` (a timing race) the
+observer touches a freed object and the main thread hangs on `Object::get_instance_id()` (same stack as
+below). The good launches were the ones where the shutdown landed after display setup. This also explains
+the earlier unmodded hang *on quit*: quitting calls the same native `shutdown`.
+**Workaround (in `DamageChartsMod.TryApplySentryShutdownWorkaround`):** a Harmony prefix on
+`SentryService.Shutdown` nulls `SentryService._sentryInit` first, so the game still disposes the .NET
+SDK and disables itself but skips the native `shutdown` call. The native side keeps the
+`AlwaysRejectEvent` sampler the game installs for modded runs, so nothing extra is reported. Applied
+before the config check and under its own Harmony id. Verified: 3/3 direct launches passed the freeze
+point (log: `skipped native Sentry shutdown`). Untested: quitting from the menu, and Workshop installs.
+Trade-off: the native crash handler stays loaded, so a real native crash may hang on exit (the
+sentry-godot #230/#441 behaviour below) instead of exiting cleanly.
+
+**Status (original, 2026-07):** Root cause **confirmed** by bisection. This is a **MegaCrit / game-side bug**, not fixable
 in this mod. **Do not publish the Workshop item public**; distribute via manual install until MegaCrit
 ships a fix. Tracked upstream — see `docs/megacrit-workshop-crash-report.md`.
 
@@ -67,8 +100,14 @@ the Spire 2"` while frozen shows the signature above. Manual install in `mods/` 
 `SIGABRT` and reveals the fault: sentry-godot's per-frame CFRunLoop observer calls `std::mutex::lock()`,
 which throws `std::system_error` (re-entrant/already-held lock) → unhandled → `std::terminate()` →
 `abort()`. By default Godot's crash handler and sentry-cocoa's `SentryCrash` handler then deadlock, so
-the process **hangs** instead of exiting. Maps to sentry-godot **#472** (reentry guard) and **#230 /
-#441** (hang-on-crash / macOS). Neither the `--disable-crash-handler` flag nor clearing `SENTRY_DSN`
-avoids it (the flag converts hang→abort; the DSN is hardcoded so the env var is ignored).
+the process **hangs** instead of exiting. Maps to sentry-godot
+**[#472](https://github.com/getsentry/sentry-godot/issues/472)** (reentry guard) and
+**[#230](https://github.com/getsentry/sentry-godot/issues/230) /
+[#441](https://github.com/getsentry/sentry-godot/issues/441)** (hang-on-crash / macOS). Neither the
+`--disable-crash-handler` flag nor clearing `SENTRY_DSN` avoids it (the flag converts hang→abort; the
+DSN is hardcoded so the env var is ignored).
 
-**Action:** Reported to MegaCrit (see report doc). Revisit Workshop publishing once they confirm a fix.
+**Action:** Reported to MegaCrit (see report doc). The fix is bundling sentry-godot **2.0.1**
+([#789](https://github.com/getsentry/sentry-godot/pull/789), the reentry guard). A custom v0.108.0 test
+build from MegaCrit (2026-07-12) **still reproduced** the freeze, so revisit Workshop publishing only
+once a build ships the 2.0.1 upgrade.

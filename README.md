@@ -85,6 +85,10 @@ into `dist/workshop/content/` (git-ignored).
 # One-time: download the uploader (osx-arm64) from the sts2-mod-uploader releases page,
 # place the binary at ./tools/ModUploader (git-ignored), or set $MODUPLOADER.
 
+# On Apple Silicon the downloaded binary is unsigned and macOS will SIGKILL it ("Killed: 9").
+# Ad-hoc sign it once:
+codesign --force --sign - tools/ModUploader
+
 # Build, stage content/, and upload (or print the upload command if the CLI isn't found):
 ./scripts/package-workshop.sh
 ```
