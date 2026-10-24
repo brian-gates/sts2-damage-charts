@@ -38,8 +38,10 @@ internal readonly struct ForecastInputs
     public readonly int OstyAbsorb;   // Osty's (block + HP) — a damage sink in front of the player; 0 if none/dead
     public readonly bool HasHidden;
     public readonly IReadOnlyList<ForecastItem> Items;
+    public readonly int EndTurnBlock; // block gained at the end of your turn (Plating, Orichalcum, ...), before enemies act
 
-    public ForecastInputs(int currentHp, int maxHp, int block, int ostyAbsorb, bool hasHidden, IReadOnlyList<ForecastItem> items)
+    public ForecastInputs(int currentHp, int maxHp, int block, int ostyAbsorb, bool hasHidden, IReadOnlyList<ForecastItem> items,
+                          int endTurnBlock = 0)
     {
         CurrentHp = currentHp;
         MaxHp = maxHp;
@@ -47,6 +49,7 @@ internal readonly struct ForecastInputs
         OstyAbsorb = ostyAbsorb;
         HasHidden = hasHidden;
         Items = items ?? Array.Empty<ForecastItem>();
+        EndTurnBlock = endTurnBlock;
     }
 }
 
@@ -107,8 +110,9 @@ internal static class DamageForecast
         }
 
         // Attacks are absorbed by the combined pool of player block + Osty (a damage sink in front of the
-        // player); DoTs bypass both. The loss total is order-independent, so we pool them.
-        int block = Math.Max(0, inp.Block);
+        // player); DoTs bypass both. The loss total is order-independent, so we pool them. End-of-turn block
+        // lands before the enemy turn, so it counts like block already on the player.
+        int block = Math.Max(0, inp.Block) + Math.Max(0, inp.EndTurnBlock);
         int osty = Math.Max(0, inp.OstyAbsorb);
         int pool = block + osty;
 

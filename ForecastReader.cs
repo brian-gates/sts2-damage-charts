@@ -20,7 +20,7 @@ internal static class ForecastReader
     public static ForecastInputs Build(CombatState cs, IReadOnlyList<Player> players, int localSlot)
     {
         var items = new List<ForecastItem>();
-        int hp = 0, maxHp = 0, block = 0, ostyAbsorb = 0;
+        int hp = 0, maxHp = 0, block = 0, ostyAbsorb = 0, endTurnBlock = 0;
         bool hasHidden = false;
 
         try
@@ -33,6 +33,7 @@ internal static class ForecastReader
                 maxHp = GetInt(me, "MaxHp", "MaxHealth");
                 block = GetInt(me, "Block", "CurrentBlock");
                 ostyAbsorb = ReadOstyAbsorb(mePlayer!);
+                endTurnBlock = ReadEndTurnBlock(cs, mePlayer!, me, block);
                 if (Debug && !_dumped) { _dumped = true; DumpDiagnostics(cs, players, localSlot, me); }
                 ReadDots(me, items);
                 ReadSelfDamageCards(cs, players, localSlot, items);
@@ -51,7 +52,50 @@ internal static class ForecastReader
         }
         catch { }
 
-        return new ForecastInputs(hp, maxHp, block, ostyAbsorb, hasHidden, items);
+        return new ForecastInputs(hp, maxHp, block, ostyAbsorb, hasHidden, items, endTurnBlock);
+    }
+
+    // Block the player gains at the end of their turn, before the enemy turn, assuming they end the turn
+    // now. Sources found by a call-graph sweep of sts2.dll v0.107.1 (end-of-turn hooks that call
+    // CreatureCmd.GainBlock) and read from their IL:
+    //   PlatingPower   BeforeSideTurnEndEarly: GainBlock(Amount)
+    //   Orichalcum / FakeOrichalcum: VeryEarly arms only if Block <= 0, then GainBlock(DynamicVars.Block)
+    //   CloakClasp     BeforeSideTurnEnd: GainBlock(cards in hand * DynamicVars.Block.BaseValue)
+    // Not modeled: RippleBasin (Block only if no Attack was played this turn; needs combat history).
+    private static int ReadEndTurnBlock(CombatState cs, Player mePlayer, Creature me, int currentBlock)
+    {
+        int total = 0;
+        try
+        {
+            if (GetProp(me, "Powers") is IEnumerable powers)
+                foreach (var p in powers)
+                    if (p != null && p.GetType().Name == "PlatingPower")
+                        total += Math.Max(0, GetInt(p, "Amount"));
+        }
+        catch { }
+        try
+        {
+            if (GetProp(mePlayer, "Relics") is IEnumerable relics)
+                foreach (var rel in relics)
+                {
+                    if (rel == null) continue;
+                    string tn = rel.GetType().Name;
+                    if (tn != "Orichalcum" && tn != "FakeOrichalcum" && tn != "CloakClasp") continue;
+                    object? blockVar = GetProp(rel, "DynamicVars") is { } dv ? GetProp(dv, "Block") : null;
+                    int amount = blockVar != null ? GetNum(blockVar, "BaseValue", "Value", "IntValue") : 0;
+                    if (amount <= 0) continue;
+                    if (tn == "CloakClasp")
+                    {
+                        int handCount = 0;
+                        if (FindHand(mePlayer, cs) is { } hand && GetProp(hand, "Cards") is IEnumerable cards)
+                            foreach (var _ in cards) handCount++;
+                        total += handCount * amount;
+                    }
+                    else if (currentBlock <= 0) total += amount;
+                }
+        }
+        catch { }
+        return total;
     }
 
     // True while the local player is actively taking their turn (PlayerTurnPhase.Play) — i.e. planning,

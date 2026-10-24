@@ -137,4 +137,24 @@ public class DamageForecastTests
         Assert.Equal(0, r.MinLoss);
         Assert.Equal(4, r.MaxLoss);
     }
+
+    [Fact]
+    public void EndTurnBlock_AbsorbsAttacksLikeBlock()
+    {
+        // 5 Plating, no block now, enemy attacks 2x8: Plating lands before the enemy turn.
+        var r = DamageForecast.Compute(new ForecastInputs(58, 74, 0, 0, false,
+            new List<ForecastItem> { Attack(8, 2) }, endTurnBlock: 5));
+        Assert.Equal(16, r.Incoming);
+        Assert.Equal(5, r.Mitigated);
+        Assert.Equal(11, r.MinLoss);
+        Assert.Equal(5, r.Block);
+    }
+
+    [Fact]
+    public void EndTurnBlock_DoesNotReduceUnblockable()
+    {
+        var r = DamageForecast.Compute(new ForecastInputs(40, 50, 0, 0, false,
+            new List<ForecastItem> { Dot(6) }, endTurnBlock: 5));
+        Assert.Equal(6, r.MinLoss);
+    }
 }
