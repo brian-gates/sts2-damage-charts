@@ -239,7 +239,17 @@ public static class DamageChartsMod
                 ["vfx_moments"] = VfxMoments.Enabled,
             };
             if (ForecastReader.Debug) dict["forecast_debug"] = true;
-            File.WriteAllText(path, JsonSerializer.Serialize(dict, new JsonSerializerOptions { WriteIndented = true }));
+            // Merge over the existing file so keys this method doesn't own (source_hooks, ui_scale, run_recap,
+            // anything added later) survive a drag-save instead of silently resetting to their defaults.
+            var merged = new System.Text.Json.Nodes.JsonObject();
+            try
+            {
+                if (File.Exists(path) && System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(path)) is System.Text.Json.Nodes.JsonObject old)
+                    foreach (var kv in old) merged[kv.Key] = kv.Value?.DeepClone();
+            }
+            catch { /* unreadable file: rewrite from our keys */ }
+            foreach (var kv in dict) merged[kv.Key] = JsonSerializer.SerializeToNode(kv.Value);
+            File.WriteAllText(path, merged.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
             RememberConfigWriteTime(path);
             _posXFrac = pos.X; _posYFrac = pos.Y;
         }
