@@ -5,12 +5,17 @@ A standalone damage analytics and incoming-damage forecast mod for [Slay the Spi
 - **Incoming-damage forecast** (always on in combat, docked beside your character): the HP you are
   about to lose this turn and what you'll be left at, as a range when something is uncertain. Counts
   enemy intents, damage over time, Infection and self-damage cards, Block and Osty, and end-of-turn Block
-  (Plating, Orichalcum, Cloak Clasp); ignores enemies that will die to Poison before they act. Reads
-  **Safe** when nothing can hurt you and pulses when the turn can kill you. Hover it for the per-round
-  HP-lost history and an itemized list of sources.
+  (Plating, Orichalcum, Cloak Clasp); ignores enemies that will die to Poison before they act. A thin
+  HP bar previews the loss. Reads **Safe** when nothing can hurt you and pulses when the turn can kill
+  you. Hover it for the per-round HP-lost history and an itemized list of sources.
+- **Damage Out | In / Round**: a small always-on chart stacked above the forecast, damage dealt vs taken
+  for the last 8 rounds; hover a round for its breakdown. `show_bars: false` hides it, `bars_style:
+  "full"` swaps in the larger chart.
 - **Combat stats** (hotkey, default **C**): a full-screen breakdown of damage **dealt** and **taken**
-  **by source** (cards, powers like Poison or Thorns, relics, orbs, potions), a per-round chart, the
-  run so far, potions used, and a scrollable combat log (mouse wheel, trackpad or scrollbar).
+  **by source**, a per-round chart, the run so far, potions used, and a scrollable combat log (mouse
+  wheel, trackpad or scrollbar). Card and pet hits are always named; damage from powers (Poison, Thorns),
+  relics, orbs and potions is named only with the opt-in `source_hooks` setting, and otherwise shows as
+  `Status`/`Other`.
 - **End-of-combat summary**: a compact version beside the rewards list after each fight, with potions
   used. C hides and shows it until you move on.
 - **Run recap**: the same hotkey out of combat (e.g. on the victory/death screen) opens a run-wide recap
@@ -18,9 +23,17 @@ A standalone damage analytics and incoming-damage forecast mod for [Slay the Spi
 - **Game-native look**: uses the game's own fonts, icons, hover-tip frames, scrollbars and shaders
   (loaded from your install, never bundled). Optional **big-moment effects** reuse the game's own
   damage-number and flash VFX.
-- Optional **always-on per-round chart** of dealt vs taken (`show_bars`).
 - Single-player and multiplayer (per-player colors). Reads game state directly — no dependency on any
   other mod.
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Incoming forecast and the Out / In round chart beside the Ironclad](docs/screenshots/rounds.jpg) | ![Forecast warning that the next hit is lethal](docs/screenshots/lethal.jpg) |
+| Forecast with its HP preview, and the round chart above it | A turn that can kill you: the forecast goes red |
+| ![End-of-combat summary beside the rewards list](docs/screenshots/summary.jpg) | ![Forecast on turn 1 against two Nibbits](docs/screenshots/forecast.jpg) |
+| End-of-combat summary: dealt and taken by source, potions, combat log | Turn 1 of a fight |
 
 ## Requirements
 
@@ -128,7 +141,10 @@ After the first publish, subscribe in-client and verify the overlay loads in a r
 - `summary_on_combat_end`: set `false` to skip the end-of-combat summary.
 - `run_recap`: set `false` to disable the out-of-combat run recap (the hotkey then only toggles the
   in-combat breakdown).
-- `show_bars`: **default `false`.** Set `true` for the always-on per-round dealt/taken chart.
+- `show_bars`: **default `true`.** Set `false` to hide the always-on Damage Out | In / Round chart.
+- `bars_style`: `"compact"` (default), the small chart above the forecast, or `"full"` for the larger one.
+- `bars_anchor`: `"forecast"` (default) stacks the chart above the forecast; dragging it switches to
+  `"free"` and remembers the spot.
 - `ui_scale`: a number (default `1.0`) that scales every panel (text and spacing) on top of the automatic
   resolution scaling. Bump it (e.g. `1.25`) if text reads too small.
 - `native_visuals`: **default `true`.** Set `false` for the original flat look.
@@ -138,7 +154,8 @@ After the first publish, subscribe in-client and verify the overlay loads in a r
   attributed by name (Poison, Doom, Thorns, …) instead of the generic `Status`/`Other`, via a curated
   set of patched hooks. Still opt-in while it is verified in game.
 
-Edits to this file are picked up live (within about half a second), no restart needed.
+Changes to `hotkey`, `show_bars` and `vfx_moments` are picked up live (within about half a second);
+the rest apply the next time the game starts.
 
 ## License
 
