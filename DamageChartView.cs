@@ -24,6 +24,10 @@ internal sealed class DamageChartView
     private const float BaseMargin = 14f;
     private const float BaseHeaderH = 24f;
     private const int MaxGroups = 6;
+    // Compact: the always-on strip. Forecast-panel width, no axis labels/icons; hover still breaks it down.
+    private const float CompactWidth = 216f;
+    private const float CompactHeight = 92f;
+    private const int CompactMaxGroups = 8;
     private const float BaseMaxIcon = 34f;
     private const float ChartFrameAlpha = 0.92f; // always-on: let a sliver of the fight show through
 
@@ -51,6 +55,11 @@ internal sealed class DamageChartView
     // User multiplier from config (ui_scale): enlarges the whole widget (panel + text) on top of the
     // automatic resolution scale, for legibility.
     public float UiScaleMul = 1f;
+    public bool Compact { get; set; }
+    // Docked mode: stack directly above this rect (the forecast panel, viewport coords; null = free).
+    // A drag undocks it, like the forecast's own player anchor.
+    public bool Docked { get; set; }
+    public Rect2? DockRect { get; set; }
 
     private Vector2 _posFrac;     // top-left as fraction of viewport
     private bool _posFracInit;
@@ -100,7 +109,7 @@ internal sealed class DamageChartView
         _container.AddChild(_iconLayer);
 
         _title = UiTheme.MakeLabel(11, new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.85f));
-        _title.Text = "Damage / Round";
+        _title.Text = "Damage";
         _container.AddChild(_title);
 
         if (savedPosFrac.HasValue) { _posFrac = savedPosFrac.Value; _posFracInit = true; }
@@ -142,7 +151,7 @@ internal sealed class DamageChartView
             else if (!leftDown && _leftLast) // release
             {
                 bool moved = (global - _pressStart).Length() > 5f;
-                if (_dragging) { _dragging = false; if (moved) savedNow = true; else if (_pressedOverPanel) _clicked = true; }
+                if (_dragging) { _dragging = false; if (moved) { savedNow = true; Docked = false; } else if (_pressedOverPanel) _clicked = true; }
                 else if (_pressedOverPanel && !moved) _clicked = true; // click on the panel → toggle details
                 _pressedOverPanel = false;
             }
@@ -207,8 +216,10 @@ internal sealed class DamageChartView
 
             _vp = _container.GetViewportRect().Size;
             float sc = UiTheme.Scale(_vp) * Math.Clamp(UiScaleMul, 0.5f, 4f);
-            _w = BaseWidth * sc; _h = BaseHeight * sc; _headerH = BaseHeaderH * sc;
+            _w = (Compact ? CompactWidth : BaseWidth) * sc; _h = (Compact ? CompactHeight : BaseHeight) * sc;
+            _headerH = (Compact ? 18f : BaseHeaderH) * sc;
             float margin = BaseMargin * sc;
+            int maxGroups = Compact ? CompactMaxGroups : MaxGroups;
 
             _container.SetSize(new Vector2(_w, _h));
             _bg.SetSize(new Vector2(_w, _h));
@@ -241,19 +252,44 @@ internal sealed class DamageChartView
                 _posFrac = new Vector2(_vp.X > 0 ? (_vp.X - _w - margin) / _vp.X : 0.7f, _vp.Y > 0 ? Math.Max(margin, inset) / _vp.Y : 0.02f);
                 _posFracInit = true;
             }
+            if (Docked && !_dragging && DockRect is Rect2 dock && _vp.X > 0 && _vp.Y > 0)
+            {
+                // Above the forecast, left edges aligned; below it if there's no room under the top bar.
+                float gap = 6f * sc;
+                float dy = dock.Position.Y - gap - _h;
+                if (dy < inset) dy = dock.End.Y + gap;
+                _posFrac = new Vector2(dock.Position.X / _vp.X, dy / _vp.Y);
+            }
             float px = Math.Clamp(_posFrac.X * _vp.X, 0f, Math.Max(0f, _vp.X - _w));
             float py = Math.Clamp(_posFrac.Y * _vp.Y, inset, Math.Max(inset, _vp.Y - _h));
             _container.SetPosition(new Vector2(px, py));
 
-            if (_native) NativeLook.Style(_title, F(15, sc), UiTheme.Gold, numFont, 0);
-            else { NativeLook.Reset(_title); UiTheme.Apply(_title, F(14, sc), new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.85f)); }
-            _title.SetPosition(new Vector2(8 * sc + ix, 4 * sc + iy));
+            int titleSize = Compact ? 12 : 15;
+            if (_native) NativeLook.Style(_title, F(titleSize, sc), UiTheme.Gold, numFont, 0);
+            else { NativeLook.Reset(_title); UiTheme.Apply(_title, F(titleSize - 1, sc), new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.85f)); }
+            _title.SetPosition(Compact ? new Vector2(14 * sc + ix, 2 * sc + iy) : new Vector2(8 * sc + ix, 4 * sc + iy));
 
             int labelCur = 0, barCur = 0, iconCur = 0, gridCur = 0;
             float maxIcon = BaseMaxIcon * sc;
 
-            float plotTop = 26 * sc + iy;
-            if (snap.PlayerCount > 1)
+            // Title reads "Damage Out | In / Round", with Out and In in their bar colours as the legend.
+            {
+                var titleColor = _native ? UiTheme.Gold : new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.85f);
+                var dim = new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.55f);
+                var outColor = snap.PlayerCount == 1 ? palette[0] : UiTheme.Cream;
+                int ts = _native ? F(titleSize, sc) : F(titleSize - 1, sc);
+                float tx = _title.Position.X + _title.GetMinimumSize().X;
+                foreach (var (text, color) in new[] { (" Out", outColor), (" | ", dim), ("In", UiTheme.Red), (" / Round", titleColor) })
+                {
+                    var part = NextLabel(ref labelCur, ts, color, numFont);
+                    part.Text = text;
+                    part.SetPosition(new Vector2(tx, _title.Position.Y));
+                    tx += part.GetMinimumSize().X;
+                }
+            }
+
+            float plotTop = (Compact ? 20 : 26) * sc + iy;
+            if (snap.PlayerCount > 1 && !Compact)
             {
                 float lx = 8 * sc + ix;
                 for (int s = 0; s < snap.PlayerCount && s < palette.Length; s++)
@@ -266,7 +302,9 @@ internal sealed class DamageChartView
                 plotTop = 40 * sc + iy;
             }
 
-            float plotLeft = 30 * sc + ix, plotRight = _w - 8 * sc - ix, plotBottom = _h - 18 * sc - iy; // left gutter for Y-axis values
+            // Left gutter for Y-axis values (compact has no axis labels, just the frame inset).
+            float plotLeft = (Compact ? 14 : 30) * sc + ix, plotRight = _w - 8 * sc - ix;
+            float plotBottom = _h - (Compact ? 20 : 18) * sc - iy;
             float plotW = plotRight - plotLeft, plotH = plotBottom - plotTop;
 
             int total = snap.Rows.Count;
@@ -278,7 +316,7 @@ internal sealed class DamageChartView
                 return;
             }
 
-            int start = Math.Max(0, total - MaxGroups);
+            int start = Math.Max(0, total - maxGroups);
             int groups = total - start;
 
             int maxVal = 1;
@@ -299,6 +337,7 @@ internal sealed class DamageChartView
                 gl.Color = new Color(1f, 1f, 1f, g == 0 ? 0.22f : 0.10f);
                 gl.SetPosition(new Vector2(plotLeft, yLine));
                 gl.SetSize(new Vector2(plotW, Math.Max(1f, sc)));
+                if (Compact) continue;
                 var vl = NextLabel(ref labelCur, F(13, sc), axisColor, numFont);
                 vl.Text = ((long)Math.Round(frac * maxVal)).ToString();
                 vl.SetPosition(new Vector2(3 * sc + ix, yLine - 7 * sc));
@@ -306,7 +345,7 @@ internal sealed class DamageChartView
 
             // Constant bar width regardless of round count: size each round group to the chart's capacity
             // (MaxGroups), left-aligned, so a single early round isn't stretched across the whole plot.
-            float groupW = plotW / MaxGroups;
+            float groupW = plotW / maxGroups;
             float cellW = groupW / snap.PlayerCount;
 
             for (int gi = 0; gi < groups; gi++)
@@ -336,7 +375,7 @@ internal sealed class DamageChartView
                         bar.SetPosition(new Vector2(dealtX, yTop - bh));
                         bar.SetSize(new Vector2(dealtW, Math.Max(bh - 1f, 1f)));
 
-                        if (a.Icon != null && bh >= 10 * sc && dealtW >= 14 * sc)
+                        if (!Compact && a.Icon != null && bh >= 10 * sc && dealtW >= 14 * sc)
                         {
                             var tex = _native ? NativeLook.Icon(a.Icon) : LoadTex(a.Icon);
                             if (tex != null)
@@ -348,7 +387,7 @@ internal sealed class DamageChartView
                                 ic.SetPosition(new Vector2(dealtX + (dealtW - isz) * 0.5f, yTop - bh + (bh - isz) * 0.5f));
                             }
                         }
-                        if (a.Count > 1 && bh >= 13 * sc && dealtW >= 16 * sc)
+                        if (!Compact && a.Count > 1 && bh >= 13 * sc && dealtW >= 16 * sc)
                         {
                             var xn = NextLabel(ref labelCur, F(11, sc), UiTheme.Cream, numFont, onBar: true);
                             xn.Text = $"x{a.Count}";
@@ -367,9 +406,9 @@ internal sealed class DamageChartView
                     }
                 }
 
-                var rl = NextLabel(ref labelCur, F(13, sc), new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.6f), numFont);
+                var rl = NextLabel(ref labelCur, F(Compact ? 11 : 13, sc), new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.6f), numFont);
                 rl.Text = row.Round.ToString();
-                rl.SetPosition(new Vector2(groupX + groupW * 0.5f - 4 * sc, plotBottom + 3 * sc));
+                rl.SetPosition(new Vector2(groupX + groupW * 0.5f - 4 * sc, plotBottom + (Compact ? 1 : 3) * sc));
             }
 
             HideRest(_labels, labelCur);

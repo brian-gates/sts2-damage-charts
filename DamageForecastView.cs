@@ -3,8 +3,8 @@ using Godot;
 
 namespace STS2_DamageCharts;
 
-// Always-on, draggable incoming-damage readout: predicted HP loss this turn (a range when uncertain) and
-// the HP you'd be left at. Docked beside the player's own health bar, so it shows numbers only; Block /
+// Always-on, draggable incoming-damage readout: predicted HP loss this turn (a range when uncertain), the
+// HP you'd be left at and a preview HP bar of the loss. Docked beside the player; Block /
 // Osty appear only when they change the result. Reads clearly safe when nothing can cost HP, and flags
 // lethal when max loss >= current HP. Native nodes only; poll-based mouse from the tick.
 // With native_visuals on, the panel is the game's hover-tip frame, the numbers use the game's numeric
@@ -13,7 +13,8 @@ namespace STS2_DamageCharts;
 internal sealed class DamageForecastView
 {
     private const float BaseWidth = 216f;
-    private const float BaseHeight = 86f;
+    private const float BaseHeight = 114f;
+    private const float BaseHpBarH = 8f;
     private const float BaseHeaderH = 20f;
     private const float BaseMargin = 14f;
 
@@ -25,6 +26,12 @@ internal sealed class DamageForecastView
     private readonly Label _title;
     private readonly RichTextLabel _loss;
     private readonly RichTextLabel _stats;
+    // Preview HP bar along the bottom: what's left after the worst case, the certain loss, then the part
+    // of the loss that depends on uncertain hits (a range). Scaled to max HP like the game's health bar.
+    private readonly ColorRect _hpTrack;
+    private readonly ColorRect _hpLeft;
+    private readonly ColorRect _hpLoss;
+    private readonly ColorRect _hpLossRange;
 
     // BBCode hex tags matching the bar segments, so each value reads in its own color.
     private const string BlockHex = "8cb8ff";  // block = sky blue
@@ -70,7 +77,19 @@ internal sealed class DamageForecastView
         _loss = NewRich(24, UiTheme.Red);
         _stats = NewRich(11, UiTheme.Cream);
 
+        _hpTrack = NewRect(new Color(0f, 0f, 0f, 0.55f));
+        _hpLeft = NewRect(Colors.White);
+        _hpLoss = NewRect(new Color(0.9f, 0.2f, 0.2f));
+        _hpLossRange = NewRect(new Color(0.9f, 0.2f, 0.2f, 0.45f));
+
         if (savedPosFrac.HasValue) { _posFrac = savedPosFrac.Value; _posFracInit = true; }
+    }
+
+    private ColorRect NewRect(Color color)
+    {
+        var r = new ColorRect { Color = color, MouseFilter = Control.MouseFilterEnum.Ignore };
+        _container.AddChild(r);
+        return r;
     }
 
     private RichTextLabel NewRich(int fontSize, Color color)
@@ -93,6 +112,8 @@ internal sealed class DamageForecastView
     public void Dispose() { if (IsValid()) _layer.QueueFree(); }
     public Vector2 PositionFraction => _posFrac;
     public bool IsDragging => _dragging;
+    // The panel's drawn rect (viewport coords) while it's showing; the compact chart stacks against it.
+    public Rect2? PanelRect => IsValid() && _layer.Visible ? new Rect2(_container.Position, new Vector2(_w, _h)) : null;
     // Docked mode: sit beside the local player's creature (AnchorRect, viewport coords; null = not found,
     // fall back to the saved fraction). A drag that moves the panel turns docking off.
     public bool AnchorToPlayer { get; set; } = true;
@@ -189,8 +210,9 @@ internal sealed class DamageForecastView
 
             UiTheme.Apply(_title, F(13, sc), new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.7f));
             ForecastStyle.SetFont(_title, GameAssets.KreonBold);
-            // The hover-tip frame is ~8px thick, so nudge the title inside it.
-            _title.SetPosition(_nativePanel ? new Vector2(14 * sc, 7 * sc) : new Vector2(10 * sc, 4 * sc));
+            // The hover-tip frame is ~8px thick, so inset the title and body past it (the flat panel needs less).
+            float padX = (_nativePanel ? 20 : 10) * sc;
+            _title.SetPosition(new Vector2(padX, (_nativePanel ? 7 : 4) * sc));
 
             string lossStr = r.MinLoss == r.MaxLoss ? r.MinLoss.ToString() : $"{r.MinLoss}–{r.MaxLoss}";
             float rowY = _headerH + 4 * sc;
@@ -217,7 +239,7 @@ internal sealed class DamageForecastView
                 ForecastStyle.Shadow(_loss, sc);
             }
             _loss.Text = line1 + "\n" + line2;
-            _loss.SetPosition(new Vector2(10 * sc, rowY));
+            _loss.SetPosition(new Vector2(padX, rowY));
 
             // Tucked micro-ledger on the right, only when mitigation changes the result (otherwise In equals
             // the loss already shown): incoming vs the Block / Osty absorbing it.
@@ -235,6 +257,8 @@ internal sealed class DamageForecastView
             _stats.Text = led;
             _stats.SetPosition(new Vector2(_w - 72 * sc, rowY));
 
+            LayoutHpBar(r, padX, sc, afterHex);
+
             // Lethal: red border tint on the panel to signal you can die this turn, pulsed with the game's
             // button_pulse shader when available (the tint alone is the fallback).
             _bg.SelfModulate = r.IsLethal ? new Color(1f, 0.5f, 0.5f) : Colors.White;
@@ -242,6 +266,34 @@ internal sealed class DamageForecastView
             if (_bg.Material != pulse) _bg.Material = pulse;
         }
         catch (Exception ex) { GD.PrintErr($"[STS2 Damage] forecast render error: {ex.Message}"); }
+    }
+
+    private void LayoutHpBar(ForecastResult r, float padX, float sc, string afterHex)
+    {
+        float barH = BaseHpBarH * sc;
+        float x = padX, w = _w - 2 * padX;
+        float y = _h - (_nativePanel ? 18 : 10) * sc - barH;
+        _hpTrack.SetPosition(new Vector2(x, y));
+        _hpTrack.SetSize(new Vector2(w, barH));
+
+        float max = Math.Max(1, Math.Max(r.MaxHp, r.CurrentHp));
+        float Px(int hp) => w * Math.Clamp(hp, 0, (int)max) / max;
+        int cur = Math.Max(0, r.CurrentHp);
+        int certain = Math.Min(cur, Math.Max(0, r.MinLoss));
+        int worst = Math.Min(cur, Math.Max(0, r.MaxLoss));
+        float leftW = Px(cur - worst), certainW = Px(cur) - Px(cur - certain), rangeW = Px(cur - certain) - Px(cur - worst);
+
+        _hpLeft.Color = Color.FromHtml(afterHex);
+        _hpLeft.SetPosition(new Vector2(x, y));
+        _hpLeft.SetSize(new Vector2(leftW, barH));
+        _hpLeft.Visible = leftW > 0.5f;
+        // Loss segments sit right of what's left, ending at current HP: range first, then the certain part.
+        _hpLossRange.SetPosition(new Vector2(x + leftW, y));
+        _hpLossRange.SetSize(new Vector2(rangeW, barH));
+        _hpLossRange.Visible = rangeW > 0.5f;
+        _hpLoss.SetPosition(new Vector2(x + leftW + rangeW, y));
+        _hpLoss.SetSize(new Vector2(certainW, barH));
+        _hpLoss.Visible = certainW > 0.5f;
     }
 
     private static int F(int baseSize, float sc) => Math.Max(8, (int)Math.Round(baseSize * sc));

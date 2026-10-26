@@ -73,9 +73,11 @@ Untested: quitting from the menu.
 Trade-off: the native crash handler stays loaded, so a real native crash may hang on exit (the
 sentry-godot #230/#441 behaviour below) instead of exiting cleanly.
 
-**Status (original, 2026-07):** Root cause **confirmed** by bisection. This is a **MegaCrit / game-side bug**, not fixable
-in this mod. **Do not publish the Workshop item public**; distribute via manual install until MegaCrit
-ships a fix. Tracked upstream — see `docs/megacrit-workshop-crash-report.md`.
+**Status (original, 2026-07, superseded by the workaround above):** Root cause **confirmed** by bisection.
+This is a **MegaCrit / game-side bug**. The original advice was not to publish the Workshop item public until
+MegaCrit ships a fix; with the workaround the Workshop load path has passed every launch tested since
+(see above), so public release no longer waits on that fix. Still tracked upstream: see
+`docs/megacrit-workshop-crash-report.md`.
 
 **Symptom:** With the mod installed via **Steam Workshop** and enabled, the game **hard-freezes
 (beachball, force-quit required) within ~2s of startup**, around the main menu. The Godot log ends

@@ -34,9 +34,11 @@ public static class DamageChartsMod
     private static Callable _tickCallable;     // stored so we can disconnect ProcessFrame on disable
     private static readonly string[] HarmonyIds =
         { "com.sts2damagecharts", "com.sts2damagecharts.suppress", "com.sts2damagecharts.deck", "com.sts2damagecharts.powers" };
-    // Default OFF: the always-on per-round recap chart read as "too much" for casual players. History
-    // now lives on-demand in the threat panel's hover timeline; opt back in via config "show_bars": true.
-    private static bool _showBars;
+    // The full always-on per-round chart read as "too much" for casual players, so the default is a compact
+    // strip docked above the forecast ("bars_style": "full" restores the big one; "show_bars": false hides it).
+    private static bool _showBars = true;
+    private static bool _barsCompact = true;
+    private static bool _barsDocked = true;
     private static bool _showForecast = true;
     private static float? _fcPosXFrac;
     private static float? _fcPosYFrac;
@@ -184,7 +186,7 @@ public static class DamageChartsMod
 
             if (!File.Exists(path))
             {
-                try { File.WriteAllText(path, "{\n  \"enabled\": true,\n  \"hotkey\": \"c\",\n  \"show_bars\": false,\n  \"native_visuals\": true\n}\n"); }
+                try { File.WriteAllText(path, "{\n  \"enabled\": true,\n  \"hotkey\": \"c\",\n  \"show_bars\": true,\n  \"native_visuals\": true\n}\n"); }
                 catch { }
                 RememberConfigWriteTime(path);
                 return true;
@@ -194,7 +196,9 @@ public static class DamageChartsMod
             using var doc = JsonDocument.Parse(File.ReadAllText(path));
             var root = doc.RootElement;
             if (root.TryGetProperty("enabled", out var en) && en.ValueKind == JsonValueKind.False) return false;
-            if (root.TryGetProperty("show_bars", out var sb) && sb.ValueKind == JsonValueKind.True) _showBars = true;
+            if (root.TryGetProperty("show_bars", out var sb) && sb.ValueKind == JsonValueKind.False) _showBars = false;
+            _barsCompact = !(root.TryGetProperty("bars_style", out var bst) && bst.ValueKind == JsonValueKind.String && bst.GetString() == "full");
+            _barsDocked = !(root.TryGetProperty("bars_anchor", out var ban) && ban.ValueKind == JsonValueKind.String && ban.GetString() == "free");
             if (root.TryGetProperty("forecast", out var fc) && fc.ValueKind == JsonValueKind.False) _showForecast = false;
             if (root.TryGetProperty("forecast_pos_x_frac", out var fpx) && fpx.TryGetSingle(out var ffx)) _fcPosXFrac = ffx;
             if (root.TryGetProperty("forecast_pos_y_frac", out var fpy) && fpy.TryGetSingle(out var ffy)) _fcPosYFrac = ffy;
@@ -238,6 +242,8 @@ public static class DamageChartsMod
                 ["forecast_pos_x_frac"] = _fcForecastPosRounded().X,
                 ["forecast_pos_y_frac"] = _fcForecastPosRounded().Y,
                 ["forecast_anchor"] = _fcAnchorPlayer ? "player" : "free",
+                ["bars_style"] = _barsCompact ? "compact" : "full",
+                ["bars_anchor"] = _barsDocked ? "forecast" : "free",
                 ["native_visuals"] = GameAssets.Enabled,
                 ["vfx_moments"] = VfxMoments.Enabled,
             };
@@ -288,7 +294,7 @@ public static class DamageChartsMod
                     GD.Print($"[STS2 Damage] hotkey reloaded live: {_hotkeySpec}");
                 }
             }
-            bool showBars = root.TryGetProperty("show_bars", out var sb) && sb.ValueKind == JsonValueKind.True;
+            bool showBars = !(root.TryGetProperty("show_bars", out var sb) && sb.ValueKind == JsonValueKind.False);
             if (showBars != _showBars)
             {
                 _showBars = showBars;
@@ -739,12 +745,21 @@ public static class DamageChartsMod
                     else
                     {
                         _detail?.SetVisible(false);
+                        // Forecast first: the compact chart docks against the rect it just drew.
+                        if (_showForecast) UpdateForecast(cs);
                         if (_showBars && _bars != null)
                         {
                             _bars.UiScaleMul = _uiScale;
+                            _bars.Compact = _barsCompact;
+                            _bars.Docked = _barsCompact && _barsDocked;
+                            _bars.DockRect = _showForecast ? _forecast?.PanelRect : null;
                             _bars.Render(_tracker.Snapshot(), Palette);
                             // Poll-based drag + click + hover (no input overrides).
-                            if (_bars.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left))) SaveConfig();
+                            if (_bars.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left)))
+                            {
+                                if (_barsCompact) _barsDocked = _bars.Docked;   // a drag undocks it
+                                SaveConfig();
+                            }
                             if (_bars.TakeClick()) { _detailVisible = !_detailVisible; _detail?.SetVisible(_detailVisible); } // click chart → toggle details
                             if (_tooltip != null) _tooltip.UiScaleMul = _uiScale;
                             if (!_bars.IsDragging && _bars.TryGetHover(out var hv)) _tooltip?.Render(hv, RootMouse());
@@ -752,7 +767,6 @@ public static class DamageChartsMod
                         }
                         // Its CanvasLayer starts visible; never rendered, its title would sit alone at (0,0).
                         else _bars?.Hide();
-                        if (_showForecast) UpdateForecast(cs);
                     }
                 }
             }

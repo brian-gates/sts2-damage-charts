@@ -516,7 +516,7 @@ internal sealed class DamageDetailView
                 }
                 else logTop = colBottom + vgap;   // extreme ui_scale on a tiny viewport: drop the chart, keep the log
             }
-            else logTop = Math.Max(296f, colBottom + vgap);
+            else logTop = colBottom + vgap;   // summary: the log follows the columns, filling the rest
 
             int cur = 0, barCur = 0, iconCur = 0;
             string who = (snap.PlayerCount > 1 && slot < snap.Labels.Length) ? $" — {snap.Labels[slot]}" : "";

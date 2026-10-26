@@ -6,8 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A standalone damage analytics and incoming-damage forecast mod for **Slay the Spire 2** (a Godot/C#
 game). In combat it shows a forecast of HP about to be lost (docked beside the player) and a hotkey-toggled
-by-source breakdown; after combat, a summary beside the rewards list; out of combat, a run recap. The
-per-round dealt/taken chart is optional (`show_bars`). With `native_visuals` on (default) every panel uses
+by-source breakdown; after combat, a summary beside the rewards list; out of combat, a run recap. A small
+always-on dealt/taken-per-round chart sits above the forecast (`show_bars`, `bars_style`). With `native_visuals` on (default) every panel uses
 the game's own fonts, icons and frames via `GameAssets.cs`. It reads game state directly and depends on no
 other mod.
 
