@@ -35,6 +35,9 @@ A standalone damage analytics and incoming-damage forecast mod for [Slay the Spi
 | ![End-of-combat summary beside the rewards list](docs/screenshots/summary.jpg) | ![Forecast on turn 1 against two Nibbits](docs/screenshots/forecast.jpg) |
 | End-of-combat summary: dealt and taken by source, potions, combat log | Turn 1 of a fight |
 
+Taken with the default settings. The summary's `Status` row is the Fire Potion's damage: naming
+power, relic, orb and potion damage needs the opt-in `source_hooks` setting (see Config below).
+
 ## Requirements
 
 - A copy of **Slay the Spire 2** installed (the build references the game's own assemblies; nothing
