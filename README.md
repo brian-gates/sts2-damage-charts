@@ -1,6 +1,8 @@
 # Damage Charts — Slay the Spire 2 mod
 
-A standalone damage analytics and incoming-damage forecast mod for [Slay the Spire 2](https://www.megacrit.com/).
+A standalone damage analytics and incoming-damage forecast mod for [Slay the Spire 2](https://store.steampowered.com/app/2868840/).
+
+**[Subscribe on the Steam Workshop](https://steamcommunity.com/sharedfiles/filedetails/?id=3753047703)** to install it.
 
 - **Incoming-damage forecast** (always on in combat, docked beside your character): the HP you are
   about to lose this turn and what you'll be left at, as a range when something is uncertain. Counts
@@ -99,7 +101,7 @@ on first launch). Restart the game after replacing the DLL — mods load at star
 
 ### Players
 
-Subscribe to **Damage Charts** on the Steam Workshop and it installs automatically — no manual file
+Subscribe to **Damage Charts** on the [Steam Workshop](https://steamcommunity.com/sharedfiles/filedetails/?id=3753047703) and it installs automatically — no manual file
 copying. Enable it in **Settings → Mods** and restart the game.
 
 ### Maintainers (publishing)
