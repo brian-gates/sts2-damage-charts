@@ -78,11 +78,11 @@ public static class DamageChartsMod
     private static bool _recapVisible;        // on-demand run recap takeover showing (out of combat)
     private static bool _recapEnabled = true; // config
     private static float _uiScale = 1f;       // config: extra font/spacing multiplier for the takeover
-    // Power/relic/orb/potion source-attribution Harmony hooks. Default OFF: the old blanket patching of every
-    // hook method (~791) could intermittently deadlock the CLR's reflection/JIT (hard hang, "Bad IL range").
-    // It now patches only the curated DamageSourceHooks list; stays opt-in until labels are verified in game.
-    // With it off, DoT/relic damage is labeled "Status"/"Other". See docs/KNOWN_ISSUES.md.
-    private static bool _sourceHooks;
+    // Power/relic/orb/potion source-attribution Harmony hooks. Default ON since the curated DamageSourceHooks
+    // list (59 methods) replaced the old blanket patching of every hook method (~791), which could intermittently
+    // deadlock the CLR's reflection/JIT (hard hang, "Bad IL range"); soak-tested with scripts/soak_source_hooks.py.
+    // "source_hooks": false turns it off, and DoT/relic damage is then labeled "Status"/"Other". See docs/KNOWN_ISSUES.md.
+    private static bool _sourceHooks = true;
     private static bool _combatResolved;      // this combat reached a win/loss (not abandoned)
     private static int _localSlot;            // local player's slot for this combat
 
@@ -207,7 +207,7 @@ public static class DamageChartsMod
             if (root.TryGetProperty("summary_on_combat_end", out var su) && su.ValueKind == JsonValueKind.False) _summaryOnEnd = false;
             if (root.TryGetProperty("run_recap", out var rr) && rr.ValueKind == JsonValueKind.False) _recapEnabled = false;
             if (root.TryGetProperty("ui_scale", out var us) && us.ValueKind == JsonValueKind.Number && us.TryGetSingle(out float uss)) _uiScale = Math.Clamp(uss, 0.5f, 4f);
-            if (root.TryGetProperty("source_hooks", out var shk) && shk.ValueKind == JsonValueKind.True) _sourceHooks = true;
+            if (root.TryGetProperty("source_hooks", out var shk) && shk.ValueKind == JsonValueKind.False) _sourceHooks = false;
             if (root.TryGetProperty("native_visuals", out var nv) && nv.ValueKind == JsonValueKind.False) GameAssets.Enabled = false;
             if (root.TryGetProperty("vfx_moments", out var vm) && vm.ValueKind == JsonValueKind.True) VfxMoments.Enabled = true;
             if (root.TryGetProperty("hotkey", out var hk) && hk.ValueKind == JsonValueKind.String)
@@ -637,6 +637,7 @@ public static class DamageChartsMod
             }
             _activeSource = (label!, icon);
             _activeFrame = _frame;
+            if (ForecastReader.Debug) GD.Print($"[STS2 Damage] STAMP {t.Name} label={label} frame={_frame}");
         }
         catch { }
     }
@@ -1219,6 +1220,7 @@ public static class DamageChartsMod
                     : (pend.Label ?? ConsumeActive().Label ?? "Unknown");
                 string victim = MaybeName(creature);
                 _tracker.AddTaken(round, slot, lost, attacker);
+                if (ForecastReader.Debug) GD.Print($"[STS2 Damage] HIT taken src={attacker} amt={lost} round={round} frame={_frame}");
                 VfxMoments.OnTaken(creature, lost);
                 _tracker.AddLog(round, $"{attacker} → {victim}  {lost}", true);
                 return;
@@ -1235,6 +1237,7 @@ public static class DamageChartsMod
             if (pend.Label != null) { src = pend.Label; icon = pend.Icon; }
             else { var a = ConsumeActive(); src = a.Label ?? "Status"; icon = a.Icon; } // Doom/Kill & other non-Damage paths
             _tracker.AddDealt(round, dslot, lost, src, icon);
+            if (ForecastReader.Debug) GD.Print($"[STS2 Damage] HIT dealt src={src} amt={lost} round={round} frame={_frame}");
             if (dslot == _localSlot) VfxMoments.OnDealt(creature, lost, src, icon);
             _tracker.AddLog(round, $"{src} → {TextHelper.SafeGetText(() => creature.Monster!.Title) ?? "Enemy"}  {lost}", false);
         }

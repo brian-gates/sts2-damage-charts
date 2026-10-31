@@ -3,7 +3,7 @@
   "name": "Damage Charts",
   "author": "zaxnyd",
   "description": "Incoming-damage forecast and damage analytics: see how much HP you're about to lose this turn (docked beside your character), plus a hotkey-toggled (default C) breakdown of damage dealt and taken by source, potions used, an end-of-combat summary and a run recap. Uses the game's own look. Single-player and multiplayer.",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "has_pck": false,
   "has_dll": true,
   "affects_gameplay": false

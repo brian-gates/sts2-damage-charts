@@ -52,7 +52,7 @@ is `static` — this is a single mod instance.
    - `DamagePrefix` on `CreatureCmd.Damage(...)` (the unique 6-param overload whose 2nd param is
      `IEnumerable<Creature>`, resolved by reflection in `ResolveDamageMethod`). Card hits use
      `cardSource.Title`; pet/summon hits credit the pet; otherwise falls back to the active-source stamp.
-   - `PowerSourcePrefix` (opt-in, `source_hooks`) patched onto the curated `DamageSourceHooks` list of
+   - `PowerSourcePrefix` (`source_hooks`, on by default) patched onto the curated `DamageSourceHooks` list of
      damage-dealing power/relic/orb/potion hook methods (`TryApplyPowerSourceHooks`). It reads the model's
      own `Title`/icon and stamps `_activeSource` for the immediately-following `Damage` call. The stamp is only honored if
      "fresh" (`ActiveFresh()`, within ~1 frame) so a stale passive-relic stamp can't mislabel a later hit.

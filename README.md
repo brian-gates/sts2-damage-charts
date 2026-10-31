@@ -15,9 +15,8 @@ A standalone damage analytics and incoming-damage forecast mod for [Slay the Spi
   "full"` swaps in the larger chart.
 - **Combat stats** (hotkey, default **C**): a full-screen breakdown of damage **dealt** and **taken**
   **by source**, a per-round chart, the run so far, potions used, and a scrollable combat log (mouse
-  wheel, trackpad or scrollbar). Card and pet hits are always named; damage from powers (Poison, Thorns),
-  relics, orbs and potions is named only with the opt-in `source_hooks` setting, and otherwise shows as
-  `Status`/`Other`.
+  wheel, trackpad or scrollbar). Card and pet hits are always named, and so is much of the damage from
+  powers (Poison, Thorns), relics and potions; the rest shows as `Status`/`Other`.
 - **End-of-combat summary**: a compact version beside the rewards list after each fight, with potions
   used. C hides and shows it until you move on.
 - **Run recap**: the same hotkey out of combat (e.g. on the victory/death screen) opens a run-wide recap
@@ -37,8 +36,8 @@ A standalone damage analytics and incoming-damage forecast mod for [Slay the Spi
 | ![End-of-combat summary beside the rewards list](docs/screenshots/summary.jpg) | ![Forecast on turn 1 against two Nibbits](docs/screenshots/forecast.jpg) |
 | End-of-combat summary: dealt and taken by source, potions, combat log | Turn 1 of a fight |
 
-Taken with the default settings. The summary's `Status` row is the Fire Potion's damage: naming
-power, relic, orb and potion damage needs the opt-in `source_hooks` setting (see Config below).
+Taken with the settings of the time, before `source_hooks` was on by default: the summary's `Status`
+row is the Fire Potion's damage, which is now named.
 
 ## Requirements
 
@@ -51,9 +50,9 @@ power, relic, orb and potion damage needs the opt-in `source_hooks` setting (see
 - **Amounts** come from subscribing to each `Creature.CurrentHpChanged` event (true post-block HP
   loss). Player-creature drops = taken; enemy drops = dealt; heals and block are totaled separately.
 - **Source attribution** comes from a Harmony prefix on the central `CreatureCmd.Damage(...)`: card
-  hits use `cardSource.Title`, pet hits credit the pet. With `source_hooks` on, a curated list of the
-  game's damage-dealing power/relic/orb/potion hooks (found by a static call-graph sweep of `sts2.dll`)
-  stamps the source for the hit that follows; otherwise that damage is labeled `Status`/`Other`.
+  hits use `cardSource.Title`, pet hits credit the pet. A curated list of the game's damage-dealing
+  power/relic/orb/potion hooks (found by a static call-graph sweep of `sts2.dll`) stamps the source for
+  the hit that follows (`source_hooks`, on by default); damage it can't place is labeled `Status`/`Other`.
 - **Potions used** come from a postfix on `CombatHistory.PotionUsed`.
 - **The forecast** reads intents, powers, relics and the hand through reflection each frame, read-only.
 - **Startup freeze workaround**: with any mod loaded, the game's Sentry shutdown can hang startup; the
@@ -155,9 +154,10 @@ After the first publish, subscribe in-client and verify the overlay loads in a r
 - `native_visuals`: **default `true`.** Set `false` for the original flat look.
 - `vfx_moments`: **default `false`.** Set `true` for the game's own VFX on a new biggest hit, a fully
   blocked enemy turn, and a new top damage source.
-- `source_hooks`: **default `false`.** When `true`, damage-over-time and relic/orb/potion hits are
-  attributed by name (Poison, Doom, Thorns, …) instead of the generic `Status`/`Other`, via a curated
-  set of patched hooks. Still opt-in while it is verified in game.
+- `source_hooks`: **default `true`.** Attributes damage-over-time and relic/orb/potion hits by name
+  (Poison, Doom, Thorns, …) instead of the generic `Status`/`Other`, via a curated set of patched hooks.
+  Some effects that deal their damage after an animation still show as `Status`. Set `false` to turn
+  the hooks off.
 
 Changes to `hotkey`, `show_bars` and `vfx_moments` are picked up live (within about half a second);
 the rest apply the next time the game starts.
