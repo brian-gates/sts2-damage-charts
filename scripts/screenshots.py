@@ -37,6 +37,8 @@ def get_state():
 
 
 def act(action, **params):
+    if os.environ.get("STS2_TRACE"):
+        print(f"  > {action} {params}", file=sys.stderr, flush=True)
     body = json.dumps({"action": action, **params}).encode()
     req = urllib.request.Request(API, data=body, headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=30) as r:

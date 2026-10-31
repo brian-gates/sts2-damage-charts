@@ -1,9 +1,9 @@
 # Known issues
 
-## Power-source attribution hooks can deadlock/crash the game (shipped disabled)
+## Power-source attribution hooks could deadlock/crash the game (fixed: curated hooks, on by default)
 
-**Status:** Root cause **confirmed** via bisection. The hooks now default **off** (`source_hooks`
-config, opt-in). This entry tracks re-implementing safe by-name attribution.
+**Status:** Fixed. The blanket patching was replaced by a curated list (see the 2026-10-22 update) and,
+after the 2026-10-30 soak test below, `source_hooks` defaults **on**. Kept for the history and evidence.
 
 **Symptom:** Intermittent hard hang (game shows "not responding") and/or repeated
 `[STS2 Damage] disabled after repeated errors: Bad IL range.` log errors — during combat, on opening
@@ -41,6 +41,12 @@ Status so far: 59/59 resolve and patch on v0.107.1; several combats ran without 
 The startup freezes seen during this testing were the Sentry bug below (they reproduced with
 `source_hooks: false` and with a different mod loaded alone), not these hooks. `source_hooks` still
 defaults to `false` until by-name labels are confirmed in game.
+**Update 2026-10-30: on by default.** `scripts/soak_source_hooks.py` (17 launches, 50 staged fights,
+alternating the game's normal and fast speed, 45 of the hooked items granted through the dev console):
+0 freezes, 0 crashes, 0 `Bad IL range`, 0 mod errors, 0 game exceptions with the mod on the stack, and
+no hit credited to a wrong name. 19 items were named on their hits; the rest fall back to `Status` (see
+issue #27). Not exercised: orbs (Ironclad-only test), and Sandpit, which throws inside the game's own
+code when granted outside its boss fight.
 Known gap: 11 of the hooks await (animation/`Cmd.Wait`) before dealing damage (The Bomb, Magic Bomb,
 Thunder, Serpent Form, Panache, Inferno turn-start, Explosive Ampoule, The Gambit, Sandpit, Precarious
 Shears, Doom's kill path), so their stamp can be older than the 1-frame `ActiveFresh()` window and the
