@@ -122,8 +122,18 @@ internal static class ForecastReader
     // True while the local player is actively taking their turn (PlayerTurnPhase.Play) — i.e. planning,
     // when the forecast is meaningful. During the enemy turn it reads false, so the caller freezes the
     // last planning value instead of letting it climb as block/Osty are consumed by resolving hits.
-    public static bool IsPlanningPhase(IReadOnlyList<Player> players, int localSlot)
+    // True while the player side is acting. In co-op that includes after the local player has ended their
+    // turn while teammates still play, so a teammate's stun or debuff still updates the forecast; it only
+    // freezes once the enemy side starts acting. Falls back to the local player's Play phase if the
+    // combat's current side can't be read.
+    public static bool IsPlanningPhase(CombatState cs, IReadOnlyList<Player> players, int localSlot)
     {
+        try
+        {
+            object? side = GetProp(cs, "CurrentSide");
+            if (side != null) return string.Equals(side.ToString(), "Player", StringComparison.OrdinalIgnoreCase);
+        }
+        catch { }
         try
         {
             if (localSlot < 0 || localSlot >= players.Count) return false;

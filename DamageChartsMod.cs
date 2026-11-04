@@ -888,10 +888,10 @@ public static class DamageChartsMod
             if (_forecast == null) return;
             var inputs = ForecastReader.Build(cs, _players, _localSlot);
             var r = DamageForecast.Compute(inputs);
-            // Only recompute while the player is planning (their Play phase). During the enemy turn the
+            // Only recompute while the player side is acting (see IsPlanningPhase). During the enemy turn the
             // prediction is being realized — block/Osty get eaten hit by hit — so freeze the last planning
             // value instead of letting the shown loss climb as the animation resolves.
-            if (ForecastReader.IsPlanningPhase(_players, _localSlot) || _frozenForecast == null) _frozenForecast = r;
+            if (ForecastReader.IsPlanningPhase(cs, _players, _localSlot) || _frozenForecast == null) _frozenForecast = r;
             r = _frozenForecast.Value;
             _forecast.UiScaleMul = _uiScale;
             if (_forecastLedger != null) _forecastLedger.UiScaleMul = _uiScale;
@@ -911,7 +911,7 @@ public static class DamageChartsMod
                 string detail = "";
                 foreach (var it in r.Items) detail += $" [{it.Kind} {it.Label} {it.Hits}x{it.DamagePerHit}]";
                 string line = $"in={r.Incoming} block={r.Block} loss={r.MinLoss}-{r.MaxLoss} " +
-                              $"hidden={r.HasHidden} hp={r.CurrentHp}/{r.MaxHp} frozen={!ForecastReader.IsPlanningPhase(_players, _localSlot)} items={r.Items.Count}{detail}";
+                              $"hidden={r.HasHidden} hp={r.CurrentHp}/{r.MaxHp} frozen={!ForecastReader.IsPlanningPhase(cs, _players, _localSlot)} items={r.Items.Count}{detail}";
                 if (line != _lastForecastLog) { _lastForecastLog = line; GD.Print($"[STS2 Damage] forecast {line}"); }
             }
         }
