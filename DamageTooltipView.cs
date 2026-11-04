@@ -80,7 +80,7 @@ internal sealed class DamageTooltipView
             for (int i = cur; i < _labels.Count; i++) _labels[i].Visible = false;
             for (int i = iconCur; i < _icons.Count; i++) _icons[i].Visible = false;
         }
-        catch (Exception ex) { GD.PrintErr($"[STS2 Damage] tooltip render error: {ex.Message}"); }
+        catch (Exception ex) { ErrorLog.Once("tooltip render", ex); }
     }
 
     // The original flat look (native_visuals off, or the game's hover-tip art unavailable).

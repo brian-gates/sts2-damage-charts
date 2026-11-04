@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Godot;
 
 namespace STS2_DamageCharts;
@@ -50,7 +51,22 @@ internal static class UiTheme
     // Prefer the game's own panel frame (lifted live from its theme) so the overlay reads as native;
     // fall back to the hand-built flat style if no native stylebox was captured. Duplicate the native
     // resource so per-panel use never mutates the shared game stylebox.
+    // Built panel styles, keyed by what shapes them, so a per-frame restyle reuses one resource and
+    // Th.Stylebox can skip the override when nothing changed (issue #31).
+    private static readonly Dictionary<(float Alpha, float Scale, bool Native), StyleBox> _panelStyles = new();
+
     private static void ApplyPanelStyle(Panel p, float bgAlpha, float scale)
+    {
+        var key = (bgAlpha, scale, _nativePanel is StyleBoxTexture);
+        if (!_panelStyles.TryGetValue(key, out var built))
+        {
+            built = BuildPanelStyle(bgAlpha, scale);
+            _panelStyles[key] = built;
+        }
+        Th.Stylebox(p, "panel", built);
+    }
+
+    private static StyleBox BuildPanelStyle(float bgAlpha, float scale)
     {
         // The game's nine-patch (tiny_nine_patch) is a WHITE rounded-rect mask meant to be tinted.
         // Tint it dark via ModulateColor so our light text stays readable; floor the alpha so the
@@ -61,12 +77,11 @@ internal static class UiTheme
             {
                 var sb = (StyleBoxTexture)nat.Duplicate();
                 sb.ModulateColor = new Color(0.04f, 0.05f, 0.08f, Math.Max(bgAlpha, 0.82f));
-                p.AddThemeStyleboxOverride("panel", sb);
-                return;
+                return sb;
             }
             catch { }
         }
-        p.AddThemeStyleboxOverride("panel", PanelStyle(bgAlpha, scale));
+        return PanelStyle(bgAlpha, scale);
     }
 
     // --- Game font (GameAssets' Kreon when native_visuals is on, else lifted once from a live game label,
@@ -148,23 +163,30 @@ internal static class UiTheme
         return lbl;
     }
 
-    public static void Apply(Label lbl, int fontSize, Color color)
+    // Each property is written once with its final value: callers pass any font/outline they want instead
+    // of overriding after Apply, which made the value flip every frame and re-shape the text (issue #31).
+    // The font Apply uses when the caller passes none (null until one is found).
+    public static Font? DefaultFont => _font;
+
+    public static void Apply(Label lbl, int fontSize, Color color, Font? font = null, Color? outlineColor = null, int? outlineSize = null)
     {
-        if (_font != null) lbl.AddThemeFontOverride("font", _font);
-        lbl.AddThemeFontSizeOverride("font_size", Math.Max(1, fontSize));
-        lbl.AddThemeColorOverride("font_color", color);
-        lbl.AddThemeColorOverride("font_outline_color", Outline);
-        lbl.AddThemeConstantOverride("outline_size", 4);
+        var f = font ?? _font;
+        if (f != null) Th.Font(lbl, "font", f);
+        Th.FontSize(lbl, "font_size", Math.Max(1, fontSize));
+        Th.Color(lbl, "font_color", color);
+        Th.Color(lbl, "font_outline_color", outlineColor ?? Outline);
+        Th.Const(lbl, "outline_size", Math.Max(0, outlineSize ?? 4));
     }
 
     // For a RichTextLabel driven by BBCode [color] tags, so a single line can mix per-value colors.
-    public static void Apply(RichTextLabel rtl, int fontSize, Color defaultColor)
+    public static void Apply(RichTextLabel rtl, int fontSize, Color defaultColor, Font? font = null, Color? outlineColor = null, int? outlineSize = null)
     {
-        if (_font != null) rtl.AddThemeFontOverride("normal_font", _font);
-        rtl.AddThemeFontSizeOverride("normal_font_size", Math.Max(1, fontSize));
-        rtl.AddThemeColorOverride("default_color", defaultColor);
-        rtl.AddThemeColorOverride("font_outline_color", Outline);
-        rtl.AddThemeConstantOverride("outline_size", 4);
+        var f = font ?? _font;
+        if (f != null) Th.Font(rtl, "normal_font", f);
+        Th.FontSize(rtl, "normal_font_size", Math.Max(1, fontSize));
+        Th.Color(rtl, "default_color", defaultColor);
+        Th.Color(rtl, "font_outline_color", outlineColor ?? Outline);
+        Th.Const(rtl, "outline_size", Math.Max(0, outlineSize ?? 4));
     }
 
     private static T? FindFirst<T>(Node start) where T : Node

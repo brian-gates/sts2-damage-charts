@@ -164,7 +164,7 @@ internal sealed class DamageDetailView
         var btnStyle = new StyleBoxFlat { BgColor = new Color(0.20f, 0.23f, 0.32f, 0.96f), BorderColor = UiTheme.Gold };
         btnStyle.SetCornerRadiusAll(8);
         btnStyle.SetBorderWidthAll(3);
-        _btn.AddThemeStyleboxOverride("panel", btnStyle);
+        Th.Stylebox(_btn, "panel", btnStyle);
         _container.AddChild(_btn);
         _btnGlyph = UiTheme.MakeLabel(20, UiTheme.Gold);
         _btnGlyph.Text = "←";
@@ -548,7 +548,7 @@ internal sealed class DamageDetailView
             for (int i = barCur; i < _bars.Count; i++) _bars[i].Visible = false;
             for (int i = iconCur; i < _icons.Count; i++) _icons[i].Visible = false;
         }
-        catch (Exception ex) { GD.PrintErr($"[STS2 Damage] detail render error: {ex.Message}"); }
+        catch (Exception ex) { ErrorLog.Once("detail render", ex); }
     }
 
     // Run-recap totals strip: four big stats (Dealt / Taken / Healed / Block) spread across the width.
@@ -913,7 +913,7 @@ internal sealed class DamageDetailView
                     // the large edge is 60x36, the small one square).
                     float capH = cap != null ? Math.Min(tw * cap.GetHeight() / Math.Max(1f, cap.GetWidth()), _trackH * 0.25f) : 0f;
 
-                    if (_nTrackApplied != track) { _nTrack.AddThemeStyleboxOverride("panel", track); _nTrackApplied = track; }
+                    if (_nTrackApplied != track) { Th.Stylebox(_nTrack, "panel", track); _nTrackApplied = track; }
                     _nTrack.Visible = true;
                     _nTrack.SetPosition(new Vector2(tx, _trackY + capH));
                     _nTrack.SetSize(new Vector2(tw, Math.Max(1f, _trackH - capH * 2f)));
@@ -971,9 +971,9 @@ internal sealed class DamageDetailView
             var panel = GameAssets.NativePanel();
             if (panel == null) return false;
             var shadow = GameAssets.NativePanelShadow();
-            _bg.AddThemeStyleboxOverride("panel", panel);
-            if (shadow != null) _bgShadow.AddThemeStyleboxOverride("panel", shadow);
-            else _bgShadow.AddThemeStyleboxOverride("panel", new StyleBoxEmpty());
+            Th.Stylebox(_bg, "panel", panel);
+            if (shadow != null) Th.Stylebox(_bgShadow, "panel", shadow);
+            else Th.Stylebox(_bgShadow, "panel", new StyleBoxEmpty());
             _nativePanel = true;
         }
         catch { }
@@ -1120,16 +1120,15 @@ internal sealed class DamageDetailView
         Label lbl;
         if (cursor < _labels.Count) lbl = _labels[cursor];
         else { lbl = UiTheme.MakeLabel(fs, color); _container.AddChild(lbl); _labels.Add(lbl); }
+        Font? roleFont = role == FontRole.Body ? null : (role == FontRole.Bold ? GameAssets.KreonBold : GameAssets.NumericFont);
         if (GameAssets.Enabled)
         {
             // Pooled labels may have been a right-aligned value or a bold/numeric one last frame.
-            lbl.RemoveThemeFontOverride("font");
+            if (roleFont == null && UiTheme.DefaultFont == null) Th.RemoveFont(lbl, "font");
             lbl.HorizontalAlignment = HorizontalAlignment.Left;
             lbl.SetSize(Vector2.Zero);
         }
-        UiTheme.Apply(lbl, fs, color);
-        if (role != FontRole.Body && (role == FontRole.Bold ? GameAssets.KreonBold : GameAssets.NumericFont) is Font f)
-            lbl.AddThemeFontOverride("font", f);
+        UiTheme.Apply(lbl, fs, color, roleFont);
         lbl.Visible = true;
         cursor++;
         return lbl;

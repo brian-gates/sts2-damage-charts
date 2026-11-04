@@ -36,7 +36,9 @@ internal static class ForecastReader
                 endTurnBlock = ReadEndTurnBlock(cs, mePlayer!, me, block);
                 if (Debug && !_dumped) { _dumped = true; DumpDiagnostics(cs, players, localSlot, me); }
                 ReadDots(me, items);
+                long ps = Perf.Start();
                 ReadSelfDamageCards(cs, players, localSlot, items);
+                Perf.Stop("fc.selfcards", ps);
             }
         }
         catch { }
@@ -218,12 +220,16 @@ internal static class ForecastReader
     {
         try
         {
-            MethodInfo? m = null;
-            foreach (var cand in card.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance))
+            var type = card.GetType();
+            if (!_describeMethod.TryGetValue(type, out var m))
             {
-                if (cand.Name != "GetDescriptionForPile") continue;
-                var cps = cand.GetParameters();
-                if (cps.Length >= 1 && cps[0].ParameterType.IsEnum) { m = cand; break; }
+                foreach (var cand in type.GetMethods(BindingFlags.Public | BindingFlags.Instance))
+                {
+                    if (cand.Name != "GetDescriptionForPile") continue;
+                    var cps = cand.GetParameters();
+                    if (cps.Length >= 1 && cps[0].ParameterType.IsEnum) { m = cand; break; }
+                }
+                _describeMethod[type] = m;
             }
             if (m == null) return null;
 
@@ -324,6 +330,11 @@ internal static class ForecastReader
         }
         catch { return null; }
     }
+
+    // Card kind -> whether its text can cost the player HP. Card kinds are fixed for the game's lifetime.
+    private static readonly Dictionary<Type, bool> _selfHarmByType = new();
+    // Card kind -> its GetDescriptionForPile(PileType, ...) overload (null: none).
+    private static readonly Dictionary<Type, MethodInfo?> _describeMethod = new();
 
     private static MethodInfo? FindMethod(object obj, string name, int paramCount)
     {
@@ -426,18 +437,24 @@ internal static class ForecastReader
             if (hand == null) return;
             object? cardsObj = GetProp(hand, "Cards") ?? hand; // hand is a CardPile; its list is under .Cards
             if (cardsObj is not IEnumerable cards) return;
-            if (Debug) DebugHand(cards);
+            if (Debug) { long pd = Perf.Start(); DebugHand(cards); Perf.Stop("fc.debughand", pd); }
             foreach (var card in cards)
             {
                 if (card == null) continue;
-                string tn = card.GetType().Name;
+                var type = card.GetType();
+                string tn = type.Name;
+                // Whether a card can cost HP is fixed by its kind, so building its text (expensive: the game
+                // formats it and runs every damage modifier) is only needed for the few that can (issue #31).
+                if (_selfHarmByType.TryGetValue(type, out bool harms) && !harms) continue;
                 // GetDescriptionForPile(Hand) resolves the {Damage} template to the real number; the raw
                 // Description LocString leaves it as "{Damage:diff()}".
                 string desc = ResolveCardText(card)
                     ?? TextHelper.SafeGetText(() => GetProp(card, "Description") ?? GetProp(card, "Text")) ?? "";
 
                 // Self-harm cards say "take N damage" / "lose N HP" (as opposed to attacks that "deal" it).
-                if (!SelfHarmRx.IsMatch(desc)) continue;
+                bool selfHarm = SelfHarmRx.IsMatch(desc);
+                if (desc.Length > 0) _selfHarmByType[type] = selfHarm;   // an unresolved text isn't a verdict
+                if (!selfHarm) continue;
 
                 // Amount: the number right after "take"/"lose" in the resolved text; fall back to fields.
                 int amount = ParseSelfDamage(desc);

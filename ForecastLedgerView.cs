@@ -196,7 +196,7 @@ internal sealed class ForecastLedgerView
             for (int i = rect; i < _rects.Count; i++) _rects[i].Visible = false;
             for (int i = icon; i < _icons.Count; i++) _icons[i].Visible = false;
         }
-        catch (Exception ex) { GD.PrintErr($"[STS2 Damage] forecast ledger error: {ex.Message}"); }
+        catch (Exception ex) { ErrorLog.Once("forecast ledger", ex); }
     }
 
     // Recent completed rounds (actual taken) + the live current round (forecast potential/net/range).
@@ -249,14 +249,16 @@ internal sealed class ForecastLedgerView
         Label lbl;
         if (cursor < _labels.Count) lbl = _labels[cursor];
         else { lbl = UiTheme.MakeLabel(fontSize, color); _container.AddChild(lbl); _labels.Add(lbl); }
-        UiTheme.Apply(lbl, fontSize, color);
         if (font != null)
         {
-            ForecastStyle.SetFont(lbl, font);
-            ForecastStyle.Outline(lbl, UiTheme.Outline, _nativePanel ? 0 : 4);
+            UiTheme.Apply(lbl, fontSize, color, font, UiTheme.Outline, _nativePanel ? 0 : 4);
             ForecastStyle.Shadow(lbl, _sc);
         }
-        else lbl.RemoveThemeColorOverride("font_shadow_color"); // pooled label may carry a native shadow
+        else
+        {
+            UiTheme.Apply(lbl, fontSize, color);
+            Th.RemoveColor(lbl, "font_shadow_color"); // pooled label may carry a native shadow
+        }
         lbl.Visible = true;
         cursor++;
         return lbl;
