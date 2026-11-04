@@ -56,7 +56,8 @@ public static class DamageChartsMod
     // Set by a power's hook just before it deals damage; consumed by the next non-card hit. Only valid
     // for ~1 frame (a damaging hook stamps-and-deals synchronously) so a stale stamp from a passive
     // relic hook can't mislabel a later unrelated hit (e.g. a potion).
-    private static (string Label, string? Icon)? _activeSource;
+    // The power/relic/orb/potion whose hook is about to change HP, and the player it belongs to.
+    private static (string Label, string? Icon, Player? Owner)? _activeSource;
     private static long _frame;
     private static long _activeFrame;
     private static string? _doomIcon;
@@ -617,7 +618,9 @@ public static class DamageChartsMod
         try
         {
             if (creatures == null) return;
-            foreach (var c in creatures) if (c != null) _pending[c] = ("Doom", null, _doomIcon);
+            // Credit the kill to whoever applied the Doom (in co-op it isn't always the local player).
+            foreach (var c in creatures)
+                if (c != null) _pending[c] = ("Doom", DoomApplier(c)?.Creature, _doomIcon);
         }
         catch { }
     }
@@ -635,7 +638,7 @@ public static class DamageChartsMod
                 try { if (t.GetProperty(prop)?.GetValue(__instance) is string p && ResourceLoader.Exists(p)) { icon = p; break; } }
                 catch { }
             }
-            _activeSource = (label!, icon);
+            _activeSource = (label!, icon, SourcePlayer(__instance));
             _activeFrame = _frame;
             if (ForecastReader.Debug) GD.Print($"[STS2 Damage] STAMP {t.Name} label={label} frame={_frame}");
         }
@@ -665,6 +668,8 @@ public static class DamageChartsMod
                 // when fresh (~same frame) so a stale passive-relic stamp can't mislabel this hit.
                 label = _activeSource!.Value.Label;
                 icon = _activeSource.Value.Icon;
+                // No dealer on the hit (Poison ticks, relic/orb procs): credit the source's player.
+                if (dealer == null) dealer = _activeSource.Value.Owner?.Creature!;
                 _activeSource = null; // consume
             }
             else label = "Status"; // unattributed non-card damage
@@ -1232,10 +1237,13 @@ public static class DamageChartsMod
             if (dealer != null && dealer.IsPlayer) dslot = SlotOf(dealer.Player);
             else if (dealer != null && dealer.IsPet) dslot = SlotOf(dealer.PetOwner); // pet → its owner
             else if (dealer != null && dealer.IsMonster) return; // genuine enemy-on-enemy, not player damage
-            else dslot = ActiveSlot();                            // dealer null (poison/doom/etc.) -> local player
+            else dslot = -1;                                      // dealer null: the source's player, below
             string src; string? icon;
+            Player? owner = null;
             if (pend.Label != null) { src = pend.Label; icon = pend.Icon; }
-            else { var a = ConsumeActive(); src = a.Label ?? "Status"; icon = a.Icon; } // Doom/Kill & other non-Damage paths
+            else { var a = ConsumeActive(); src = a.Label ?? "Status"; icon = a.Icon; owner = a.Owner; } // Doom/Kill & other non-Damage paths
+            if (dslot < 0) dslot = SlotOf(owner);
+            if (dslot < 0) dslot = ActiveSlot();                  // nothing says whose it was: local player
             _tracker.AddDealt(round, dslot, lost, src, icon);
             if (ForecastReader.Debug) GD.Print($"[STS2 Damage] HIT dealt src={src} amt={lost} round={round} frame={_frame}");
             if (dslot == _localSlot) VfxMoments.OnDealt(creature, lost, src, icon);
@@ -1258,10 +1266,37 @@ public static class DamageChartsMod
     // Read and clear the active power/relic source (set by a patched hook just before it changed HP).
     private static bool ActiveFresh() => _activeSource.HasValue && _frame - _activeFrame <= 1;
 
-    private static (string? Label, string? Icon) ConsumeActive()
+    private static (string? Label, string? Icon, Player? Owner) ConsumeActive()
     {
-        if (ActiveFresh()) { var v = _activeSource!.Value; _activeSource = null; return (v.Label, v.Icon); }
-        return (null, null);
+        if (ActiveFresh()) { var v = _activeSource!.Value; _activeSource = null; return (v.Label, v.Icon, v.Owner); }
+        return (null, null, null);
+    }
+
+    // Which player a damage source belongs to. A power is credited to whoever applied it (the Silent's
+    // Poison sits on the enemy, so its Owner is the enemy), falling back to its Owner when that's a player
+    // (a player's own power); relics, orbs and potions have a Player Owner. Null when unknown.
+    private static Player? SourcePlayer(object model)
+    {
+        try
+        {
+            if (model is PowerModel power) return PlayerOf(power.Applier) ?? PlayerOf(power.Owner);
+            var owner = model.GetType().GetProperty("Owner")?.GetValue(model);
+            return owner as Player ?? PlayerOf(owner as Creature);
+        }
+        catch { return null; }
+    }
+
+    private static Player? PlayerOf(Creature? c) => c == null ? null : c.IsPlayer ? c.Player : c.IsPet ? c.PetOwner : null;
+
+    private static Player? DoomApplier(Creature c)
+    {
+        try
+        {
+            foreach (var p in c.Powers)
+                if (p.GetType().Name == "DoomPower") return PlayerOf(p.Applier);
+        }
+        catch { }
+        return null;
     }
 
     private static int SlotOf(Player? player)
