@@ -231,7 +231,7 @@ internal sealed class DamageChartView
             {
                 // _bg stays (it blocks click-through to the game) but draws nothing; the frame is the visual.
                 _bg.Visible = true;
-                _bg.AddThemeStyleboxOverride("panel", _emptyBox);
+                Th.Stylebox(_bg, "panel", _emptyBox);
                 NativeLook.LayoutFrame(_frame, _frameShadow, _w, _h, sc, ChartFrameAlpha);
             }
             else
@@ -282,7 +282,7 @@ internal sealed class DamageChartView
                 foreach (var (text, color) in new[] { (" Out", outColor), (" | ", dim), ("In", UiTheme.Red), (" / Round", titleColor) })
                 {
                     var part = NextLabel(ref labelCur, ts, color, numFont);
-                    part.Text = text;
+                    Th.Text(part, text);
                     part.SetPosition(new Vector2(tx, _title.Position.Y));
                     tx += part.GetMinimumSize().X;
                 }
@@ -295,7 +295,7 @@ internal sealed class DamageChartView
                 for (int s = 0; s < snap.PlayerCount && s < palette.Length; s++)
                 {
                     var lbl = NextLabel(ref labelCur, F(11, sc), palette[s], boldFont);
-                    lbl.Text = "■ " + (s < snap.Labels.Length ? snap.Labels[s] : $"P{s + 1}");
+                    Th.Text(lbl, "■ " + (s < snap.Labels.Length ? snap.Labels[s] : $"P{s + 1}"));
                     lbl.SetPosition(new Vector2(lx, 20 * sc + iy));
                     lx += Math.Min(100 * sc, lbl.Text.Length * 6f * sc + 14 * sc);
                 }
@@ -339,7 +339,7 @@ internal sealed class DamageChartView
                 gl.SetSize(new Vector2(plotW, Math.Max(1f, sc)));
                 if (Compact) continue;
                 var vl = NextLabel(ref labelCur, F(13, sc), axisColor, numFont);
-                vl.Text = ((long)Math.Round(frac * maxVal)).ToString();
+                Th.Text(vl, ((long)Math.Round(frac * maxVal)).ToString());
                 vl.SetPosition(new Vector2(3 * sc + ix, yLine - 7 * sc));
             }
 
@@ -390,7 +390,7 @@ internal sealed class DamageChartView
                         if (!Compact && a.Count > 1 && bh >= 13 * sc && dealtW >= 16 * sc)
                         {
                             var xn = NextLabel(ref labelCur, F(11, sc), UiTheme.Cream, numFont, onBar: true);
-                            xn.Text = $"x{a.Count}";
+                            Th.Text(xn, $"x{a.Count}");
                             xn.SetPosition(new Vector2(dealtX + dealtW - 16 * sc, yTop - bh + 1 * sc));
                         }
                         yTop -= bh;
@@ -407,7 +407,7 @@ internal sealed class DamageChartView
                 }
 
                 var rl = NextLabel(ref labelCur, F(Compact ? 11 : 13, sc), new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.6f), numFont);
-                rl.Text = row.Round.ToString();
+                Th.Text(rl, row.Round.ToString());
                 rl.SetPosition(new Vector2(groupX + groupW * 0.5f - 4 * sc, plotBottom + (Compact ? 1 : 3) * sc));
             }
 
@@ -416,7 +416,7 @@ internal sealed class DamageChartView
             HideRest(_icons, iconCur);
             HideRest(_grid, gridCur);
         }
-        catch (Exception ex) { GD.PrintErr($"[STS2 Damage] bars render error: {ex.Message}"); }
+        catch (Exception ex) { ErrorLog.Once("bars render", ex); }
     }
 
     private static int F(int baseSize, float sc) => Math.Max(7, (int)Math.Round(baseSize * sc));
@@ -542,8 +542,8 @@ internal static class NativeLook
             var bg = GameAssets.NativePanel();
             var sh = GameAssets.NativePanelShadow();
             if (bg == null || sh == null) return false;
-            frame.AddThemeStyleboxOverride("panel", bg);
-            shadow.AddThemeStyleboxOverride("panel", sh);
+            Th.Stylebox(frame, "panel", bg);
+            Th.Stylebox(shadow, "panel", sh);
             styled = true;
         }
         catch { }
@@ -578,12 +578,10 @@ internal static class NativeLook
     // outline only where asked (text over bars).
     public static void Style(Label lbl, int fontSize, Color color, Font? font, int outlineSize)
     {
-        UiTheme.Apply(lbl, fontSize, color);
-        if (font != null) lbl.AddThemeFontOverride("font", font);
-        lbl.AddThemeConstantOverride("outline_size", outlineSize);
-        lbl.AddThemeColorOverride("font_shadow_color", ShadowColor);
-        lbl.AddThemeConstantOverride("shadow_offset_x", Math.Max(1, (int)Math.Round(fontSize * 3f / 22f)));
-        lbl.AddThemeConstantOverride("shadow_offset_y", Math.Max(1, (int)Math.Round(fontSize * 2f / 22f)));
+        UiTheme.Apply(lbl, fontSize, color, font, outlineSize: outlineSize);
+        Th.Color(lbl, "font_shadow_color", ShadowColor);
+        Th.Const(lbl, "shadow_offset_x", Math.Max(1, (int)Math.Round(fontSize * 3f / 22f)));
+        Th.Const(lbl, "shadow_offset_y", Math.Max(1, (int)Math.Round(fontSize * 2f / 22f)));
         lbl.SetMeta(MetaKey, true);
     }
 
@@ -593,10 +591,10 @@ internal static class NativeLook
     {
         if (!lbl.HasMeta(MetaKey)) return;
         lbl.RemoveMeta(MetaKey);
-        lbl.RemoveThemeFontOverride("font");
-        lbl.RemoveThemeColorOverride("font_shadow_color");
-        lbl.RemoveThemeConstantOverride("shadow_offset_x");
-        lbl.RemoveThemeConstantOverride("shadow_offset_y");
+        Th.RemoveFont(lbl, "font");
+        Th.RemoveColor(lbl, "font_shadow_color");
+        Th.RemoveConst(lbl, "shadow_offset_x");
+        Th.RemoveConst(lbl, "shadow_offset_y");
         lbl.HorizontalAlignment = HorizontalAlignment.Left;
         lbl.VerticalAlignment = VerticalAlignment.Top;
         lbl.TextOverrunBehavior = TextServer.OverrunBehavior.NoTrimming;

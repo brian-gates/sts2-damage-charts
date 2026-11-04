@@ -208,8 +208,7 @@ internal sealed class DamageForecastView
             float py = Math.Clamp(_posFrac.Y * _vp.Y, inset, Math.Max(inset, _vp.Y - _h));
             _container.SetPosition(new Vector2(px, py));
 
-            UiTheme.Apply(_title, F(13, sc), new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.7f));
-            ForecastStyle.SetFont(_title, GameAssets.KreonBold);
+            UiTheme.Apply(_title, F(13, sc), new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.7f), GameAssets.KreonBold);
             // The hover-tip frame is ~8px thick, so inset the title and body past it (the flat panel needs less).
             float padX = (_nativePanel ? 20 : 10) * sc;
             _title.SetPosition(new Vector2(padX, (_nativePanel ? 7 : 4) * sc));
@@ -230,15 +229,15 @@ internal sealed class DamageForecastView
                 ? $"[color=#{GreenHex}]Safe ✓[/color]"
                 : $"[color=#{LossHex}]{lossStr} [font_size={F(15, sc)}]HP[/font_size][/color]{hidden}";
             string line2 = $"[color=#{CreamHex}][font_size={F(13, sc)}]{r.CurrentHp} → [color=#{afterHex}]{after}[/color] {tail}[/font_size][/color]";
-            UiTheme.Apply(_loss, F(30, sc), UiTheme.Red);
             if (numFont != null)
             {
                 // Numbers in the game's numeric Kreon with the health bar HP label's dark-red outline.
-                ForecastStyle.SetFont(_loss, numFont);
-                ForecastStyle.Outline(_loss, r.IsSafe ? UiTheme.Outline : ForecastStyle.HpLabelOutline, F(6, sc));
+                UiTheme.Apply(_loss, F(30, sc), UiTheme.Red, numFont,
+                    r.IsSafe ? UiTheme.Outline : ForecastStyle.HpLabelOutline, F(6, sc));
                 ForecastStyle.Shadow(_loss, sc);
             }
-            _loss.Text = line1 + "\n" + line2;
+            else UiTheme.Apply(_loss, F(30, sc), UiTheme.Red);
+            Th.Text(_loss, line1 + "\n" + line2);
             _loss.SetPosition(new Vector2(padX, rowY));
 
             // Tucked micro-ledger on the right, only when mitigation changes the result (otherwise In equals
@@ -252,9 +251,9 @@ internal sealed class DamageForecastView
                 if (r.OstyAbsorb > 0) led += $"\n[color=#{OstyHex}]Osty {r.OstyAbsorb}[/color]";
             }
             _stats.Visible = mitigated;
-            UiTheme.Apply(_stats, F(12, sc), UiTheme.Cream);
-            if (numFont != null) { ForecastStyle.SetFont(_stats, numFont); ForecastStyle.Shadow(_stats, sc); }
-            _stats.Text = led;
+            UiTheme.Apply(_stats, F(12, sc), UiTheme.Cream, numFont);
+            if (numFont != null) ForecastStyle.Shadow(_stats, sc);
+            Th.Text(_stats, led);
             _stats.SetPosition(new Vector2(_w - 72 * sc, rowY));
 
             LayoutHpBar(r, padX, sc, afterHex);
@@ -265,7 +264,7 @@ internal sealed class DamageForecastView
             Material? pulse = r.IsLethal ? ForecastStyle.PulseMaterial() : null;
             if (_bg.Material != pulse) _bg.Material = pulse;
         }
-        catch (Exception ex) { GD.PrintErr($"[STS2 Damage] forecast render error: {ex.Message}"); }
+        catch (Exception ex) { ErrorLog.Once("forecast render", ex); }
     }
 
     private void LayoutHpBar(ForecastResult r, float padX, float sc, string afterHex)
@@ -328,30 +327,21 @@ internal static class ForecastStyle
         {
             var box = GameAssets.NativePanel();
             if (box == null) { shadow.Visible = false; return false; }
-            bg.AddThemeStyleboxOverride("panel", box);
+            Th.Stylebox(bg, "panel", box);
             var sh = GameAssets.NativePanelShadow();
-            if (sh != null) shadow.AddThemeStyleboxOverride("panel", sh);
+            if (sh != null) Th.Stylebox(shadow, "panel", sh);
             shadow.Visible = sh != null;
             return true;
         }
         catch { return false; }
     }
 
-    public static void SetFont(Label lbl, Font? f) { if (f != null) lbl.AddThemeFontOverride("font", f); }
-    public static void SetFont(RichTextLabel rtl, Font? f) { if (f != null) rtl.AddThemeFontOverride("normal_font", f); }
-
-    public static void Outline(Control c, Color color, int size)
-    {
-        c.AddThemeColorOverride("font_outline_color", color);
-        c.AddThemeConstantOverride("outline_size", Math.Max(0, size));
-    }
-
     // The soft offset shadow the game's labels carry (hover tips use 3,2).
     public static void Shadow(Control c, float sc)
     {
-        c.AddThemeColorOverride("font_shadow_color", TextShadow);
-        c.AddThemeConstantOverride("shadow_offset_x", Math.Max(1, (int)Math.Round(3 * sc)));
-        c.AddThemeConstantOverride("shadow_offset_y", Math.Max(1, (int)Math.Round(2 * sc)));
+        Th.Color(c, "font_shadow_color", TextShadow);
+        Th.Const(c, "shadow_offset_x", Math.Max(1, (int)Math.Round(3 * sc)));
+        Th.Const(c, "shadow_offset_y", Math.Max(1, (int)Math.Round(2 * sc)));
     }
 
     // shaders/button_pulse.gdshader: COLOR.rgb += |sin(TIME*2)| * 0.2 * pulse_strength. NPeekButton drives

@@ -717,6 +717,7 @@ public static class DamageChartsMod
     private static void Tick()
     {
         if (_disabled || !_initialized) return;
+        long perfTick = Perf.Start();
         try
         {
             _frame++;
@@ -792,7 +793,9 @@ public static class DamageChartsMod
                             _bars.Compact = _barsCompact;
                             _bars.Docked = _barsCompact && _barsDocked;
                             _bars.DockRect = _showForecast ? _forecast?.PanelRect : null;
+                            long pbar = Perf.Start();
                             _bars.Render(_tracker.Snapshot(), _playerColors);
+                            Perf.Stop("bars", pbar);
                             // Poll-based drag + click + hover (no input overrides).
                             if (_bars.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left)))
                             {
@@ -853,6 +856,8 @@ public static class DamageChartsMod
             // Disable fast on repeated errors so we never spam the broken logger or stall the game.
             if (++_errCount >= 5) HardDisable($"repeated errors: {ex.Message}");
         }
+        Perf.Stop("tick", perfTick);
+        Perf.EndTick();
     }
 
     // Permanent kill-switch. Stops the per-frame tick AND removes our Harmony patches so any faulting
@@ -916,7 +921,10 @@ public static class DamageChartsMod
         try
         {
             if (_forecast == null) return;
+            long pb = Perf.Start();
             var inputs = ForecastReader.Build(cs, _players, _localSlot);
+            Perf.Stop("fc.build", pb);
+            long pr = Perf.Start();
             var r = DamageForecast.Compute(inputs);
             // Only recompute while the player side is acting (see IsPlanningPhase). During the enemy turn the
             // prediction is being realized — block/Osty get eaten hit by hit — so freeze the last planning
@@ -936,6 +944,7 @@ public static class DamageChartsMod
             if (!_forecast.IsDragging && _forecast.IsHovered() && _forecast.LastResult is { } last)
                 _forecastLedger?.Render(last, _tracker.Snapshot(), _localSlot, cs.RoundNumber, RootMouse());
             else _forecastLedger?.Hide();
+            Perf.Stop("fc.render", pr);
             if (ForecastReader.Debug)
             {
                 string detail = "";
@@ -945,7 +954,7 @@ public static class DamageChartsMod
                 if (line != _lastForecastLog) { _lastForecastLog = line; GD.Print($"[STS2 Damage] forecast {line}"); }
             }
         }
-        catch (Exception ex) { GD.PrintErr($"[STS2 Damage] forecast error: {ex.Message}"); }
+        catch (Exception ex) { ErrorLog.Once("forecast", ex); }
     }
 
     private static void HandleHotkey()
