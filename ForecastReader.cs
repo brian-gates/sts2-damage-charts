@@ -176,7 +176,7 @@ internal static class ForecastReader
         return true;
     }
 
-    private static readonly System.Text.RegularExpressions.Regex NumRx = new(@"\d+");
+    private static readonly System.Text.RegularExpressions.Regex NumRx = new(@"-?\d+");
     // "take ... damage" / "lose ... HP|health" — self-harm, as opposed to attacks that "deal" damage.
     private static readonly System.Text.RegularExpressions.Regex SelfHarmRx = new(
         @"\b(take|lose)\b.{0,40}\b(damage|hp|health)\b",
@@ -220,9 +220,10 @@ internal static class ForecastReader
         catch { return null; }
     }
 
-    // The number the player sees. The intent's own display label (GetIntentLabel(targets, self)) already
-    // applies the attacker's Strength and the target's Vulnerable — DamageCalc alone is the raw base, so
-    // it under-reports once modifiers are in play. Prefer the label; fall back to the base delegate.
+    // The number the player sees, per hit. AttackIntent.GetSingleDamage(targets, self) is what the intent
+    // shows: the base run through Hook.ModifyDamage against the local player (attacker Strength and Weak,
+    // our Vulnerable, ...). DamageCalc alone is the raw base. A modified 0 is a real answer (e.g. Piercing
+    // Wail's -6 Strength on a 5-damage attack) and must not fall through to the raw base, which over-reports.
     private static int ResolveIntentDamage(object intent, Creature enemy)
     {
         try
@@ -231,13 +232,16 @@ internal static class ForecastReader
             object? targets = cs != null ? GetProp(cs, "PlayerCreatures") : null;
             if (targets != null)
             {
+                var single = FindMethod(intent, "GetSingleDamage", 2);
+                if (single != null && single.Invoke(intent, new object[] { targets, enemy }) is int dmg) return Math.Max(0, dmg);
+
                 var m = FindMethod(intent, "GetIntentLabel", 2);
                 object? loc = m?.Invoke(intent, new object[] { targets, enemy });
                 string? text = loc != null ? TextHelper.SafeGetText(() => loc) : null;
                 if (!string.IsNullOrEmpty(text))
                 {
                     var mm = NumRx.Match(text);
-                    if (mm.Success && int.TryParse(mm.Value, out int n) && n > 0) return n;
+                    if (mm.Success && int.TryParse(mm.Value, out int n)) return Math.Max(0, n);
                 }
             }
         }
