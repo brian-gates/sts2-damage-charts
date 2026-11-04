@@ -125,3 +125,11 @@ DSN is hardcoded so the env var is ignored).
 ([#789](https://github.com/getsentry/sentry-godot/pull/789), the reentry guard). A custom v0.108.0 test
 build from MegaCrit (2026-07-12) **still reproduced** the freeze, so revisit Workshop publishing only
 once a build ships the 2.0.1 upgrade.
+
+## Co-op: stacked Poison is credited to whoever applied it first
+
+**Status:** known limitation (2026-11-04). The game keeps one Poison stack per enemy and records only
+the first applier: `PowerCmd.Apply` stacks onto an existing instance via `ModifyAmount`, which never
+updates `PowerModel.Applier` (checked with REA on v0.107.1). So if two players poison the same enemy,
+every tick goes to the first one. Exact credit would need tracking each player's contribution to the
+stack and splitting each tick; not done. Doom has the same rule.

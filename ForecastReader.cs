@@ -122,12 +122,33 @@ internal static class ForecastReader
     // True while the local player is actively taking their turn (PlayerTurnPhase.Play) — i.e. planning,
     // when the forecast is meaningful. During the enemy turn it reads false, so the caller freezes the
     // last planning value instead of letting it climb as block/Osty are consumed by resolving hits.
-    public static bool IsPlanningPhase(IReadOnlyList<Player> players, int localSlot)
+    // True while someone on the player side is still planning: the side is Player and at least one
+    // player is in their Play phase. In co-op that includes after the local player has ended their turn
+    // while teammates still play, so a teammate's stun, kill or debuff still updates the forecast. It
+    // freezes once everyone has ended, before end-of-turn hooks run (Plating turning into block would
+    // otherwise be counted twice: as block and as upcoming end-of-turn block). Falls back to the local
+    // player's Play phase if the combat's current side can't be read.
+    public static bool IsPlanningPhase(CombatState cs, IReadOnlyList<Player> players, int localSlot)
     {
         try
         {
-            if (localSlot < 0 || localSlot >= players.Count) return false;
-            object? pcs = GetProp(players[localSlot], "PlayerCombatState");
+            object? side = GetProp(cs, "CurrentSide");
+            if (side != null)
+            {
+                if (!string.Equals(side.ToString(), "Player", StringComparison.OrdinalIgnoreCase)) return false;
+                foreach (var p in players) if (InPlayPhase(p)) return true;
+                return false;
+            }
+        }
+        catch { }
+        return localSlot >= 0 && localSlot < players.Count && InPlayPhase(players[localSlot]);
+    }
+
+    private static bool InPlayPhase(Player player)
+    {
+        try
+        {
+            object? pcs = GetProp(player, "PlayerCombatState");
             object? phase = pcs != null ? GetProp(pcs, "Phase") : null;
             return phase != null && string.Equals(phase.ToString(), "Play", StringComparison.OrdinalIgnoreCase);
         }
@@ -176,7 +197,7 @@ internal static class ForecastReader
         return true;
     }
 
-    private static readonly System.Text.RegularExpressions.Regex NumRx = new(@"\d+");
+    private static readonly System.Text.RegularExpressions.Regex NumRx = new(@"-?\d+");
     // "take ... damage" / "lose ... HP|health" — self-harm, as opposed to attacks that "deal" damage.
     private static readonly System.Text.RegularExpressions.Regex SelfHarmRx = new(
         @"\b(take|lose)\b.{0,40}\b(damage|hp|health)\b",
@@ -220,9 +241,10 @@ internal static class ForecastReader
         catch { return null; }
     }
 
-    // The number the player sees. The intent's own display label (GetIntentLabel(targets, self)) already
-    // applies the attacker's Strength and the target's Vulnerable — DamageCalc alone is the raw base, so
-    // it under-reports once modifiers are in play. Prefer the label; fall back to the base delegate.
+    // The number the player sees, per hit. AttackIntent.GetSingleDamage(targets, self) is what the intent
+    // shows: the base run through Hook.ModifyDamage against the local player (attacker Strength and Weak,
+    // our Vulnerable, ...). DamageCalc alone is the raw base. A modified 0 is a real answer (e.g. Piercing
+    // Wail's -6 Strength on a 5-damage attack) and must not fall through to the raw base, which over-reports.
     private static int ResolveIntentDamage(object intent, Creature enemy)
     {
         try
@@ -231,13 +253,16 @@ internal static class ForecastReader
             object? targets = cs != null ? GetProp(cs, "PlayerCreatures") : null;
             if (targets != null)
             {
+                var single = FindMethod(intent, "GetSingleDamage", 2);
+                if (single != null && single.Invoke(intent, new object[] { targets, enemy }) is int dmg) return Math.Max(0, dmg);
+
                 var m = FindMethod(intent, "GetIntentLabel", 2);
                 object? loc = m?.Invoke(intent, new object[] { targets, enemy });
                 string? text = loc != null ? TextHelper.SafeGetText(() => loc) : null;
                 if (!string.IsNullOrEmpty(text))
                 {
                     var mm = NumRx.Match(text);
-                    if (mm.Success && int.TryParse(mm.Value, out int n) && n > 0) return n;
+                    if (mm.Success && int.TryParse(mm.Value, out int n)) return Math.Max(0, n);
                 }
             }
         }
