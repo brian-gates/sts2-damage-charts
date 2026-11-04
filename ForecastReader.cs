@@ -122,22 +122,33 @@ internal static class ForecastReader
     // True while the local player is actively taking their turn (PlayerTurnPhase.Play) — i.e. planning,
     // when the forecast is meaningful. During the enemy turn it reads false, so the caller freezes the
     // last planning value instead of letting it climb as block/Osty are consumed by resolving hits.
-    // True while the player side is acting. In co-op that includes after the local player has ended their
-    // turn while teammates still play, so a teammate's stun or debuff still updates the forecast; it only
-    // freezes once the enemy side starts acting. Falls back to the local player's Play phase if the
-    // combat's current side can't be read.
+    // True while someone on the player side is still planning: the side is Player and at least one
+    // player is in their Play phase. In co-op that includes after the local player has ended their turn
+    // while teammates still play, so a teammate's stun, kill or debuff still updates the forecast. It
+    // freezes once everyone has ended, before end-of-turn hooks run (Plating turning into block would
+    // otherwise be counted twice: as block and as upcoming end-of-turn block). Falls back to the local
+    // player's Play phase if the combat's current side can't be read.
     public static bool IsPlanningPhase(CombatState cs, IReadOnlyList<Player> players, int localSlot)
     {
         try
         {
             object? side = GetProp(cs, "CurrentSide");
-            if (side != null) return string.Equals(side.ToString(), "Player", StringComparison.OrdinalIgnoreCase);
+            if (side != null)
+            {
+                if (!string.Equals(side.ToString(), "Player", StringComparison.OrdinalIgnoreCase)) return false;
+                foreach (var p in players) if (InPlayPhase(p)) return true;
+                return false;
+            }
         }
         catch { }
+        return localSlot >= 0 && localSlot < players.Count && InPlayPhase(players[localSlot]);
+    }
+
+    private static bool InPlayPhase(Player player)
+    {
         try
         {
-            if (localSlot < 0 || localSlot >= players.Count) return false;
-            object? pcs = GetProp(players[localSlot], "PlayerCombatState");
+            object? pcs = GetProp(player, "PlayerCombatState");
             object? phase = pcs != null ? GetProp(pcs, "Phase") : null;
             return phase != null && string.Equals(phase.ToString(), "Play", StringComparison.OrdinalIgnoreCase);
         }

@@ -26,7 +26,7 @@ namespace STS2_DamageCharts;
 public static class DamageChartsMod
 {
     private const string ConfigFileName = "STS2_DamageCharts.conf";
-    private const string BuildTag = "2026-10-22";  // stamped at init so logs identify the loaded DLL
+    private const string BuildTag = "2026-11-04";  // stamped at init so logs identify the loaded DLL
 
     // Per-player colors for the current run: each class's own color (as on the game's Statistics
     // screen), with a different shade for a repeated class. Set at combat start.
@@ -55,7 +55,14 @@ public static class DamageChartsMod
     private static bool _runActiveLast;
     private static readonly Dictionary<Creature, Action<int, int>> _subs = new();
     private static readonly Dictionary<Creature, Action<int, int>> _blockSubs = new();
-    private static readonly Dictionary<Creature, (string Label, Creature? Dealer, string? Icon)> _pending = new();
+    // What's about to hit each creature, set by the Damage prefix (or Doom), consumed by the HP change.
+    // Frame-stamped: a tag whose hit never changed HP (fully blocked, or Osty soaked it) expires.
+    private static readonly Dictionary<Creature, (string Label, Creature? Dealer, string? Icon, long Frame)> _pending = new();
+    private const long PendingTtlFrames = 600; // ~10 s at 60 fps: covers Doom's kill animation
+    // Damaging powers that sit on an enemy (Poison, Constrict...) hurt that enemy, often after an await
+    // (Accelerant makes Poison tick several times with a pause between), when the 1-frame stamp below has
+    // gone stale. So the stamp also tags the enemy itself, by reference, the way Doom kills are pre-tagged.
+    private static readonly Dictionary<Creature, (string Label, Creature? Owner, string? Icon)> _dotTags = new();
     // Set by a power's hook just before it deals damage; consumed by the next non-card hit. Only valid
     // for ~1 frame (a damaging hook stamps-and-deals synchronously) so a stale stamp from a passive
     // relic hook can't mislabel a later unrelated hit (e.g. a potion).
@@ -497,16 +504,25 @@ public static class DamageChartsMod
         return true;
     }
 
-    // The central overload: the unique 6-param Damage whose 2nd param is IEnumerable<Creature>.
+    // The central overload, which every other Damage overload funnels into: IEnumerable<Creature> targets,
+    // a decimal amount, and dealer + cardSource. Pick the widest such overload: v0.107 has
+    // (ctx, targets, decimal, ValueProp, dealer, cardSource); v0.111 appends a CardPlay, and a 6-param
+    // DamageVar wrapper appears there that must not be mistaken for it.
     private static MethodBase? ResolveDamageMethod()
     {
+        MethodInfo? best = null;
         foreach (var m in typeof(MegaCrit.Sts2.Core.Commands.CreatureCmd).GetMethods(BindingFlags.Public | BindingFlags.Static))
         {
             if (m.Name != "Damage") continue;
             var ps = m.GetParameters();
-            if (ps.Length == 6 && ps[1].ParameterType == typeof(IEnumerable<Creature>)) return m;
+            if (ps.Length < 2 || ps[1].ParameterType != typeof(IEnumerable<Creature>)) continue;
+            if (!ps.Any(p => p.ParameterType == typeof(decimal))) continue;
+            if (!ps.Any(p => p.Name == "dealer") || !ps.Any(p => p.Name == "cardSource")) continue;
+            if (best == null || ps.Length > best.GetParameters().Length) best = m;
         }
-        return null;
+        if (best != null)
+            GD.Print($"[STS2 Damage] damage hook: CreatureCmd.Damage({string.Join(", ", best.GetParameters().Select(p => p.ParameterType.Name))})");
+        return best;
     }
 
     // The model methods that can change a creature's HP in combat, i.e. the only hooks worth stamping.
@@ -623,7 +639,7 @@ public static class DamageChartsMod
             if (creatures == null) return;
             // Credit the kill to whoever applied the Doom (in co-op it isn't always the local player).
             foreach (var c in creatures)
-                if (c != null) _pending[c] = ("Doom", DoomApplier(c)?.Creature, _doomIcon);
+                if (c != null) _pending[c] = ("Doom", DoomApplier(c)?.Creature, _doomIcon, _frame);
         }
         catch { }
     }
@@ -641,8 +657,11 @@ public static class DamageChartsMod
                 try { if (t.GetProperty(prop)?.GetValue(__instance) is string p && ResourceLoader.Exists(p)) { icon = p; break; } }
                 catch { }
             }
-            _activeSource = (label!, icon, SourcePlayer(__instance));
+            var owner = SourcePlayer(__instance);
+            _activeSource = (label!, icon, owner);
             _activeFrame = _frame;
+            if (__instance is PowerModel power && power.Owner is { } holder && !holder.IsPlayer && !holder.IsPet)
+                _dotTags[holder] = (label!, owner?.Creature, icon);
             if (ForecastReader.Debug) GD.Print($"[STS2 Damage] STAMP {t.Name} label={label} frame={_frame}");
         }
         catch { }
@@ -676,8 +695,19 @@ public static class DamageChartsMod
                 _activeSource = null; // consume
             }
             else label = "Status"; // unattributed non-card damage
-            foreach (var t in targets)
-                if (t != null) { _pending[t] = (label, dealer, icon); VfxMoments.NoteAttack(t, dealer); }
+            bool unattributed = label == "Status" && dealer == null;
+            var list = targets as IReadOnlyCollection<Creature> ?? targets.ToList();
+            foreach (var t in list)
+            {
+                if (t == null) continue;
+                // A stale stamp: a DoT on this enemy hurting it after an await (later Poison ticks).
+                if (unattributed && _dotTags.TryGetValue(t, out var dot)) _pending[t] = (dot.Label, dot.Owner, dot.Icon, _frame);
+                else _pending[t] = (label, dealer, icon, _frame);
+                // Damage that reaches a pet (Osty) can spill over to its owner without another Damage call,
+                // so tag the owner with the same hit.
+                try { if (t.IsPet && t.PetOwner?.Creature is { } po && !list.Contains(po)) _pending[po] = _pending[t]; } catch { }
+                VfxMoments.NoteAttack(t, dealer);
+            }
         }
         catch { /* never disrupt damage resolution */ }
     }
@@ -976,6 +1006,7 @@ public static class DamageChartsMod
         _tracker.Reset(_players.Count, labels, localSlot);
         VfxMoments.Reset(me);
         _pending.Clear();
+        _dotTags.Clear();
         UnsubscribeAll();
         EnsureViews();
         GD.Print($"[STS2 Damage] combat start ({_players.Count} player(s))");
@@ -985,6 +1016,7 @@ public static class DamageChartsMod
     {
         UnsubscribeAll();
         _pending.Clear();
+        _dotTags.Clear();
         _bars?.Hide();
         _tooltip?.Hide();
         _forecast?.Hide(); _forecastLedger?.Hide();
@@ -1220,7 +1252,10 @@ public static class DamageChartsMod
                 return;
             }
 
-            _pending.TryGetValue(creature, out var pend);
+            // One HP change per tag: a stale tag from an earlier hit must not label a later HP change that
+            // didn't come through Damage (e.g. a Sandpit kill).
+            _pending.Remove(creature, out var pend);
+            if (pend.Label != null && _frame - pend.Frame > PendingTtlFrames) pend = default;
 
             if (creature.IsPlayer)
             {
@@ -1285,7 +1320,8 @@ public static class DamageChartsMod
     {
         try
         {
-            if (model is PowerModel power) return PlayerOf(power.Applier) ?? PlayerOf(power.Owner);
+            // A monster-applied power (an enemy's Poison on you) belongs to no player.
+            if (model is PowerModel power) return power.Applier != null ? PlayerOf(power.Applier) : PlayerOf(power.Owner);
             var owner = model.GetType().GetProperty("Owner")?.GetValue(model);
             return owner as Player ?? PlayerOf(owner as Creature);
         }
@@ -1334,12 +1370,14 @@ public static class DamageChartsMod
         return colors;
     }
 
+    // Shades keep the class hue: a repeat changes saturation/brightness only, so it doesn't wash out
+    // toward the cream text color the way Lightened() does on an already-light class color.
     internal static Color ShadeFor(Color c, int repeat) => repeat switch
     {
         0 => c,
-        1 => c.Lightened(0.45f),
-        2 => c.Darkened(0.35f),
-        _ => c.Lightened(Math.Min(0.8f, 0.2f * repeat)),
+        1 => Color.FromHsv(c.H, c.S * 0.45f, Math.Min(1f, c.V * 1.1f + 0.1f), c.A),
+        2 => Color.FromHsv(c.H, Math.Min(1f, c.S * 1.1f), c.V * 0.65f, c.A),
+        _ => Color.FromHsv(c.H, c.S * 0.7f, Math.Max(0.35f, c.V * (1f - 0.1f * repeat)), c.A),
     };
 
     private static string? PlayerName(Player p)
