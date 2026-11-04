@@ -13,6 +13,7 @@ using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Modding;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
+using MegaCrit.Sts2.Core.Platform;
 using MegaCrit.Sts2.Core.Runs;
 
 namespace STS2_DamageCharts;
@@ -27,7 +28,9 @@ public static class DamageChartsMod
     private const string ConfigFileName = "STS2_DamageCharts.conf";
     private const string BuildTag = "2026-10-22";  // stamped at init so logs identify the loaded DLL
 
-    private static readonly Color[] Palette = UiTheme.Players;
+    // Per-player colors for the current run: each class's own color (as on the game's Statistics
+    // screen), with a different shade for a repeated class. Set at combat start.
+    private static Color[] _playerColors = UiTheme.Players;
 
     private static bool _initialized;
     private static bool _disabled;            // hard kill-switch: once set, nothing runs again
@@ -735,7 +738,7 @@ public static class DamageChartsMod
                         _detail.ShowRunHistory = true;
                         _detail.RunFights = _run.HasData() ? _run.EncounterStats(_localSlot) : null;
                         _detail.SetVisible(true);
-                        _detail.Render(_tracker.SourceSnapshot(), _tracker.Snapshot(), Palette);
+                        _detail.Render(_tracker.SourceSnapshot(), _tracker.Snapshot(), _playerColors);
                         _detail.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left));
                         if (_detail.TakeCloseRequest()) { _detailVisible = false; _detail.SetVisible(false); } // ✕ clicked
 
@@ -759,7 +762,7 @@ public static class DamageChartsMod
                             _bars.Compact = _barsCompact;
                             _bars.Docked = _barsCompact && _barsDocked;
                             _bars.DockRect = _showForecast ? _forecast?.PanelRect : null;
-                            _bars.Render(_tracker.Snapshot(), Palette);
+                            _bars.Render(_tracker.Snapshot(), _playerColors);
                             // Poll-based drag + click + hover (no input overrides).
                             if (_bars.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left)))
                             {
@@ -783,7 +786,7 @@ public static class DamageChartsMod
                 // so it can appear on top of the game's end screen.
                 _bars?.Hide(); _tooltip?.Hide(); _forecast?.Hide(); _forecastLedger?.Hide(); _summaryActive = false;
                 _detail.SummaryMode = false; _detail.RecapMode = true; _detail.ShowRunHistory = false; _detail.UiScaleMul = _uiScale; _detail.SetVisible(true);
-                _detail.Render(_run.RunSourceSnapshot(), _run.RunChartSnapshot(), Palette);
+                _detail.Render(_run.RunSourceSnapshot(), _run.RunChartSnapshot(), _playerColors);
                 _detail.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left));
                 if (_detail.TakeCloseRequest()) { _recapVisible = false; _detail.RecapMode = false; _detail.SetVisible(false); }
             }
@@ -807,7 +810,7 @@ public static class DamageChartsMod
                 {
                     _rewardsSeen = true;
                     _detail.SummaryMode = true; _detail.SetVisible(true);
-                    _detail.Render(_tracker.SourceSnapshot(), _tracker.Snapshot(), Palette);
+                    _detail.Render(_tracker.SourceSnapshot(), _tracker.Snapshot(), _playerColors);
                     _detail.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left));
                     if (_detail.TakeCloseRequest()) { _summaryActive = false; _detail.SetVisible(false); } // ✕ clicked
                 }
@@ -952,11 +955,14 @@ public static class DamageChartsMod
         var labels = new string[_players.Count];
         Player? me = rs != null ? LocalContext.GetMe(rs) : null;
         int localSlot = 0;
+        _playerColors = PlayerColors(_players);
         for (int i = 0; i < _players.Count; i++)
         {
             string name = TextHelper.SafeGetText(() => _players[i].Character.Title) ?? $"P{i + 1}";
             bool isMe = ReferenceEquals(_players[i], me);
             if (isMe) localSlot = i;
+            // Two players on one class share a color family, so say who's who.
+            if (!isMe && ClassRepeats(_players, i) && PlayerName(_players[i]) is { } who) name = $"{name} · {who}";
             labels[i] = isMe && _players.Count > 1 ? $"{name} (You)" : name;
         }
 
@@ -1297,6 +1303,53 @@ public static class DamageChartsMod
         }
         catch { }
         return null;
+    }
+
+    private static bool SameClass(Player a, Player b)
+    {
+        try { return a.Character != null && b.Character != null && a.Character.GetType() == b.Character.GetType(); }
+        catch { return false; }
+    }
+
+    private static bool ClassRepeats(IReadOnlyList<Player> players, int i)
+    {
+        for (int j = 0; j < players.Count; j++) if (j != i && SameClass(players[i], players[j])) return true;
+        return false;
+    }
+
+    // Class color for each player; a second, third... player on the same class gets a lighter, then
+    // darker, shade so their bars stay distinguishable. Falls back to the seat palette if the game
+    // doesn't provide a color.
+    internal static Color[] PlayerColors(IReadOnlyList<Player> players)
+    {
+        var colors = new Color[Math.Max(1, players.Count)];
+        for (int i = 0; i < players.Count; i++)
+        {
+            Color c = UiTheme.Players[i % UiTheme.Players.Length];
+            try { if (players[i].Character is { } ch) c = ch.NameColor; } catch { }
+            int repeat = 0;
+            for (int j = 0; j < i; j++) if (SameClass(players[i], players[j])) repeat++;
+            colors[i] = ShadeFor(c, repeat);
+        }
+        return colors;
+    }
+
+    internal static Color ShadeFor(Color c, int repeat) => repeat switch
+    {
+        0 => c,
+        1 => c.Lightened(0.45f),
+        2 => c.Darkened(0.35f),
+        _ => c.Lightened(Math.Min(0.8f, 0.2f * repeat)),
+    };
+
+    private static string? PlayerName(Player p)
+    {
+        try
+        {
+            var name = PlatformUtil.GetPlayerNameRaw(RunManager.Instance.NetService.Platform, p.NetId);
+            return string.IsNullOrWhiteSpace(name) ? null : name.Trim();
+        }
+        catch { return null; }
     }
 
     private static int SlotOf(Player? player)
