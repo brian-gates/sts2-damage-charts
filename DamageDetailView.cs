@@ -307,6 +307,24 @@ internal sealed class DamageDetailView
                 return;
             }
 
+            // Summary: mount just beneath the game's hover-tip container so relic/card tooltips (e.g. on
+            // the rewards screen) draw over the panel instead of under it.
+            if (!full && ResolveHoverTips())
+            {
+                var parent = _hoverTips!.GetParent();
+                if (_container.GetParent() != parent)
+                {
+                    _container.GetParent()?.RemoveChild(_container);
+                    parent.AddChild(_container);
+                }
+                var kids = parent.GetChildren();
+                int ci = kids.IndexOf(_container), ti = kids.IndexOf(_hoverTips);
+                if (ci >= 0 && ti >= 0 && ci + 1 != ti)
+                    parent.MoveChild(_container, ci < ti ? ti - 1 : ti);
+                _container.Visible = _panelVisible;
+                return;
+            }
+
             if (_container.GetParent() != _layer)
             {
                 _container.GetParent()?.RemoveChild(_container);
@@ -328,6 +346,21 @@ internal sealed class DamageDetailView
         }
         catch { _globalUi = null; _topBar = null; }
         return _globalUi != null && _topBar != null;
+    }
+
+    // NGame.HoverTipsContainer: where the game parents every hover tip (relics, cards, potions).
+    private Node? _hoverTips;
+    private bool ResolveHoverTips()
+    {
+        if (_hoverTips != null && GodotObject.IsInstanceValid(_hoverTips) && _hoverTips.GetParent() != null) return true;
+        _hoverTips = null;
+        try
+        {
+            var game = FindByType(_root, "NGame");
+            _hoverTips = game?.GetType().GetProperty("HoverTipsContainer")?.GetValue(game) as Node;
+        }
+        catch { _hoverTips = null; }
+        return _hoverTips != null && GodotObject.IsInstanceValid(_hoverTips) && _hoverTips.GetParent() != null;
     }
 
     private static Node? FindByType(Node n, string typeName)
