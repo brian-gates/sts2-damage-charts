@@ -225,8 +225,11 @@ internal sealed class DamageForecastView
                 : (r.MaxHp > 0 && after < r.MaxHp * 0.30f ? GoldHex : GreenHex);
             string tail = after <= 0 ? "☠" : "left";
             string hidden = r.HasHidden ? $" [color=#{GoldHex}][font_size={F(15, sc)}]+?[/font_size][/color]" : "";
+            string spare = r.Overblock > 0
+                ? $" [color=#{CreamHex}][font_size={F(15, sc)}]+{r.Overblock} block[/font_size][/color]"
+                : "";
             string line1 = r.IsSafe
-                ? $"[color=#{GreenHex}]Safe ✓[/color]"
+                ? $"[color=#{GreenHex}]Safe ✓[/color]{spare}"
                 : $"[color=#{LossHex}]{lossStr} [font_size={F(15, sc)}]HP[/font_size][/color]{hidden}";
             string line2 = $"[color=#{CreamHex}][font_size={F(13, sc)}]{r.CurrentHp} → [color=#{afterHex}]{after}[/color] {tail}[/font_size][/color]";
             if (numFont != null)

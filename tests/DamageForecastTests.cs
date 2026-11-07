@@ -157,4 +157,35 @@ public class DamageForecastTests
             new List<ForecastItem> { Dot(6) }, endTurnBlock: 5));
         Assert.Equal(6, r.MinLoss);
     }
+
+    [Fact]
+    public void Overblock_IsBlockLeftAfterAttacks()
+    {
+        var r = Run(40, 50, 20, false, Attack(6, 2));
+        Assert.True(r.IsSafe);
+        Assert.Equal(8, r.Overblock);
+    }
+
+    [Fact]
+    public void Overblock_ZeroWhenBlockAllNeededOrShort()
+    {
+        Assert.Equal(0, Run(40, 50, 12, false, Attack(12)).Overblock);
+        Assert.Equal(0, Run(40, 50, 5, false, Attack(12)).Overblock);
+    }
+
+    [Fact]
+    public void Overblock_CountsConditionalAttacksAsWorstCase()
+    {
+        var cond = new ForecastItem("E", ForecastKind.Attack, 1, 5, blockable: true, conditional: true);
+        var r = Run(40, 50, 20, false, Attack(10), cond);
+        Assert.Equal(5, r.Overblock);
+    }
+
+    [Fact]
+    public void Overblock_IgnoresUnblockableAndNeverExceedsOwnBlock()
+    {
+        Assert.Equal(10, Run(40, 50, 10, false, Dot(4)).Overblock);
+        // Osty covers the attack, but spare Osty isn't block: overblock caps at the player's block.
+        Assert.Equal(5, RunOsty(40, 5, 30, Attack(10)).Overblock);
+    }
 }

@@ -65,10 +65,15 @@ internal readonly struct ForecastResult
     public readonly int MaxHp;
     public readonly bool HasHidden;
     public readonly IReadOnlyList<ForecastItem> Items;
+    // Player block left over after the worst case of every blockable attack (Osty absorbs first only when
+    // the block alone can't cover it); 0 when the block is all needed.
+    public readonly int Overblock;
 
     public ForecastResult(int incoming, int mitigated, int minLoss, int maxLoss,
-        int block, int ostyAbsorb, int currentHp, int maxHp, bool hasHidden, IReadOnlyList<ForecastItem> items)
+        int block, int ostyAbsorb, int currentHp, int maxHp, bool hasHidden, IReadOnlyList<ForecastItem> items,
+        int overblock = 0)
     {
+        Overblock = Math.Max(0, overblock);
         Incoming = incoming;
         Mitigated = mitigated;
         MinLoss = minLoss;
@@ -125,8 +130,11 @@ internal static class DamageForecast
         int maxLoss = minLoss + condAttackLoss + condUnblockable;
 
         int incoming = guaranteedAttack + guaranteedUnblockable;
+        // Spare block in the worst case: the pool left after all blockable attacks, but never more than the
+        // player's own block (spare Osty isn't block).
+        int overblock = Math.Min(block, Math.Max(0, pool - guaranteedAttack - condAttack));
 
         return new ForecastResult(incoming, mitigated, minLoss, maxLoss,
-            block, osty, inp.CurrentHp, inp.MaxHp, inp.HasHidden, items);
+            block, osty, inp.CurrentHp, inp.MaxHp, inp.HasHidden, items, overblock);
     }
 }
