@@ -31,7 +31,7 @@ For Steam Workshop publishing, `scripts/package-workshop.sh` builds Release, sta
 `dist/workshop/content/`, and runs (or prints) MegaCrit's `ModUploader`. It must run locally with the
 Steam client logged in — never CI. See the "Steam Workshop" section of README.md.
 
-**Requires the .NET 9 SDK.** Unit tests cover the forecast calculator (`tests/`, `dotnet test
+**Requires the .NET 9 SDK.** Unit tests cover the forecast calculator and the pure tooltip/run-aggregate logic (`tests/`, `dotnet test
 tests/STS2_DamageCharts.Tests.csproj -p:STS2GameDir=...`); everything else is verified manually: rebuild,
 copy the DLL into `mods/`, **restart the game** (mods load at startup), and watch in-game. Never overwrite
 the DLL in place while the game runs (it is memory-mapped); stage it and `mv` it into place. `GD.Print("[STS2 Damage] ...")`
@@ -79,7 +79,11 @@ doesn't reliably reach controls on these layers.
   interactive (dim backdrop, wide columns, scrollable log via wheel/drag — wheel arrives through the
   `SuppressPrefix` input hook, not engine GUI callbacks), and a compact click-through **summary** over
   the rewards screen. Sized dynamically from the viewport per mode.
-- `DamageTooltipView` — per-round hover popup near the cursor.
+- `DamageTooltipView` — hover popup near the cursor for a chart group: a round of the compact chart or of
+  the full view's per-round chart, or a fight of the recap's per-fight chart. It draws a `GroupDetail`
+  (`GroupDetail.cs`, pure: the model, per-round/per-fight builders and the group hit-test). Per-fight
+  detail comes from `RunAggregate.FightDetail`, which keeps each fight's by-source breakdown plus a
+  `FightMeta` (floor, encounter name, Elite/Boss, rounds) captured best-effort at combat start.
 
 **Shared helpers:**
 - `UiTheme` — palette matching the game's `StsColors`, font/panel-style capture from the live tree,

@@ -9,9 +9,12 @@
     <RootNamespace>STS2_DamageCharts.Tests</RootNamespace>
   </PropertyGroup>
 
-  <!-- Compile the pure calculator directly (it has no Godot/game refs), so tests need no game DLLs. -->
+  <!-- Compile the pure sources directly (they have no Godot/game refs), so tests need no game DLLs. -->
   <ItemGroup>
     <Compile Include="../DamageForecast.cs" Link="DamageForecast.cs" />
+    <Compile Include="../DamageTracker.cs" Link="DamageTracker.cs" />
+    <Compile Include="../RunAggregate.cs" Link="RunAggregate.cs" />
+    <Compile Include="../GroupDetail.cs" Link="GroupDetail.cs" />
   </ItemGroup>
 
   <ItemGroup>

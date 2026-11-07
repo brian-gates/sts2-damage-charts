@@ -95,6 +95,8 @@ public static class DamageChartsMod
     // "source_hooks": false turns it off, and DoT/relic damage is then labeled "Status"/"Other". See docs/KNOWN_ISSUES.md.
     private static bool _sourceHooks = true;
     private static bool _combatResolved;      // this combat reached a win/loss (not abandoned)
+    private static FightMeta _fightMeta = new(); // this combat's floor / name / elite-boss / rounds, for the recap
+    private static bool _tipShown;            // the hover tooltip was rendered this tick (else it is hidden)
     private static int _localSlot;            // local player's slot for this combat
 
     // Hotkey (default bare C, "combat stats"). A/S/D/X/M/E are taken by the game; C is free.
@@ -721,6 +723,7 @@ public static class DamageChartsMod
         try
         {
             _frame++;
+            _tipShown = false;
             if (_frame % 30 == 0) ReloadConfigIfChangedOnDisk();
             if (_frame > 120 && _frame % 30 == 0)
             {
@@ -754,6 +757,7 @@ public static class DamageChartsMod
                     // dead)? If the player abandons the fight instead, this stays false and we suppress the
                     // end-of-combat summary.
                     if (!_combatResolved && IsCombatResolved(cs)) _combatResolved = true;
+                    try { if (cs.RoundNumber > _fightMeta.Rounds) _fightMeta.Rounds = cs.RoundNumber; } catch { }
                     bool blocking = IsBlockingUiOpen();
                     VfxMoments.Tick(cs.RoundNumber, blocking || _detailVisible);
                     if (blocking)
@@ -763,8 +767,9 @@ public static class DamageChartsMod
                     }
                     else if (_detailVisible && _detail != null)
                     {
-                        // Full-screen breakdown is up — it takes over; hide the compact bars/tooltip.
-                        _bars?.Hide(); _tooltip?.Hide(); _forecast?.Hide(); _forecastLedger?.Hide();
+                        // Full-screen breakdown is up: it takes over; hide the compact bars. The tooltip now
+                        // belongs to the takeover's per-round chart.
+                        _bars?.Hide(); _forecast?.Hide(); _forecastLedger?.Hide();
                         _detail.SummaryMode = false; _detail.RecapMode = false; _detail.UiScaleMul = _uiScale;
                         _detail.ShowRunHistory = true;
                         _detail.RunFights = _run.HasData() ? _run.EncounterStats(_localSlot) : null;
@@ -772,6 +777,8 @@ public static class DamageChartsMod
                         _detail.Render(_tracker.SourceSnapshot(), _tracker.Snapshot(), _playerColors);
                         _detail.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left));
                         if (_detail.TakeCloseRequest()) { _detailVisible = false; _detail.SetVisible(false); } // ✕ clicked
+                        else ShowDetailChartTip(static (chart, row) =>
+                            GroupDetails.ForRound(row, chart.Labels, chart.PlayerCount, null, showPct: true, maxRows: 5));
 
                     }
                     else if (IsFightEndingNow())
@@ -804,8 +811,11 @@ public static class DamageChartsMod
                             }
                             if (_bars.TakeClick()) { _detailVisible = !_detailVisible; _detail?.SetVisible(_detailVisible); } // click chart → toggle details
                             if (_tooltip != null) _tooltip.UiScaleMul = _uiScale;
-                            if (!_bars.IsDragging && _bars.TryGetHover(out var hv)) _tooltip?.Render(hv, RootMouse());
-                            else _tooltip?.Hide();
+                            if (!_bars.IsDragging && _bars.TryGetHover(out var hv) && _tooltip != null)
+                            {
+                                _tooltip.Render(hv, _playerColors, RootMouse());
+                                _tipShown = true;
+                            }
                         }
                         // Its CanvasLayer starts visible; never rendered, its title would sit alone at (0,0).
                         else _bars?.Hide();
@@ -817,11 +827,12 @@ public static class DamageChartsMod
                 // On-demand run recap: a full-screen takeover shown out of combat (e.g. over the run's
                 // victory/death screen). Unlike the in-combat takeover this is NOT gated by blocking UI,
                 // so it can appear on top of the game's end screen.
-                _bars?.Hide(); _tooltip?.Hide(); _forecast?.Hide(); _forecastLedger?.Hide(); _summaryActive = false;
+                _bars?.Hide(); _forecast?.Hide(); _forecastLedger?.Hide(); _summaryActive = false;
                 _detail.SummaryMode = false; _detail.RecapMode = true; _detail.ShowRunHistory = false; _detail.UiScaleMul = _uiScale; _detail.SetVisible(true);
                 _detail.Render(_run.RunSourceSnapshot(), _run.RunChartSnapshot(), _playerColors);
                 _detail.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left));
                 if (_detail.TakeCloseRequest()) { _recapVisible = false; _detail.RecapMode = false; _detail.SetVisible(false); }
+                else ShowDetailChartTip(static (_, row) => _run.FightDetail(row.Round)); // recap rows: Round = fight number
             }
             else if (_summaryActive && _detail != null)
             {
@@ -849,10 +860,12 @@ public static class DamageChartsMod
                 }
             }
 
+            if (!_tipShown) _tooltip?.Hide();
             _errCount = 0;
         }
         catch (Exception ex)
         {
+            try { _tooltip?.Hide(); } catch { }
             // Disable fast on repeated errors so we never spam the broken logger or stall the game.
             if (++_errCount >= 5) HardDisable($"repeated errors: {ex.Message}");
         }
@@ -983,10 +996,61 @@ public static class DamageChartsMod
         _hotkeyDownLast = down;
     }
 
+    // Hover tooltip for the full-screen view's chart (per round in combat, per fight in the recap). The
+    // detail is built only when the hovered group changes; a failure just leaves the tooltip hidden.
+    private static void ShowDetailChartTip(Func<ChartSnapshot, ChartRow, GroupDetail?> build)
+    {
+        if (_detail == null || _tooltip == null || !_detail.Visible) return;
+        try
+        {
+            var gd = _detail.HoveredDetail(build);
+            if (gd == null) return;
+            _tooltip.UiScaleMul = _uiScale;
+            _tooltip.Render(gd, _playerColors, RootMouse());
+            _tipShown = true;
+        }
+        catch (Exception ex) { ErrorLog.Once("detail tooltip", ex); }
+    }
+
+    // What this combat is, read best-effort from the run state at combat start: run-wide floor, the
+    // encounter's title (else the enemies' names) and whether it is an elite or boss fight. Every read is
+    // independent and optional; anything missing stays unknown and the tooltip shows less.
+    private static FightMeta CaptureFightMeta(RunState? rs, CombatState? cs)
+    {
+        var m = new FightMeta();
+        if (rs == null) return m;
+        try { if (InstanceGet(rs, "TotalFloor") is int f && f > 0) m.Floor = f; } catch { }
+        try
+        {
+            object? room = InstanceGet(rs, "CurrentRoom");
+            object? enc = InstanceGet(room, "Encounter");
+            // The encounter's own type first: a fight started from an event room is still a Monster fight.
+            m.Kind = FightMeta.KindFromRoomType(InstanceGet(enc, "RoomType")?.ToString());
+            if (m.Kind == FightKind.Unknown) m.Kind = FightMeta.KindFromRoomType(InstanceGet(room, "RoomType")?.ToString());
+            if (m.Kind == FightKind.Unknown)
+                m.Kind = FightMeta.KindFromRoomType(InstanceGet(InstanceGet(rs, "CurrentMapPoint"), "PointType")?.ToString());
+            string? name = enc != null ? TextHelper.SafeGetText(() => InstanceGet(enc, "Title")) : null;
+            if (!GroupDetails.LooksLikeLocKey(name)) m.Name = name!.Trim();
+        }
+        catch { }
+        if (m.Name == null && cs != null)
+        {
+            try
+            {
+                var names = new List<string?>();
+                foreach (var e in cs.Enemies) if (e != null) names.Add(TextHelper.SafeGetText(() => e.Monster!.Title));
+                m.Name = GroupDetails.JoinNames(names);
+            }
+            catch { }
+        }
+        return m;
+    }
+
     // ===== Combat lifecycle =====
 
     private static void OnCombatStart()
     {
+        _fightMeta = new FightMeta();
         var rs = SafeRunState();
         _players = rs?.Players ?? (IReadOnlyList<Player>)Array.Empty<Player>();
         if (_players.Count == 0) return;
@@ -1012,6 +1076,7 @@ public static class DamageChartsMod
         _allEnemiesDeadFrames = 0;
         _frozenForecast = null;
         _localSlot = localSlot;
+        _fightMeta = CaptureFightMeta(rs, SafeCombatState());
         _tracker.Reset(_players.Count, labels, localSlot);
         VfxMoments.Reset(me);
         _pending.Clear();
@@ -1030,7 +1095,7 @@ public static class DamageChartsMod
         _tooltip?.Hide();
         _forecast?.Hide(); _forecastLedger?.Hide();
         // Fold this combat into the run-wide aggregate before the next combat's Reset() wipes the tracker.
-        if (_tracker.HasData()) _run.Fold(_tracker.SourceSnapshot(), _tracker.Snapshot());
+        if (_tracker.HasData()) _run.Fold(_tracker.SourceSnapshot(), _tracker.Snapshot(), _fightMeta);
         // Auto-show the breakdown as an end-of-combat summary (until dismissed / map / next fight), but
         // only for a real win/loss — not when the player abandons combat (e.g. quits to the menu).
         _summaryActive = _summaryOnEnd && _combatResolved && _tracker.HasData();

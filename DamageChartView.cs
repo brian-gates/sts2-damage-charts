@@ -4,15 +4,6 @@ using Godot;
 
 namespace STS2_DamageCharts;
 
-internal sealed class HoverInfo
-{
-    public int Round;
-    public string PlayerLabel = "";
-    public List<(string Label, long Sum, int Count, string? Icon)> Dealt = new();
-    public long DealtTotal;
-    public long TakenTotal;
-}
-
 // Compact, always-on, draggable, resolution-scaled "Damage / Round" chart. Dealt bars stack one
 // segment per source (repeats combined → "xN", icon-badged); taken is a single red bar. Native nodes
 // only; poll-based mouse (UpdateMouse / TryGetHover from the tick). Position persists as a viewport
@@ -161,7 +152,7 @@ internal sealed class DamageChartView
         return savedNow;
     }
 
-    public bool TryGetHover(out HoverInfo info)
+    public bool TryGetHover(out GroupDetail info)
     {
         info = null!;
         if (!IsValid() || _dragging || _lastSnap == null) return false;
@@ -181,22 +172,23 @@ internal sealed class DamageChartView
         return false;
     }
 
-    private HoverInfo? BuildHover(int round, int slot)
+    // Rebuilt only when the hovered cell or its data changes; the tooltip keeps the same object otherwise.
+    private (int Round, int Slot, int Dealt, int Taken, int Hits) _hoverKey = (int.MinValue, -1, 0, 0, 0);
+    private GroupDetail? _hoverDetail;
+
+    private GroupDetail? BuildHover(int round, int slot)
     {
         var snap = _lastSnap;
         if (snap == null) return null;
         foreach (var row in snap.Rows)
         {
             if (row.Round != round) continue;
-            var info = new HoverInfo
-            {
-                Round = round,
-                PlayerLabel = (snap.PlayerCount > 1 && slot < snap.Labels.Length) ? snap.Labels[slot] : "",
-                Dealt = AggregateBySource(row.DealtSegs[slot]),
-                TakenTotal = row.Taken[slot],
-            };
-            foreach (var d in info.Dealt) info.DealtTotal += d.Sum;
-            return info;
+            if (slot < 0 || slot >= row.DealtSegs.Length) return null;
+            var key = (round, slot, row.Dealt[slot], row.Taken[slot], row.DealtSegs[slot].Count);
+            if (_hoverDetail != null && key == _hoverKey) return _hoverDetail;
+            _hoverKey = key;
+            _hoverDetail = GroupDetails.ForRound(row, snap.Labels, snap.PlayerCount, slot, showPct: false, maxRows: 8);
+            return _hoverDetail;
         }
         return null;
     }
@@ -364,7 +356,7 @@ internal sealed class DamageChartView
 
                     _cellRects.Add((new Rect2(cellX, plotTop, cellW, plotH), row.Round, s));
 
-                    var agg = AggregateBySource(row.DealtSegs[s]);
+                    var agg = GroupDetails.AggregateBySource(row.DealtSegs[s]);
                     float yTop = plotBottom;
                     foreach (var a in agg)
                     {
@@ -420,25 +412,6 @@ internal sealed class DamageChartView
     }
 
     private static int F(int baseSize, float sc) => Math.Max(7, (int)Math.Round(baseSize * sc));
-
-    public static List<(string Label, long Sum, int Count, string? Icon)> AggregateBySource(List<DealtSeg> segs)
-    {
-        var order = new List<string>();
-        var sum = new Dictionary<string, long>();
-        var count = new Dictionary<string, int>();
-        var icon = new Dictionary<string, string?>();
-        foreach (var seg in segs)
-        {
-            if (!sum.ContainsKey(seg.Label)) { order.Add(seg.Label); sum[seg.Label] = 0; count[seg.Label] = 0; icon[seg.Label] = seg.Icon; }
-            sum[seg.Label] += seg.Amount;
-            count[seg.Label] += 1;
-            if (icon[seg.Label] == null) icon[seg.Label] = seg.Icon;
-        }
-        var list = new List<(string, long, int, string?)>();
-        foreach (var label in order) list.Add((label, sum[label], count[label], icon[label]));
-        list.Sort((a, b) => b.Item2.CompareTo(a.Item2));
-        return list;
-    }
 
     // nativeFont/onBar only matter in native mode: the game's font for this role (null keeps UiTheme's) and
     // whether the text sits on a coloured bar (keeps a dark outline there; panel text uses the hover-tip shadow).

@@ -94,6 +94,17 @@ internal sealed class DamageDetailView
     private int _maxOffset, _visible;
     private int _lastLogCount = -1;
 
+    // Chart hover (full view only): the drawn groups' geometry from the last Render, hit-tested in
+    // UpdateMouse. _hoverRound is the hovered group's row.Round (a round, or a fight in the recap); the next
+    // Render draws a faint backdrop behind it. The tooltip detail is rebuilt only when the key changes.
+    private const int NoHover = int.MinValue;
+    private ChartSnapshot? _chartSnap;
+    private readonly List<int> _chartRounds = new();
+    private float _chartLeft, _chartTop, _chartBottom, _chartGroupW;
+    private int _hoverRound = NoHover;
+    private (bool Recap, int Round, long Dealt, long Taken, int Hits) _hoverKey;
+    private GroupDetail? _hoverDetail;
+
     // When true, render as an end-of-combat summary (compact, click-through over rewards).
     public bool SummaryMode;
     // When true, the full-screen takeover is the run recap: adds a Dealt/Taken/Healed/Block totals band
@@ -262,8 +273,37 @@ internal sealed class DamageDetailView
             _logOffset = Math.Clamp(_logOffset, 0, _maxOffset);
             _logAtBottom = _logOffset >= _maxOffset;
             _leftLast = leftDown;
+
+            int gi = _grabbing || SummaryMode ? -1
+                : GroupDetails.GroupAt(m.X, m.Y, _chartLeft, _chartTop, _chartBottom, _chartGroupW, _chartRounds.Count);
+            _hoverRound = gi >= 0 ? _chartRounds[gi] : NoHover;
         }
-        catch { }
+        catch { _hoverRound = NoHover; }
+    }
+
+    // Tooltip detail for the hovered chart group, or null. `build` turns the hovered row of the chart that
+    // was drawn into a detail; it runs only when the hovered group (or its data) changes.
+    public GroupDetail? HoveredDetail(Func<ChartSnapshot, ChartRow, GroupDetail?> build)
+    {
+        if (!IsValid() || !_panelVisible || SummaryMode || _hoverRound == NoHover || _chartSnap == null) return null;
+        try
+        {
+            ChartRow? row = null;
+            foreach (var r in _chartSnap.Rows) if (r.Round == _hoverRound) { row = r; break; }
+            if (row == null) return null;
+            long dealt = 0, taken = 0; int hits = 0;
+            for (int s = 0; s < row.Dealt.Length; s++) dealt += row.Dealt[s];
+            for (int s = 0; s < row.Taken.Length; s++) taken += row.Taken[s];
+            foreach (var segs in row.DealtSegs) hits += segs?.Count ?? 0;
+            var key = (RecapMode, row.Round, dealt, taken, hits);
+            if (_hoverDetail == null || key != _hoverKey)
+            {
+                _hoverDetail = build(_chartSnap, row);
+                _hoverKey = key;
+            }
+            return _hoverDetail;
+        }
+        catch (Exception ex) { ErrorLog.Once("detail hover", ex); return null; }
     }
 
     // _container can be freed by the game if it was reparented under NGlobalUi and the run ends, so
@@ -272,6 +312,7 @@ internal sealed class DamageDetailView
     public bool Visible => IsValid() && _panelVisible;
     public void SetVisible(bool v)
     {
+        if (!v || !_panelVisible) { _hoverRound = NoHover; _hoverDetail = null; }
         if (v && !_panelVisible) { _btnShow = 0f; _btnHover = 0f; _btnPress = 0f; _btnHovered = false; _btnPressed = false; _blurT = 0f; }
         _panelVisible = v;
         if (!IsValid()) return;
@@ -438,6 +479,8 @@ internal sealed class DamageDetailView
                 _bgShadow.Visible = true; _bgShadow.SetPosition(r.Position); _bgShadow.SetSize(r.Size);
             }
             _barLayer.SetSize(new Vector2(_w, _h));
+            // Chart hover geometry is re-recorded by RenderRoundChart; nothing to hover until it draws.
+            _chartRounds.Clear(); _chartSnap = null;
 
             float pad = full ? Math.Max(28f, _w * 0.05f) : 14f;
             float gap = full ? pad : 12f;
@@ -808,10 +851,25 @@ internal sealed class DamageDetailView
         float usedW = Math.Min(plotW, groups * groupW);
         gl0.SetSize(new Vector2(usedW, 1f));
         glT.SetSize(new Vector2(usedW, 1f));
+
+        // Hover band per group: the plot height plus the round/fight number under it.
+        float labelH = 22f * _fontScale;
+        _chartSnap = snap;
+        _chartLeft = plotLeft; _chartTop = plotTop; _chartBottom = plotBottom + labelH; _chartGroupW = groupW;
+        for (int gi = 0; gi < groups; gi++) _chartRounds.Add(snap.Rows[start + gi].Round);
+
         for (int gi = 0; gi < groups; gi++)
         {
             var row = snap.Rows[start + gi];
             float groupX = plotLeft + gi * groupW;
+            if (row.Round == _hoverRound)
+            {
+                // Faint backdrop behind the hovered group (drawn before its bars, so it sits beneath them).
+                var hl = NextBar(ref barCur);
+                hl.Color = new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.09f);
+                hl.SetPosition(new Vector2(groupX, plotTop));
+                hl.SetSize(new Vector2(groupW, plotH + labelH));
+            }
             for (int s = 0; s < snap.PlayerCount; s++)
             {
                 var c = palette[Math.Min(s, palette.Length - 1)];
@@ -820,7 +878,7 @@ internal sealed class DamageDetailView
                 float dealtX = cellX + cellW * 0.04f;
                 float takenX = dealtX + dealtW + cellW * 0.04f;
 
-                var agg = DamageChartView.AggregateBySource(row.DealtSegs[s]);
+                var agg = GroupDetails.AggregateBySource(row.DealtSegs[s]);
                 float yTop = plotBottom;
                 foreach (var a in agg)
                 {

@@ -29,6 +29,8 @@ internal sealed class RunAggregate
     private readonly List<int[]> _encTaken = new(); // per encounter: taken[slot]
     private readonly List<long[]> _encHeal = new(); // per encounter: heal[slot]
     private readonly List<long[]> _encBlock = new();// per encounter: block[slot]
+    private readonly List<PlayerSources?[]> _encSources = new(); // per encounter: that fight's by-source breakdown per slot
+    private readonly List<FightMeta?> _encMeta = new();          // per encounter: floor / name / elite-boss / rounds
     private readonly List<LogEntry> _log = new();
     private int _encounters;
 
@@ -64,12 +66,16 @@ internal sealed class RunAggregate
         _encTaken.Clear();
         _encHeal.Clear();
         _encBlock.Clear();
+        _encSources.Clear();
+        _encMeta.Clear();
         _log.Clear();
         _encounters = 0;
     }
 
-    // Add one finished combat. Reads the per-combat snapshots taken before the tracker is reset.
-    public void Fold(SourceSnapshot src, ChartSnapshot chart)
+    // Add one finished combat. Reads the per-combat snapshots taken before the tracker is reset. `meta` is
+    // whatever was captured about the fight (may be null or partial); a missing round count falls back to
+    // the last round that recorded damage.
+    public void Fold(SourceSnapshot src, ChartSnapshot chart, FightMeta? meta = null)
     {
         if (src.PlayerCount <= 0) return;
         if (_playerCount != src.PlayerCount) Init(src);
@@ -98,6 +104,13 @@ internal sealed class RunAggregate
         _encTaken.Add(encT);
         _encHeal.Add(encH);
         _encBlock.Add(encB);
+        var encSrc = new PlayerSources?[_playerCount];
+        for (int s = 0; s < _playerCount && s < src.PerPlayer.Length; s++) encSrc[s] = src.PerPlayer[s];
+        _encSources.Add(encSrc);
+        var m = meta?.Clone() ?? new FightMeta();
+        if (m.Rounds <= 0)
+            foreach (var r in chart.Rows) if (r.Round > m.Rounds) m.Rounds = r.Round;
+        _encMeta.Add(m);
 
         _log.Add(new LogEntry(_encounters, $"──── Fight {_encounters} ────", false));
         foreach (var e in src.Log) _log.Add(e);
@@ -130,6 +143,14 @@ internal sealed class RunAggregate
             into[e.Name] = cur + e.Total;
             if (e.Icon != null && !_sourceIcon.ContainsKey(e.Name)) _sourceIcon[e.Name] = e.Icon;
         }
+    }
+
+    // Tooltip detail for one finished fight (1-based, the recap chart's row.Round); null when out of range.
+    public GroupDetail? FightDetail(int fight)
+    {
+        int i = fight - 1;
+        if (i < 0 || i >= _encSources.Count) return null;
+        return GroupDetails.ForFight(fight, _encMeta[i], _encSources[i], _labels);
     }
 
     public SourceSnapshot RunSourceSnapshot()

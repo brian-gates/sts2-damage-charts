@@ -14,13 +14,15 @@ A standalone damage analytics and incoming-damage forecast mod for [Slay the Spi
   for the last 8 rounds; hover a round for its breakdown. `show_bars: false` hides it, `bars_style:
   "full"` swaps in the larger chart.
 - **Combat stats** (hotkey, default **C**): a full-screen breakdown of damage **dealt** and **taken**
-  **by source**, a per-round chart, the run so far, potions used, and a scrollable combat log (mouse
+  **by source**, a per-round chart (hover a round for each player's damage by source that round), the run so far, potions used, and a scrollable combat log (mouse
   wheel, trackpad or scrollbar). Card and pet hits are always named, and so is much of the damage from
   powers (Poison, Thorns), relics and potions; the rest shows as `Status`/`Other`.
 - **End-of-combat summary**: a compact version beside the rewards list after each fight, with potions
   used. C hides and shows it until you move on.
 - **Run recap**: the same hotkey out of combat (e.g. on the victory/death screen) opens a run-wide recap
-  of dealt / taken / healed / block, by source and per fight.
+  of dealt / taken / healed / block, by source and per fight. Hover a fight in the recap's chart for its
+  floor, encounter (Elite/Boss tagged), rounds, and each player's top damage dealt and taken sources,
+  healing and block.
 - **Game-native look**: uses the game's own fonts, icons, hover-tip frames, scrollbars and shaders
   (loaded from your install, never bundled). Optional **big-moment effects** reuse the game's own
   damage-number and flash VFX.
