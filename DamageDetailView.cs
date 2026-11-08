@@ -117,7 +117,7 @@ internal sealed class DamageDetailView
     // dealt/taken/heal/block plus a run total) above the current-combat columns.
     public bool ShowRunHistory;
     public List<RunAggregate.EncounterStat>? RunFights;
-    // Display string for the toggle key, shown in the header (set by the mod from config).
+    // Display string for the toggle key, shown in the close button's hover tip (set by the mod from config).
     public string HotkeyHint = "C";
 
     public DamageDetailView(Node root)
@@ -314,6 +314,8 @@ internal sealed class DamageDetailView
     // beneath the hover tips) and the run ends, so validity requires the layer, holder and container.
     public bool IsValid() => _mount.IsValid && GodotObject.IsInstanceValid(_container);
     public bool Visible => IsValid() && _panelVisible;
+    // Cursor over the close/back button (summary ✕ or full-screen back), as of the last UpdateMouse.
+    public bool CloseHovered => Visible && _btnHovered && _closeRect.Size.X > 0f;
     public void SetVisible(bool v)
     {
         if (!v || !_panelVisible) { _hoverRound = NoHover; _hoverDetail = null; }
@@ -569,14 +571,14 @@ internal sealed class DamageDetailView
             else logTop = colBottom + vgap;   // summary: the log follows the columns, filling the rest
 
             int cur = 0, barCur = 0, iconCur = 0;
-            string who = (snap.PlayerCount > 1 && slot < snap.Labels.Length) ? $" — {snap.Labels[slot]}" : "";
+            string who = (snap.PlayerCount > 1 && slot < snap.Labels.Length) ? $" – {snap.Labels[slot]}" : "";
 
-            var header = Next(ref cur, full ? 22 : 16, UiTheme.Gold, FontRole.Bold);
-            header.Text = recap
-                ? $"Run Recap{who}     ({HotkeyHint} to close)"
-                : SummaryMode
-                    ? $"Combat Summary{who}     ({HotkeyHint} or ✕ to dismiss)"
-                    : $"Combat Stats{who}     ({HotkeyHint} to close)";
+            // The close key lives in the close button's hover tip ("Close (C)"), so the header is just the
+            // title, shrunk to fit beside the summary's corner close button (or the full view's width).
+            string headerText = (recap ? "Run Recap" : SummaryMode ? "Combat Summary" : "Combat Stats") + who;
+            float headerMaxW = full ? _w - pad * 2f
+                : (_closeRect.Size.X > 0f ? _closeRect.Position.X - 6f : _w - 10f) - 10f;
+            var header = Next(ref cur, full ? 22 : 16, UiTheme.Gold, FontRole.Bold, headerText, headerMaxW);
             if (full) { header.HorizontalAlignment = HorizontalAlignment.Center; header.SetSize(new Vector2(_w, 0f)); header.SetPosition(new Vector2(0f, headerY)); }
             else { header.HorizontalAlignment = HorizontalAlignment.Left; header.SetSize(Vector2.Zero); header.SetPosition(new Vector2(10f, headerY)); }
 
@@ -1170,6 +1172,23 @@ internal sealed class DamageDetailView
         return tex;
     }
 
+    // Largest size <= px (down to a readable floor) at which `text` fits `maxW`, allowing for the outline.
+    private static int FitFontSize(Font? font, string text, int px, float maxW)
+    {
+        if (font == null || maxW <= 0f || text.Length == 0) return px;
+        const int MinPx = 9;
+        try
+        {
+            int size = px;
+            float w = font.GetStringSize(text, HorizontalAlignment.Left, -1, size).X + 8f;
+            if (w <= maxW) return size;
+            size = Math.Max(MinPx, Math.Min(px - 1, (int)Math.Floor(px * maxW / w)));
+            while (size > MinPx && font.GetStringSize(text, HorizontalAlignment.Left, -1, size).X + 8f > maxW) size--;
+            return size;
+        }
+        catch { return px; }
+    }
+
     private static string Truncate(string s, int n) => s.Length <= n ? s : s[..(n - 1)] + "…";
 
     // In the full-screen takeover, force a content color fully opaque (only the backdrop stays dim).
@@ -1178,7 +1197,10 @@ internal sealed class DamageDetailView
     // Which game Kreon a label gets under native_visuals (Body = UiTheme's font, unchanged when off).
     private enum FontRole { Body, Bold, Numeric }
 
-    private Label Next(ref int cursor, int fontSize, Color color, FontRole role = FontRole.Body)
+    // With fitText, the label shows that text at the largest size up to fontSize whose width fits fitWidth
+    // (sized before applying, so the font size isn't rewritten every frame).
+    private Label Next(ref int cursor, int fontSize, Color color, FontRole role = FontRole.Body,
+                       string? fitText = null, float fitWidth = 0f)
     {
         if (_opaque) color = new Color(color.R, color.G, color.B, 1f);
         int fs = Math.Max(1, (int)Math.Round(fontSize * _fontScale));
@@ -1186,6 +1208,13 @@ internal sealed class DamageDetailView
         if (cursor < _labels.Count) lbl = _labels[cursor];
         else { lbl = UiTheme.MakeLabel(fs, color); _container.AddChild(lbl); _labels.Add(lbl); }
         Font? roleFont = role == FontRole.Body ? null : (role == FontRole.Bold ? GameAssets.KreonBold : GameAssets.NumericFont);
+        if (fitText != null)
+        {
+            Font? measure = roleFont ?? UiTheme.DefaultFont;   // what UiTheme.Apply below will use
+            try { measure ??= lbl.GetThemeFont("font"); } catch { }
+            fs = FitFontSize(measure, fitText, fs, fitWidth);
+            if (lbl.Text != fitText) lbl.Text = fitText;
+        }
         if (GameAssets.Enabled)
         {
             // Pooled labels may have been a right-aligned value or a bold/numeric one last frame.

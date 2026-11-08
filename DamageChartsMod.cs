@@ -857,6 +857,7 @@ public static class DamageChartsMod
                     _detail.Render(_tracker.SourceSnapshot(), _tracker.Snapshot(), _playerColors);
                     _detail.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left));
                     if (_detail.TakeCloseRequest()) { _summaryActive = false; _detail.SetVisible(false); } // ✕ clicked
+                    else ShowDetailChartTip(static (_, _) => null);   // summary has no chart: just the ✕ tip
                 }
             }
 
@@ -996,14 +997,24 @@ public static class DamageChartsMod
         _hotkeyDownLast = down;
     }
 
-    // Hover tooltip for the full-screen view's chart (per round in combat, per fight in the recap). The
+    // "Close (C)" hover tip for the detail view's close/back button, naming the configured toggle key.
+    // Cached per key so the tooltip only lays out again when the key changes.
+    private static GroupDetail? _closeTip;
+    private static GroupDetail CloseTip(string hotkey)
+    {
+        string title = $"Close ({hotkey})";
+        if (_closeTip == null || _closeTip.Title != title) _closeTip = new GroupDetail { Title = title, MaxRows = 0 };
+        return _closeTip;
+    }
+
+    // Hover tooltip for the close/back button, else for the full-screen view's chart (per round in combat, per fight in the recap). The
     // detail is built only when the hovered group changes; a failure just leaves the tooltip hidden.
     private static void ShowDetailChartTip(Func<ChartSnapshot, ChartRow, GroupDetail?> build)
     {
         if (_detail == null || _tooltip == null || !_detail.Visible) return;
         try
         {
-            var gd = _detail.HoveredDetail(build);
+            var gd = _detail.CloseHovered ? CloseTip(_detail.HotkeyHint) : _detail.HoveredDetail(build);
             if (gd == null) return;
             _tooltip.UiScaleMul = _uiScale;
             _tooltip.Render(gd, _playerColors, RootMouse());

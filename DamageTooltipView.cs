@@ -122,6 +122,13 @@ internal sealed class DamageTooltipView
         var dim = new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.6f);
 
         float contentW = (d.ShowPct ? NativeContentWPct : NativeContentW) * u;
+        // A title-only tip (e.g. the close button's "Close (C)") hugs its text like a short game tip.
+        if (d.Players.Count == 0 && string.IsNullOrEmpty(d.Subtitle) && string.IsNullOrEmpty(d.Note) && d.Kind == FightKind.Unknown)
+        {
+            Font? f = title ?? UiTheme.DefaultFont;
+            try { if (f != null) contentW = Math.Min(contentW, f.GetStringSize(d.Title, HorizontalAlignment.Left, -1, F(22, u)).X + 12f * u); }
+            catch { }
+        }
         float left = (native ? NativeLook.InsetL : FlatPad) * u;
         float W = left + contentW + (native ? NativeLook.InsetR : FlatPad) * u;
         float right = left + contentW;
