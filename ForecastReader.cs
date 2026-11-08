@@ -87,7 +87,8 @@ internal static class ForecastReader
     //   PlatingPower   BeforeSideTurnEndEarly: GainBlock(Amount)
     //   Orichalcum / FakeOrichalcum: VeryEarly arms only if Block <= 0, then GainBlock(DynamicVars.Block)
     //   CloakClasp     BeforeSideTurnEnd: GainBlock(cards in hand * DynamicVars.Block.BaseValue)
-    // Not modeled: RippleBasin (Block only if no Attack was played this turn; needs combat history).
+    //   RippleBasin    BeforeSideTurnEnd (per its text): gain DynamicVars.Block if no Attack was played this
+    //                 turn, checked in the combat history (CardPlayStartedEntry.HappenedThisTurn); unreadable = 0.
     private static int ReadEndTurnBlock(CombatState cs, Player mePlayer, Creature me, int currentBlock)
     {
         int total = 0;
@@ -106,7 +107,7 @@ internal static class ForecastReader
                 {
                     if (rel == null) continue;
                     string tn = rel.GetType().Name;
-                    if (tn != "Orichalcum" && tn != "FakeOrichalcum" && tn != "CloakClasp") continue;
+                    if (tn != "Orichalcum" && tn != "FakeOrichalcum" && tn != "CloakClasp" && tn != "RippleBasin") continue;
                     object? blockVar = GetProp(rel, "DynamicVars") is { } dv ? GetProp(dv, "Block") : null;
                     int amount = blockVar != null ? GetNum(blockVar, "BaseValue", "Value", "IntValue") : 0;
                     if (amount <= 0) continue;
@@ -117,11 +118,42 @@ internal static class ForecastReader
                             foreach (var _ in cards) handCount++;
                         total += handCount * amount;
                     }
+                    else if (tn == "RippleBasin")
+                    {
+                        // Only an affirmative "no Attack this turn" counts; if the history can't be read, add nothing.
+                        if (PlayedAttackThisTurn(cs, mePlayer) == false) total += amount;
+                    }
                     else if (currentBlock <= 0) total += amount;
                 }
         }
         catch { }
         return total;
+    }
+
+    // Whether the local player has started an Attack card this turn, from the game's combat history
+    // (CardPlayStartedEntry, HappenedThisTurn). null when the history can't be read.
+    private static bool? PlayedAttackThisTurn(CombatState cs, Player mePlayer)
+    {
+        try
+        {
+            var cm = CombatManager.Instance;
+            object? history = (cm != null ? GetProp(cm, "History") : null) ?? GetProp(cs, "History");
+            if (history == null || GetProp(history, "Entries") is not IEnumerable entries) return null;
+            foreach (var e in entries)
+            {
+                if (e == null || e.GetType().Name != "CardPlayStartedEntry") continue;
+                var happened = e.GetType().GetMethod("HappenedThisTurn", BindingFlags.Public | BindingFlags.Instance);
+                if (happened == null) return null;
+                if (happened.Invoke(e, new object[] { cs }) is not bool thisTurn || !thisTurn) continue;
+                object? card = GetProp(e, "CardPlay") is { } play ? GetProp(play, "Card") : null;
+                if (card == null) continue;
+                object? owner = GetProp(card, "Owner");
+                if (owner != null && !ReferenceEquals(owner, mePlayer)) continue;
+                if (string.Equals(GetProp(card, "Type")?.ToString(), "Attack", StringComparison.Ordinal)) return true;
+            }
+            return false;
+        }
+        catch { return null; }
     }
 
     // True while the local player is actively taking their turn (PlayerTurnPhase.Play) — i.e. planning,
