@@ -17,6 +17,7 @@
     <Compile Include="../GroupDetail.cs" Link="GroupDetail.cs" />
     <Compile Include="../SelfHarmText.cs" Link="SelfHarmText.cs" />
     <Compile Include="../OverlayTransform.cs" Link="OverlayTransform.cs" />
+    <Compile Include="../IntentRules.cs" Link="IntentRules.cs" />
   </ItemGroup>
 
   <ItemGroup>

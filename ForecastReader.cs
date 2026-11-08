@@ -48,9 +48,12 @@ internal static class ForecastReader
             foreach (var enemy in cs.Enemies)
             {
                 if (enemy == null) continue;
-                try { if (!enemy.IsAlive) continue; } catch { }
-                if (DiesToPoisonBeforeActing(enemy)) continue;
-                if (!TryReadEnemy(enemy, items)) hasHidden = true;
+                // Every creature still in the enemy list is read (the game removes the dead ones, see
+                // ShouldCreatureBeRemovedFromCombatAfterDeath); one kept at 0 HP only counts for a death blow.
+                bool alive = true;
+                try { alive = enemy.IsAlive; } catch { }
+                if (alive && DiesToPoisonBeforeActing(enemy)) continue;
+                if (!TryReadEnemy(enemy, alive, items)) hasHidden = true;
             }
         }
         catch { }
@@ -178,27 +181,54 @@ internal static class ForecastReader
     }
 
     // Returns true if this enemy's intent was concretely readable (attack or a known non-attack move);
-    // false when the intent is hidden/unreadable, so the caller raises the hidden flag.
-    private static bool TryReadEnemy(Creature enemy, List<ForecastItem> items)
+    // false when the intent is hidden/unreadable, so the caller raises the hidden flag. IntentRules decides
+    // what each intent contributes (attacks, death blows like the Waterfall Giant's Explode, hidden ones).
+    private static bool TryReadEnemy(Creature enemy, bool alive, List<ForecastItem> items)
     {
         var intents = ResolveIntents(enemy);
-        if (intents.Count == 0) return false;
+        if (intents.Count == 0) return !alive;
 
         string name = SafeName(enemy);
+        bool readable = true;
         foreach (var intent in intents)
         {
-            string tn = intent.GetType().Name;
-            if (Contains(tn, "Hidden") || Contains(tn, "Unknown")) return false;
-            string itype = GetProp(intent, "IntentType")?.ToString() ?? "";
-            if (!Contains(tn, "Attack") && !Contains(itype, "Attack")) continue; // buff/defend/etc: no HP threat
+            var threat = IntentRules.Classify(TypeChain(intent.GetType()), GetProp(intent, "IntentType")?.ToString());
+            if (threat == IntentThreat.None) continue;   // buff/defend/etc: no HP threat
+            int perHit = threat is IntentThreat.Attack or IntentThreat.DeathBlow ? ResolveIntentDamage(intent, enemy) : 0;
+            var outcome = IntentRules.Resolve(threat, alive, perHit);
+            if (Debug && threat == IntentThreat.DeathBlow) LogDeathBlow(enemy, intent, perHit);
+            if (outcome == IntentRules.Outcome.Hidden) { readable = false; continue; }
+            if (outcome != IntentRules.Outcome.Add) continue;
 
             int hits = GetInt(intent, "Repeats", "Hits", "Times", "Count", "AttackCount");
             if (hits <= 0) hits = 1;
-            int perHit = ResolveIntentDamage(intent, enemy);
-            if (perHit <= 0) continue; // attack with no readable number → treat as no threat, not hidden
             items.Add(new ForecastItem(name, ForecastKind.Attack, hits, perHit, blockable: true, conditional: false));
         }
-        return true;
+        return readable;
+    }
+
+    // An intent's type name and its base types' names, most derived first (cached per type).
+    private static readonly Dictionary<Type, string[]> _typeChains = new();
+    private static string[] TypeChain(Type t)
+    {
+        if (_typeChains.TryGetValue(t, out var chain)) return chain;
+        var names = new List<string>();
+        for (var x = t; x != null && x != typeof(object); x = x.BaseType) names.Add(x.Name);
+        return _typeChains[t] = names.ToArray();
+    }
+
+    // forecast_debug: what a death-blow intent looks like, once per enemy type/intent type/amount.
+    private static readonly HashSet<string> _deathBlowLogged = new();
+    private static void LogDeathBlow(Creature enemy, object intent, int perHit)
+    {
+        try
+        {
+            string key = $"{enemy.Monster?.GetType().Name}/{intent.GetType().Name}/{perHit}";
+            if (!_deathBlowLogged.Add(key)) return;
+            Godot.GD.Print($"[STS2 Damage] DIAG death blow {key} alive={enemy.IsAlive} hp={enemy.CurrentHp} chain={string.Join(">", TypeChain(intent.GetType()))}");
+            DumpObj("death blow intent", intent);
+        }
+        catch { }
     }
 
     private static readonly System.Text.RegularExpressions.Regex NumRx = new(@"-?\d+");
