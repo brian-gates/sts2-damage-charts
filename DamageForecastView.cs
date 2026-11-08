@@ -225,7 +225,11 @@ internal sealed class DamageForecastView
                 : (r.MaxHp > 0 && after < r.MaxHp * 0.30f ? GoldHex : GreenHex);
             string tail = after <= 0 ? "☠" : "left";
             string hidden = r.HasHidden ? $" [color=#{GoldHex}][font_size={F(15, sc)}]+?[/font_size][/color]" : "";
-            string spare = r.Overblock > 0
+            // Spare block: inline after "Safe" only when the right-hand ledger is hidden (no incoming);
+            // otherwise it's a ledger line, so it never overlaps the ledger column.
+            bool mitigated = r.Incoming > 0 && (r.Block > 0 || r.OstyAbsorb > 0);
+            bool showSpare = r.IsSafe && r.Overblock > 0;
+            string spare = showSpare && !mitigated
                 ? $" [color=#{CreamHex}][font_size={F(15, sc)}]+{r.Overblock} block[/font_size][/color]"
                 : "";
             string line1 = r.IsSafe
@@ -245,13 +249,13 @@ internal sealed class DamageForecastView
 
             // Tucked micro-ledger on the right, only when mitigation changes the result (otherwise In equals
             // the loss already shown): incoming vs the Block / Osty absorbing it.
-            bool mitigated = r.Incoming > 0 && (r.Block > 0 || r.OstyAbsorb > 0);
             string led = "";
             if (mitigated)
             {
                 led = $"In {r.Incoming}";
                 if (r.Block > 0) led += $"\n[color=#{BlockHex}]Blk {r.Block}[/color]";
                 if (r.OstyAbsorb > 0) led += $"\n[color=#{OstyHex}]Osty {r.OstyAbsorb}[/color]";
+                if (showSpare) led += $"\n[color=#{GreenHex}]Spare {r.Overblock}[/color]";
             }
             _stats.Visible = mitigated;
             UiTheme.Apply(_stats, F(12, sc), UiTheme.Cream, numFont);
