@@ -26,6 +26,9 @@ internal sealed class DamageDetailView
 
     private readonly Node _root;
     private readonly CanvasLayer _layer;
+    // Summary/fallback home of _container: mounted beneath the game's hover tips so relic/card/potion tips
+    // on the rewards screen draw over the summary panel.
+    private readonly OverlayMount _mount;
     private readonly Control _container;
     // Reparent target: in full-screen mode we mount _container into the game's NGlobalUi just beneath
     // the NTopBar node so the top bar floats over us (like the native deck/map). Falls back to _layer
@@ -123,9 +126,10 @@ internal sealed class DamageDetailView
         _layer = new CanvasLayer { Layer = 129, Name = "Sts2DamageChartsDetail", Visible = false };
         root.AddChild(_layer);
 
+        _mount = new OverlayMount(root, _layer, "Sts2DamageChartsDetailMount");
         _container = new Control { Name = "Detail", MouseFilter = Control.MouseFilterEnum.Ignore };
         _container.SetSize(new Vector2(_w, _h));
-        _layer.AddChild(_container);
+        _mount.Holder.AddChild(_container);
 
         // Transparent full-screen input blocker on our CanvasLayer (above the game and the top bar). In
         // the full-screen takeover it swallows hover/clicks so game elements beneath (stars, energy, …)
@@ -306,9 +310,9 @@ internal sealed class DamageDetailView
         catch (Exception ex) { ErrorLog.Once("detail hover", ex); return null; }
     }
 
-    // _container can be freed by the game if it was reparented under NGlobalUi and the run ends, so
-    // validity requires both our layer and the container to still be alive.
-    public bool IsValid() => GodotObject.IsInstanceValid(_layer) && GodotObject.IsInstanceValid(_container);
+    // _container can be freed by the game if it was reparented under NGlobalUi (or the mount's holder
+    // beneath the hover tips) and the run ends, so validity requires the layer, holder and container.
+    public bool IsValid() => _mount.IsValid && GodotObject.IsInstanceValid(_container);
     public bool Visible => IsValid() && _panelVisible;
     public void SetVisible(bool v)
     {
@@ -316,18 +320,20 @@ internal sealed class DamageDetailView
         if (v && !_panelVisible) { _btnShow = 0f; _btnHover = 0f; _btnPress = 0f; _btnHovered = false; _btnPressed = false; _blurT = 0f; }
         _panelVisible = v;
         if (!IsValid()) return;
-        _layer.Visible = v;
+        _layer.Visible = v;   // the summary/full input catcher lives directly on the layer
+        _mount.Visible = v;
         try { _container.Visible = v; } catch { }
     }
     public void Dispose()
     {
-        try { if (GodotObject.IsInstanceValid(_container) && _container.GetParent() != _layer) _container.GetParent()?.RemoveChild(_container); } catch { }
+        try { if (GodotObject.IsInstanceValid(_container) && _container.GetParent() != _mount.Holder) _container.GetParent()?.RemoveChild(_container); } catch { }
         try { if (GodotObject.IsInstanceValid(_container)) _container.QueueFree(); } catch { }
-        try { if (GodotObject.IsInstanceValid(_layer)) _layer.QueueFree(); } catch { }
+        _mount.Dispose();
     }
 
-    // Mount _container beneath the game's TopBar (full mode) or back under our CanvasLayer (summary /
-    // fallback). Guarded so a missing/stale game node can never disrupt rendering or combat.
+    // Mount _container beneath the game's TopBar (full mode) or in the overlay mount (summary / fallback),
+    // which itself sits beneath the game's hover tips. Guarded so a missing/stale game node can never
+    // disrupt rendering or combat.
     private void EnsurePlacement(bool full)
     {
         try
@@ -348,29 +354,12 @@ internal sealed class DamageDetailView
                 return;
             }
 
-            // Summary: mount just beneath the game's hover-tip container so relic/card tooltips (e.g. on
-            // the rewards screen) draw over the panel instead of under it.
-            if (!full && ResolveHoverTips())
-            {
-                var parent = _hoverTips!.GetParent();
-                if (_container.GetParent() != parent)
-                {
-                    _container.GetParent()?.RemoveChild(_container);
-                    parent.AddChild(_container);
-                }
-                var kids = parent.GetChildren();
-                int ci = kids.IndexOf(_container), ti = kids.IndexOf(_hoverTips);
-                if (ci >= 0 && ti >= 0 && ci + 1 != ti)
-                    parent.MoveChild(_container, ci < ti ? ti - 1 : ti);
-                _container.Visible = _panelVisible;
-                return;
-            }
-
-            if (_container.GetParent() != _layer)
+            if (_container.GetParent() != _mount.Holder)
             {
                 _container.GetParent()?.RemoveChild(_container);
-                _layer.AddChild(_container);
+                _mount.Holder.AddChild(_container);
             }
+            _mount.Place();
             _container.Visible = _panelVisible;
         }
         catch { /* leave placement as-is on any error */ }
@@ -387,21 +376,6 @@ internal sealed class DamageDetailView
         }
         catch { _globalUi = null; _topBar = null; }
         return _globalUi != null && _topBar != null;
-    }
-
-    // NGame.HoverTipsContainer: where the game parents every hover tip (relics, cards, potions).
-    private Node? _hoverTips;
-    private bool ResolveHoverTips()
-    {
-        if (_hoverTips != null && GodotObject.IsInstanceValid(_hoverTips) && _hoverTips.GetParent() != null) return true;
-        _hoverTips = null;
-        try
-        {
-            var game = FindByType(_root, "NGame");
-            _hoverTips = game?.GetType().GetProperty("HoverTipsContainer")?.GetValue(game) as Node;
-        }
-        catch { _hoverTips = null; }
-        return _hoverTips != null && GodotObject.IsInstanceValid(_hoverTips) && _hoverTips.GetParent() != null;
     }
 
     private static Node? FindByType(Node n, string typeName)

@@ -18,7 +18,7 @@ internal sealed class DamageForecastView
     private const float BaseHeaderH = 20f;
     private const float BaseMargin = 14f;
 
-    private readonly CanvasLayer _layer;
+    private readonly OverlayMount _mount;
     private readonly Control _container;
     private readonly Panel _shadow;   // hover-tip drop shadow; only shown with the native panel
     private readonly Panel _bg;
@@ -56,11 +56,13 @@ internal sealed class DamageForecastView
 
     public DamageForecastView(Node root, Vector2? savedPosFrac)
     {
-        _layer = new CanvasLayer { Layer = 129, Name = "Sts2DamageChartsForecast" };
-        root.AddChild(_layer);
+        var layer = new CanvasLayer { Layer = 129, Name = "Sts2DamageChartsForecast" };
+        root.AddChild(layer);
+        // Content mounts beneath the game's hover tips so potion/relic/power tips draw over the panel.
+        _mount = new OverlayMount(root, layer, "Sts2DamageChartsForecastMount");
 
         _container = new Control { Name = "Forecast", MouseFilter = Control.MouseFilterEnum.Ignore };
-        _layer.AddChild(_container);
+        _mount.Holder.AddChild(_container);
 
         _shadow = new Panel { MouseFilter = Control.MouseFilterEnum.Ignore, Visible = false };
         _container.AddChild(_shadow);
@@ -107,13 +109,13 @@ internal sealed class DamageForecastView
         return rtl;
     }
 
-    public bool IsValid() => GodotObject.IsInstanceValid(_layer);
-    public void Hide() { if (IsValid()) _layer.Visible = false; }
-    public void Dispose() { if (IsValid()) _layer.QueueFree(); }
+    public bool IsValid() => _mount.IsValid && GodotObject.IsInstanceValid(_container);
+    public void Hide() { _mount.Visible = false; }
+    public void Dispose() => _mount.Dispose();
     public Vector2 PositionFraction => _posFrac;
     public bool IsDragging => _dragging;
     // The panel's drawn rect (viewport coords) while it's showing; the compact chart stacks against it.
-    public Rect2? PanelRect => IsValid() && _layer.Visible ? new Rect2(_container.Position, new Vector2(_w, _h)) : null;
+    public Rect2? PanelRect => IsValid() && _mount.Visible ? new Rect2(_container.Position, new Vector2(_w, _h)) : null;
     // Docked mode: sit beside the local player's creature (AnchorRect, viewport coords; null = not found,
     // fall back to the saved fraction). A drag that moves the panel turns docking off.
     public bool AnchorToPlayer { get; set; } = true;
@@ -138,7 +140,7 @@ internal sealed class DamageForecastView
         bool savedNow = false;
         try
         {
-            Vector2 global = _container.GetGlobalMousePosition();
+            Vector2 global = _container.GetViewport().GetMousePosition();   // viewport coords, like _posFrac * _vp
             Vector2 local = _container.GetLocalMousePosition();
             bool overHeader = local.X >= 0 && local.X <= _w && local.Y >= 0 && local.Y <= _headerH;
 
@@ -171,7 +173,8 @@ internal sealed class DamageForecastView
         if (!IsValid()) return;
         try
         {
-            _layer.Visible = true;
+            _mount.Place();
+            _mount.Visible = true;
             LastResult = r;
 
             _vp = _container.GetViewportRect().Size;

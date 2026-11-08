@@ -22,7 +22,7 @@ internal sealed class DamageChartView
     private const float BaseMaxIcon = 34f;
     private const float ChartFrameAlpha = 0.92f; // always-on: let a sliver of the fight show through
 
-    private readonly CanvasLayer _layer;
+    private readonly OverlayMount _mount;
     private readonly Control _container;
     private readonly Panel _bg;
     private readonly Panel _frameShadow;  // native_visuals: the game's hover-tip frame + its drop shadow
@@ -68,11 +68,13 @@ internal sealed class DamageChartView
 
     public DamageChartView(Node root, Vector2? savedPosFrac)
     {
-        _layer = new CanvasLayer { Layer = 128, Name = "Sts2DamageChartsBars" };
-        root.AddChild(_layer);
+        var layer = new CanvasLayer { Layer = 128, Name = "Sts2DamageChartsBars" };
+        root.AddChild(layer);
+        // Content mounts beneath the game's hover tips so potion/relic/power tips draw over the chart.
+        _mount = new OverlayMount(root, layer, "Sts2DamageChartsBarsMount");
 
         _container = new Control { Name = "Bars", MouseFilter = Control.MouseFilterEnum.Ignore };
-        _layer.AddChild(_container);
+        _mount.Holder.AddChild(_container);
 
         _bg = UiTheme.MakePanel(0.5f, 1f);
         _bg.MouseFilter = Control.MouseFilterEnum.Stop; // block click-through over the panel
@@ -106,10 +108,10 @@ internal sealed class DamageChartView
         if (savedPosFrac.HasValue) { _posFrac = savedPosFrac.Value; _posFracInit = true; }
     }
 
-    public bool IsValid() => GodotObject.IsInstanceValid(_layer);
-    public void Show() { if (IsValid()) _layer.Visible = true; }
-    public void Hide() { if (IsValid()) _layer.Visible = false; }
-    public void Dispose() { if (IsValid()) _layer.QueueFree(); }
+    public bool IsValid() => _mount.IsValid && GodotObject.IsInstanceValid(_container);
+    public void Show() { _mount.Visible = true; }
+    public void Hide() { _mount.Visible = false; }
+    public void Dispose() => _mount.Dispose();
     public Vector2 PositionFraction => _posFrac;
     public bool IsDragging => _dragging;
     public bool TakeClick() { var c = _clicked; _clicked = false; return c; }
@@ -121,7 +123,7 @@ internal sealed class DamageChartView
         try
         {
             Vector2 local = _container.GetLocalMousePosition();
-            Vector2 global = _container.GetGlobalMousePosition();
+            Vector2 global = _container.GetViewport().GetMousePosition();   // viewport coords, like _posFrac * _vp
             bool overPanel = local.X >= 0 && local.X <= _w && local.Y >= 0 && local.Y <= _h;
             bool overHeader = overPanel && local.Y <= _headerH;
 
@@ -202,7 +204,8 @@ internal sealed class DamageChartView
         if (!IsValid()) return;
         try
         {
-            _layer.Visible = true;
+            _mount.Place();
+            _mount.Visible = true;
             _lastSnap = snap;
             _cellRects.Clear();
 
@@ -304,7 +307,7 @@ internal sealed class DamageChartView
             {
                 // Nothing to show yet — hide the whole widget rather than render an empty box.
                 HideRest(_labels, 0); HideRest(_bars, 0); HideRest(_icons, 0); HideRest(_grid, 0);
-                _layer.Visible = false;
+                _mount.Visible = false;
                 return;
             }
 

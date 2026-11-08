@@ -1203,9 +1203,12 @@ public static class DamageChartsMod
             UiTheme.EnsurePanelStyle(root);
             if (ForecastReader.Debug && !_layersDumped) { _layersDumped = true; DumpCanvasLayers(root, 0); DumpTargetNodes(root); }
             Vector2? savedPos = (_posXFrac.HasValue && _posYFrac.HasValue) ? new Vector2(_posXFrac.Value, _posYFrac.Value) : null;
-            if (_bars == null || !_bars.IsValid()) _bars = new DamageChartView(root, savedPos);
+            // A view whose content the game freed (mounted beneath its hover tips) still owns its layer.
+            if (_bars != null && !_bars.IsValid()) { _bars.Dispose(); _bars = null; }
+            if (_bars == null) _bars = new DamageChartView(root, savedPos);
             Vector2? fcPos = (_fcPosXFrac.HasValue && _fcPosYFrac.HasValue) ? new Vector2(_fcPosXFrac.Value, _fcPosYFrac.Value) : (Vector2?)null;
-            if (_forecast == null || !_forecast.IsValid()) _forecast = new DamageForecastView(root, fcPos);
+            if (_forecast != null && !_forecast.IsValid()) { _forecast.Dispose(); _forecast = null; }
+            if (_forecast == null) _forecast = new DamageForecastView(root, fcPos);
             if (_forecast != null) _forecast.UiScaleMul = _uiScale;
             if (_forecastLedger == null || !_forecastLedger.IsValid()) _forecastLedger = new ForecastLedgerView(root);
             // _detail may have been freed by the game (its content can be reparented under NGlobalUi).
