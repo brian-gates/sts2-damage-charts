@@ -58,4 +58,12 @@ public class SelfHarmTextTests
         Assert.Equal(amount, a);
         Assert.Equal(blockable, b);
     }
+
+    [Fact]
+    public void Disintegration_IsBlockableSelfDamage()
+    {
+        Assert.True(SelfHarmText.TryMatch("At the end of your turn, take 6 damage.", out int a, out bool b));
+        Assert.Equal(6, a);
+        Assert.True(b);
+    }
 }

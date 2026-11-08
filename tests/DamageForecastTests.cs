@@ -185,8 +185,11 @@ public class DamageForecastTests
     public void Overblock_IgnoresUnblockableAndNeverExceedsOwnBlock()
     {
         Assert.Equal(10, Run(40, 50, 10, false, Dot(4)).Overblock);
-        // Osty covers the attack, but spare Osty isn't block: overblock caps at the player's block.
-        Assert.Equal(5, RunOsty(40, 5, 30, Attack(10)).Overblock);
+        // The player's block soaks first (Osty only gets what's past it), so 5 block vs a 10 attack is all
+        // used: no spare block, even though Osty has plenty left.
+        Assert.Equal(0, RunOsty(40, 5, 30, Attack(10)).Overblock);
+        // Spare block never includes Osty: 15 block vs 10 leaves 5, whatever Osty has.
+        Assert.Equal(5, RunOsty(40, 15, 30, Attack(10)).Overblock);
     }
 
     // Osty with an explicit HP / block split (absorb = hp + block).
@@ -278,5 +281,34 @@ public class DamageForecastTests
         var r = Run(32, 66, 12, false, Attack(9), infection);
         Assert.Equal(0, r.MaxLoss);
         Assert.True(r.IsSafe);
+    }
+
+    private static ForecastItem SelfTake(int amount) =>
+        new("Disintegration", ForecastKind.Dot, 1, amount, blockable: true, conditional: false);
+
+    [Fact]
+    public void SelfDamage_IsNotAbsorbedByOsty()
+    {
+        // Disintegration (take 6 at end of turn) with no block: Osty can't take it for the Necrobinder.
+        var r = RunOsty(30, 0, 11, SelfTake(6));
+        Assert.Equal(6, r.MinLoss);
+        Assert.False(r.IsSafe);
+    }
+
+    [Fact]
+    public void SelfDamage_SpendsBlockBeforeEnemyAttacks()
+    {
+        // 6 block: Disintegration eats it, so the 8 attack goes to Osty (11): player loses 0, Osty 8.
+        var r = RunOsty(30, 6, 11, SelfTake(6), Attack(8));
+        Assert.Equal(0, r.MaxLoss);
+        Assert.Equal(8, r.OstyHpLoss);
+        Assert.Equal(0, r.Overblock);
+    }
+
+    [Fact]
+    public void SelfDamage_PartlyBlocked_RestHitsPlayer()
+    {
+        var r = RunOsty(30, 4, 11, SelfTake(6), Attack(5));
+        Assert.Equal(2, r.MinLoss);
     }
 }

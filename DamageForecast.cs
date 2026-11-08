@@ -106,7 +106,13 @@ internal static class DamageForecast
 {
     public static ForecastResult Compute(ForecastInputs inp)
     {
-        int guaranteedAttack = 0, guaranteedUnblockable = 0, condAttack = 0, condUnblockable = 0;
+        // Blockable damage comes from two places that Osty treats differently:
+        //   * enemy attacks (incl. death blows): player block, then Osty (block, then HP), then the player;
+        //   * self damage ("take N damage" from the player's own powers/cards, e.g. Disintegration,
+        //     Infection): hits the player directly, so only the player's block absorbs it, never Osty. It
+        //     resolves first (during the turn or at end of turn, before enemies act), so it spends block first.
+        // Unblockable damage ("lose N HP", poison) bypasses everything.
+        int gAttack = 0, cAttack = 0, gSelf = 0, cSelf = 0, gUnblockable = 0, cUnblockable = 0;
 
         var items = inp.Items;
         for (int i = 0; i < items.Count; i++)
@@ -115,45 +121,42 @@ internal static class DamageForecast
             if (it.Kind == ForecastKind.Hidden) continue;
             int t = it.Total;
             if (t <= 0) continue;
-            if (it.Conditional)
-            {
-                if (it.Blockable) condAttack += t; else condUnblockable += t;
-            }
-            else
-            {
-                if (it.Blockable) guaranteedAttack += t; else guaranteedUnblockable += t;
-            }
+            bool self = it.Kind == ForecastKind.Dot || it.Kind == ForecastKind.SelfCard;
+            if (!it.Blockable) { if (it.Conditional) cUnblockable += t; else gUnblockable += t; }
+            else if (self) { if (it.Conditional) cSelf += t; else gSelf += t; }
+            else { if (it.Conditional) cAttack += t; else gAttack += t; }
         }
 
-        // Attacks are absorbed by the combined pool of player block + Osty (a damage sink in front of the
-        // player); DoTs bypass both. The player's loss is order-independent, so we pool them. End-of-turn
-        // block lands before the enemy turn, so it counts like block already on the player.
-        // For Osty's own loss the order matters. The game applies the player's block first and then redirects
-        // the remaining HP loss to Osty (sts2.xml: ModifyHpLostBeforeOsty "runs ... after block is applied ...
-        // BEFORE damage is redirected from Necrobinder to Osty", via DieForYouPower). Osty's block is assumed
-        // to soak the redirected damage before its HP, as the pool already assumes.
+        // End-of-turn block lands before the enemy turn, so it counts like block already on the player.
+        // The game applies the player's block first and then redirects the remaining HP loss to Osty
+        // (sts2.xml: ModifyHpLostBeforeOsty "runs ... after block is applied ... BEFORE damage is redirected
+        // from Necrobinder to Osty", via DieForYouPower). Osty's block is assumed to soak before its HP.
         int block = Math.Max(0, inp.Block) + Math.Max(0, inp.EndTurnBlock);
         int osty = Math.Max(0, inp.OstyAbsorb);
-        int pool = block + osty;
 
-        int mitigated = Math.Min(pool, guaranteedAttack);
-        int guaranteedAttackLoss = guaranteedAttack - mitigated;
-        int minLoss = guaranteedAttackLoss + guaranteedUnblockable;
+        // Guaranteed case (min loss).
+        int gSelfBlocked = Math.Min(block, gSelf);
+        int gBlockLeft = block - gSelfBlocked;
+        int gAttackAbsorbed = Math.Min(gBlockLeft + osty, gAttack);
+        int minLoss = (gSelf - gSelfBlocked) + (gAttack - gAttackAbsorbed) + gUnblockable;
+        int mitigated = gSelfBlocked + gAttackAbsorbed;
 
-        int poolLeft = pool - mitigated;
-        int condAttackLoss = Math.Max(0, condAttack - poolLeft);
-        int maxLoss = minLoss + condAttackLoss + condUnblockable;
+        // Worst case (max loss): every conditional source happens too.
+        int allSelf = gSelf + cSelf, allAttack = gAttack + cAttack;
+        int wSelfBlocked = Math.Min(block, allSelf);
+        int wBlockLeft = block - wSelfBlocked;
+        int wAttackAbsorbed = Math.Min(wBlockLeft + osty, allAttack);
+        int maxLoss = (allSelf - wSelfBlocked) + (allAttack - wAttackAbsorbed) + gUnblockable + cUnblockable;
 
-        int incoming = guaranteedAttack + guaranteedUnblockable;
-        // Spare block in the worst case: the pool left after all blockable attacks, but never more than the
-        // player's own block (spare Osty isn't block).
-        int overblock = Math.Min(block, Math.Max(0, pool - guaranteedAttack - condAttack));
+        int incoming = gAttack + gSelf + gUnblockable;
+        // Spare block in the worst case: the player's own block left after self damage and attacks (spare
+        // Osty isn't block).
+        int overblock = Math.Max(0, wBlockLeft - allAttack);
 
-        // Osty's worst case: every blockable attack lands, the player's block soaks first, then Osty's block,
-        // then its HP (capped at the HP it has; the overflow is the player's loss above).
+        // Osty's worst case: attacks past the player's remaining block hit Osty's block, then its HP.
         int ostyHp = Math.Min(Math.Max(0, inp.OstyHp), osty);
         int ostyBlock = osty - ostyHp;
-        int pastBlock = Math.Max(0, guaranteedAttack + condAttack - block);
+        int pastBlock = Math.Max(0, allAttack - wBlockLeft);
         int ostyHpLoss = Math.Min(ostyHp, Math.Max(0, pastBlock - ostyBlock));
 
         return new ForecastResult(incoming, mitigated, minLoss, maxLoss,

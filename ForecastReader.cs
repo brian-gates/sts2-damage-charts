@@ -454,7 +454,8 @@ internal static class ForecastReader
     private static readonly string[] DotKeywords = { "Bleed", "Burn", "Poison", "Regret", "Bomb", "Constrict" };
 
     // Player powers that tick HP loss this turn regardless of action. Damage magnitude is the power's
-    // stack/amount for stacking DoTs (Bleed/Poison); best-effort for others. Bypass block.
+    // stack/amount for stacking DoTs (Bleed/Poison); best-effort for others. Keyword DoTs bypass block; powers
+    // found by their text ("take N damage") are blocked by the player's block but never by Osty.
     private static void ReadDots(Creature me, List<ForecastItem> items)
     {
         try
@@ -465,11 +466,19 @@ internal static class ForecastReader
                 if (p == null) continue;
                 string tn = p.GetType().Name;
                 string id = GetString(p, "Id", "PowerId") ?? tn;
-                if (!MatchesAny(tn, DotKeywords) && !MatchesAny(id, DotKeywords)) continue;
+                bool keyword = MatchesAny(tn, DotKeywords) || MatchesAny(id, DotKeywords);
+                // Powers whose text tells the player to take damage / lose HP at end of turn (e.g.
+                // Disintegration: "At the end of your turn, take 6 damage.") count too, whatever their name.
+                string desc = TextHelper.SafeGetText(() => GetProp(p, "Description")) ?? "";
+                bool byText = SelfHarmText.TryMatch(desc, out int textAmount, out bool blockable)
+                              && Contains(desc, "end of your turn");
+                if (!keyword && !byText) continue;
                 int amount = GetInt(p, "Amount", "Stacks", "Count", "Value");
+                if (byText && textAmount > 0) amount = textAmount;
                 if (amount <= 0) continue;
                 string label = TextHelper.SafeGetText(() => GetProp(p, "Title")) ?? Prettify(tn);
-                items.Add(new ForecastItem(label, ForecastKind.Dot, 1, amount, blockable: false, conditional: false));
+                // Keyword DoTs (poison, bleed, ...) bypass block; text-detected ones follow their wording.
+                items.Add(new ForecastItem(label, ForecastKind.Dot, 1, amount, blockable: byText && !keyword && blockable, conditional: false));
             }
         }
         catch { }
