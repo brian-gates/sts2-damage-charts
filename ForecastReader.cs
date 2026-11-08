@@ -87,6 +87,7 @@ internal static class ForecastReader
     //   PlatingPower   BeforeSideTurnEndEarly: GainBlock(Amount)
     //   Orichalcum / FakeOrichalcum: VeryEarly arms only if Block <= 0, then GainBlock(DynamicVars.Block)
     //   CloakClasp     BeforeSideTurnEnd: GainBlock(cards in hand * DynamicVars.Block.BaseValue)
+    //   FrostOrb       BeforeTurnEndOrbTrigger: GainBlock(PassiveVal, Focus included) per passive trigger
     //   RippleBasin    BeforeSideTurnEnd (per its text): gain DynamicVars.Block if no Attack was played this
     //                 turn, checked in the combat history (CardPlayStartedEntry.HappenedThisTurn); unreadable = 0.
     private static int ReadEndTurnBlock(CombatState cs, Player mePlayer, Creature me, int currentBlock)
@@ -127,7 +128,47 @@ internal static class ForecastReader
                 }
         }
         catch { }
+        try { total += FrostOrbBlock(cs, mePlayer); } catch { }
         return total;
+    }
+
+    // Frost orbs gain their passive value as Block at end of turn (BeforeTurnEndOrbTrigger). PassiveVal
+    // already includes Focus; the number of passive triggers per orb comes from the game's own hook
+    // (Hook.ModifyOrbPassiveTriggerCount, e.g. relics that trigger an orb again), defaulting to 1.
+    private static int FrostOrbBlock(CombatState cs, Player mePlayer)
+    {
+        object? pcs = GetProp(mePlayer, "PlayerCombatState");
+        object? queue = pcs != null ? GetProp(pcs, "OrbQueue") : null;
+        if (queue == null || GetProp(queue, "Orbs") is not IEnumerable orbs) return 0;
+        int total = 0;
+        foreach (var orb in orbs)
+        {
+            if (orb == null || orb.GetType().Name != "FrostOrb") continue;
+            int value = GetNum(orb, "PassiveVal");
+            if (value <= 0) continue;
+            total += value * OrbPassiveTriggers(cs, orb);
+        }
+        return total;
+    }
+
+    private static MethodInfo? _orbTriggerHook;
+    private static bool _orbTriggerHookLooked;
+    private static int OrbPassiveTriggers(CombatState cs, object orb)
+    {
+        try
+        {
+            if (!_orbTriggerHookLooked)
+            {
+                _orbTriggerHookLooked = true;
+                _orbTriggerHook = typeof(CombatState).Assembly.GetType("MegaCrit.Sts2.Core.Hooks.Hook")
+                    ?.GetMethod("ModifyOrbPassiveTriggerCount", BindingFlags.Public | BindingFlags.Static);
+            }
+            if (_orbTriggerHook == null) return 1;
+            var args = new object?[] { cs, orb, 1, null };
+            if (_orbTriggerHook.Invoke(null, args) is int n) return Math.Clamp(n, 0, 10);
+        }
+        catch { }
+        return 1;
     }
 
     // Whether the local player has started an Attack card this turn, from the game's combat history
