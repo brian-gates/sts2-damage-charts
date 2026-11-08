@@ -200,19 +200,6 @@ internal static class ForecastReader
     }
 
     private static readonly System.Text.RegularExpressions.Regex NumRx = new(@"-?\d+");
-    // "take ... damage" / "lose ... HP|health" — self-harm, as opposed to attacks that "deal" damage.
-    private static readonly System.Text.RegularExpressions.Regex SelfHarmRx = new(
-        @"\b(take|lose)\b.{0,40}\b(damage|hp|health)\b",
-        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Singleline);
-    // The number right after take/lose in resolved card text, e.g. "take 5 damage" -> 5.
-    private static readonly System.Text.RegularExpressions.Regex SelfDamageRx = new(
-        @"\b(?:take|lose)\s+(\d+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-
-    private static int ParseSelfDamage(string desc)
-    {
-        var m = SelfDamageRx.Match(desc);
-        return m.Success && int.TryParse(m.Groups[1].Value, out int n) ? n : 0;
-    }
 
     // The card's description with {Damage}-style templates resolved to real numbers. GetDescriptionForPile
     // needs the pile context to fill them in; the plain Description property does not.
@@ -427,7 +414,7 @@ internal static class ForecastReader
     // Cards in hand that cost the player HP. Two flavors:
     //   • Infection-style cards that bite at end of turn while held → GUARANTEED loss (counts toward min).
     //   • Cards that only cost HP when played → CONDITIONAL (widens the max only).
-    // Amount comes from the card's HpLoss field, falling back to a "lose N HP" description scan.
+    // Amount comes from the self clause of the resolved description, falling back to the card's fields.
     private static void ReadSelfDamageCards(CombatState cs, IReadOnlyList<Player> players, int localSlot, List<ForecastItem> items)
     {
         try
@@ -451,13 +438,14 @@ internal static class ForecastReader
                 string desc = ResolveCardText(card)
                     ?? TextHelper.SafeGetText(() => GetProp(card, "Description") ?? GetProp(card, "Text")) ?? "";
 
-                // Self-harm cards say "take N damage" / "lose N HP" (as opposed to attacks that "deal" it).
-                bool selfHarm = SelfHarmRx.IsMatch(desc);
+                // Self-harm cards tell the player to "take N damage" / "lose N HP" (SelfHarmText: only when the
+                // player is the subject, not "they take 9 damage"). The subject is fixed by the card's kind; only
+                // the number varies (upgrades, modifiers), so the per-type verdict stays valid.
+                bool selfHarm = SelfHarmText.TryMatch(desc, out int amount);
                 if (desc.Length > 0) _selfHarmByType[type] = selfHarm;   // an unresolved text isn't a verdict
                 if (!selfHarm) continue;
 
-                // Amount: the number right after "take"/"lose" in the resolved text; fall back to fields.
-                int amount = ParseSelfDamage(desc);
+                // Amount: the number in the self clause of the resolved text; fall back to fields.
                 if (amount <= 0) amount = GetNum(card, "CalculatedDamage", "HpLoss", "Damage", "BaseDamage");
                 if (amount <= 0) continue;
 
@@ -493,25 +481,6 @@ internal static class ForecastReader
             if (s != _lastHandDbg) { _lastHandDbg = s; Godot.GD.Print($"[STS2 Damage] DIAG hand: {s}"); }
         }
         catch { }
-    }
-
-    // Matches "lose N HP" / "lose N Health" / "N HP loss" case-insensitively; returns the largest number found.
-    private static int ParseHpLoss(string desc)
-    {
-        try
-        {
-            var rx = new System.Text.RegularExpressions.Regex(
-                @"lose\s+(\d+)\s*(?:hp|health)|(\d+)\s*(?:hp|health)\s*loss",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            int max = 0;
-            foreach (System.Text.RegularExpressions.Match m in rx.Matches(desc))
-            {
-                string g = m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value;
-                if (int.TryParse(g, out int n) && n > max) max = n;
-            }
-            return max;
-        }
-        catch { return 0; }
     }
 
     // The player's hand lives on the combat state, not the Player model. Try the player's combat-state

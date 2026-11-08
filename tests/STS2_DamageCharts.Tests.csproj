@@ -15,6 +15,7 @@
     <Compile Include="../DamageTracker.cs" Link="DamageTracker.cs" />
     <Compile Include="../RunAggregate.cs" Link="RunAggregate.cs" />
     <Compile Include="../GroupDetail.cs" Link="GroupDetail.cs" />
+    <Compile Include="../SelfHarmText.cs" Link="SelfHarmText.cs" />
   </ItemGroup>
 
   <ItemGroup>
