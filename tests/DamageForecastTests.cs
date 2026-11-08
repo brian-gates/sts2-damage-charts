@@ -188,4 +188,85 @@ public class DamageForecastTests
         // Osty covers the attack, but spare Osty isn't block: overblock caps at the player's block.
         Assert.Equal(5, RunOsty(40, 5, 30, Attack(10)).Overblock);
     }
+
+    // Osty with an explicit HP / block split (absorb = hp + block).
+    private static ForecastResult RunOstySplit(int block, int ostyHp, int ostyBlock, params ForecastItem[] items) =>
+        DamageForecast.Compute(new ForecastInputs(40, 50, block, ostyHp + ostyBlock, false, new List<ForecastItem>(items), 0, ostyHp));
+    private static ForecastItem CondAttack(int perHit) =>
+        new("E", ForecastKind.Attack, 1, perHit, blockable: true, conditional: true);
+
+    [Fact]
+    public void OstyLoss_NoOsty_IsZero()
+    {
+        var r = Run(40, 50, 0, false, Attack(12));
+        Assert.Equal(0, r.OstyHp);
+        Assert.Equal(0, r.OstyHpLoss);
+        Assert.False(r.OstyDies);
+    }
+
+    [Fact]
+    public void OstyLoss_PlayerBlockCoversEverything_OstyUntouched()
+    {
+        var r = RunOstySplit(10, 11, 0, Attack(8));
+        Assert.Equal(0, r.OstyHpLoss);
+        Assert.False(r.OstyDies);
+    }
+
+    [Fact]
+    public void OstyLoss_OstyFullyCovers_LosesOnlyWhatGetsPastBothBlocks()
+    {
+        // 20 attack: player block 5, Osty block 4, so Osty loses 11 of its 15 HP; the player loses nothing.
+        var r = RunOstySplit(5, 15, 4, Attack(20));
+        Assert.Equal(11, r.OstyHpLoss);
+        Assert.False(r.OstyDies);
+        Assert.Equal(0, r.MaxLoss);
+    }
+
+    [Fact]
+    public void OstyLoss_Partial()
+    {
+        var r = RunOstySplit(0, 11, 0, Attack(6));
+        Assert.Equal(6, r.OstyHpLoss);
+        Assert.False(r.OstyDies);
+    }
+
+    [Fact]
+    public void OstyLoss_Dies_CappedAtHp_OverflowToPlayer()
+    {
+        // 3 x 7 = 21 vs block 2 + Osty 11 HP: Osty loses all 11 and dies, 8 reaches the player.
+        var r = RunOstySplit(2, 11, 0, Attack(7, hits: 3));
+        Assert.Equal(11, r.OstyHpLoss);
+        Assert.True(r.OstyDies);
+        Assert.Equal(8, r.MinLoss);
+    }
+
+    [Fact]
+    public void OstyLoss_ExactlyHp_Dies()
+    {
+        Assert.True(RunOstySplit(0, 6, 0, Attack(6)).OstyDies);
+    }
+
+    [Fact]
+    public void OstyLoss_ConditionalAttacksCountTowardWorstCase()
+    {
+        // Guaranteed 4 alone would cost Osty 4; a conditional 10 makes the worst case lethal.
+        var r = RunOstySplit(0, 11, 0, Attack(4), CondAttack(10));
+        Assert.Equal(11, r.OstyHpLoss);
+        Assert.True(r.OstyDies);
+    }
+
+    [Fact]
+    public void OstyLoss_DotsBypassOsty()
+    {
+        var r = RunOstySplit(0, 11, 0, Dot(5));
+        Assert.Equal(0, r.OstyHpLoss);
+    }
+
+    [Fact]
+    public void OstyLoss_UnknownSplit_TreatsAbsorbAsHp()
+    {
+        var r = RunOsty(40, 0, 10, Attack(4));
+        Assert.Equal(10, r.OstyHp);
+        Assert.Equal(4, r.OstyHpLoss);
+    }
 }

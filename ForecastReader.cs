@@ -20,7 +20,7 @@ internal static class ForecastReader
     public static ForecastInputs Build(CombatState cs, IReadOnlyList<Player> players, int localSlot)
     {
         var items = new List<ForecastItem>();
-        int hp = 0, maxHp = 0, block = 0, ostyAbsorb = 0, endTurnBlock = 0;
+        int hp = 0, maxHp = 0, block = 0, ostyAbsorb = 0, ostyHp = 0, endTurnBlock = 0;
         bool hasHidden = false;
 
         try
@@ -32,7 +32,7 @@ internal static class ForecastReader
                 hp = GetInt(me, "CurrentHp", "Hp", "Health");
                 maxHp = GetInt(me, "MaxHp", "MaxHealth");
                 block = GetInt(me, "Block", "CurrentBlock");
-                ostyAbsorb = ReadOstyAbsorb(mePlayer!);
+                ostyAbsorb = ReadOstyAbsorb(mePlayer!, out ostyHp);
                 endTurnBlock = ReadEndTurnBlock(cs, mePlayer!, me, block);
                 if (Debug && !_dumped) { _dumped = true; DumpDiagnostics(cs, players, localSlot, me); }
                 ReadDots(me, items);
@@ -55,7 +55,7 @@ internal static class ForecastReader
         }
         catch { }
 
-        return new ForecastInputs(hp, maxHp, block, ostyAbsorb, hasHidden, items, endTurnBlock);
+        return new ForecastInputs(hp, maxHp, block, ostyAbsorb, hasHidden, items, endTurnBlock, ostyHp);
     }
 
     // Mirrors the game's own check (NHealthBar.IsPoisonLethal, which turns the enemy's HP bar green):
@@ -158,9 +158,10 @@ internal static class ForecastReader
     }
 
     // Osty (Necrobinder's summon) is a damage sink in front of the player: its block + HP absorb attacks
-    // before overflow reaches the player. Only counts while Osty is alive.
-    private static int ReadOstyAbsorb(Player player)
+    // before overflow reaches the player. Only counts while Osty is alive. `hp` is the HP part.
+    private static int ReadOstyAbsorb(Player player, out int hp)
     {
+        hp = 0;
         try
         {
             object? aliveObj = GetProp(player, "IsOstyAlive");
@@ -170,7 +171,8 @@ internal static class ForecastReader
             int ohp = GetInt(osty, "CurrentHp", "Hp", "Health");
             int oblock = GetInt(osty, "Block", "CurrentBlock");
             if (ohp <= 0 && oblock <= 0) return 0;
-            return ohp + oblock;
+            hp = Math.Max(0, ohp);
+            return Math.Max(0, ohp) + Math.Max(0, oblock);
         }
         catch { return 0; }
     }

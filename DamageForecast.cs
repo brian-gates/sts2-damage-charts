@@ -39,9 +39,11 @@ internal readonly struct ForecastInputs
     public readonly bool HasHidden;
     public readonly IReadOnlyList<ForecastItem> Items;
     public readonly int EndTurnBlock; // block gained at the end of your turn (Plating, Orichalcum, ...), before enemies act
+    public readonly int OstyHp;       // Osty's HP part of OstyAbsorb (the rest is its block)
 
+    // ostyHp < 0: the HP/block split is unknown, so all of OstyAbsorb is treated as HP.
     public ForecastInputs(int currentHp, int maxHp, int block, int ostyAbsorb, bool hasHidden, IReadOnlyList<ForecastItem> items,
-                          int endTurnBlock = 0)
+                          int endTurnBlock = 0, int ostyHp = -1)
     {
         CurrentHp = currentHp;
         MaxHp = maxHp;
@@ -50,6 +52,8 @@ internal readonly struct ForecastInputs
         HasHidden = hasHidden;
         Items = items ?? Array.Empty<ForecastItem>();
         EndTurnBlock = endTurnBlock;
+        int absorb = Math.Max(0, ostyAbsorb);
+        OstyHp = ostyHp < 0 ? absorb : Math.Min(ostyHp, absorb);
     }
 }
 
@@ -68,12 +72,19 @@ internal readonly struct ForecastResult
     // Player block left over after the worst case of every blockable attack (Osty absorbs first only when
     // the block alone can't cover it); 0 when the block is all needed.
     public readonly int Overblock;
+    // Worst-case HP Osty loses this enemy turn (every blockable attack, conditional ones included, after the
+    // player's block and then Osty's own block), and whether that kills it. 0 / false without Osty.
+    public readonly int OstyHp;
+    public readonly int OstyHpLoss;
+    public bool OstyDies => OstyHp > 0 && OstyHpLoss >= OstyHp;
 
     public ForecastResult(int incoming, int mitigated, int minLoss, int maxLoss,
         int block, int ostyAbsorb, int currentHp, int maxHp, bool hasHidden, IReadOnlyList<ForecastItem> items,
-        int overblock = 0)
+        int overblock = 0, int ostyHp = 0, int ostyHpLoss = 0)
     {
         Overblock = Math.Max(0, overblock);
+        OstyHp = Math.Max(0, ostyHp);
+        OstyHpLoss = Math.Clamp(ostyHpLoss, 0, OstyHp);
         Incoming = incoming;
         Mitigated = mitigated;
         MinLoss = minLoss;
@@ -115,8 +126,12 @@ internal static class DamageForecast
         }
 
         // Attacks are absorbed by the combined pool of player block + Osty (a damage sink in front of the
-        // player); DoTs bypass both. The loss total is order-independent, so we pool them. End-of-turn block
-        // lands before the enemy turn, so it counts like block already on the player.
+        // player); DoTs bypass both. The player's loss is order-independent, so we pool them. End-of-turn
+        // block lands before the enemy turn, so it counts like block already on the player.
+        // For Osty's own loss the order matters. The game applies the player's block first and then redirects
+        // the remaining HP loss to Osty (sts2.xml: ModifyHpLostBeforeOsty "runs ... after block is applied ...
+        // BEFORE damage is redirected from Necrobinder to Osty", via DieForYouPower). Osty's block is assumed
+        // to soak the redirected damage before its HP, as the pool already assumes.
         int block = Math.Max(0, inp.Block) + Math.Max(0, inp.EndTurnBlock);
         int osty = Math.Max(0, inp.OstyAbsorb);
         int pool = block + osty;
@@ -134,7 +149,14 @@ internal static class DamageForecast
         // player's own block (spare Osty isn't block).
         int overblock = Math.Min(block, Math.Max(0, pool - guaranteedAttack - condAttack));
 
+        // Osty's worst case: every blockable attack lands, the player's block soaks first, then Osty's block,
+        // then its HP (capped at the HP it has; the overflow is the player's loss above).
+        int ostyHp = Math.Min(Math.Max(0, inp.OstyHp), osty);
+        int ostyBlock = osty - ostyHp;
+        int pastBlock = Math.Max(0, guaranteedAttack + condAttack - block);
+        int ostyHpLoss = Math.Min(ostyHp, Math.Max(0, pastBlock - ostyBlock));
+
         return new ForecastResult(incoming, mitigated, minLoss, maxLoss,
-            block, osty, inp.CurrentHp, inp.MaxHp, inp.HasHidden, items, overblock);
+            block, osty, inp.CurrentHp, inp.MaxHp, inp.HasHidden, items, overblock, ostyHp, ostyHpLoss);
     }
 }

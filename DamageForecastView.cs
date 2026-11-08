@@ -252,19 +252,43 @@ internal sealed class DamageForecastView
 
             // Tucked micro-ledger on the right, only when mitigation changes the result (otherwise In equals
             // the loss already shown): incoming vs the Block / Osty absorbing it.
-            string led = "";
+            // The Osty line carries Osty's projected HP loss in a smaller suffix ("Osty 11 -6", or a red ☠ when
+            // it would die). Spare only shows when block covers everything, i.e. Osty loses nothing, so the
+            // ledger still never exceeds four lines.
+            string led = "", widest = "";
+            int ledSize = F(12, sc), sufSize = F(10, sc);
             if (mitigated)
             {
-                led = $"In {r.Incoming}";
-                if (r.Block > 0) led += $"\n[color=#{BlockHex}]Blk {r.Block}[/color]";
-                if (r.OstyAbsorb > 0) led += $"\n[color=#{OstyHex}]Osty {r.OstyAbsorb}[/color]";
-                if (showSpare) led += $"\n[color=#{GreenHex}]Spare {r.Overblock}[/color]";
+                led = $"In {r.Incoming}"; widest = led;
+                void Line(string plain, string rich) { led += "\n" + rich; if (plain.Length > widest.Length) widest = plain; }
+                if (r.Block > 0) Line($"Blk {r.Block}", $"[color=#{BlockHex}]Blk {r.Block}[/color]");
+                if (r.OstyAbsorb > 0)
+                {
+                    string suffix = r.OstyDies ? " ☠" : r.OstyHpLoss > 0 ? $" -{r.OstyHpLoss}" : "";
+                    string sufHex = r.OstyDies ? LossHex : OstyHex;
+                    Line($"Osty {r.OstyAbsorb}{suffix}", $"[color=#{OstyHex}]Osty {r.OstyAbsorb}[/color]"
+                        + (suffix.Length > 0 ? $"[font_size={sufSize}][color=#{sufHex}]{suffix}[/color][/font_size]" : ""));
+                }
+                if (showSpare) Line($"Spare {r.Overblock}", $"[color=#{GreenHex}]Spare {r.Overblock}[/color]");
             }
             _stats.Visible = mitigated;
-            UiTheme.Apply(_stats, F(12, sc), UiTheme.Cream, numFont);
+            UiTheme.Apply(_stats, ledSize, UiTheme.Cream, numFont);
             if (numFont != null) ForecastStyle.Shadow(_stats, sc);
             Th.Text(_stats, led);
-            _stats.SetPosition(new Vector2(_w - 72 * sc, rowY));
+            // Usual column 72 px from the right edge; nudged left only as far as a long line needs to stay
+            // inside the frame (measured at the line size, so a little generous for the smaller suffix).
+            float ledX = _w - 72 * sc;
+            Font? ledFont = numFont ?? UiTheme.DefaultFont;
+            if (mitigated && ledFont != null)
+            {
+                try
+                {
+                    float need = ledFont.GetStringSize(widest, HorizontalAlignment.Left, -1, ledSize).X;
+                    ledX = Math.Min(ledX, _w - (_nativePanel ? 14 : 8) * sc - need);
+                }
+                catch { }
+            }
+            _stats.SetPosition(new Vector2(ledX, rowY));
 
             LayoutHpBar(r, padX, sc, afterHex);
 
