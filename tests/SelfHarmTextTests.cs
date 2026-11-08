@@ -46,4 +46,16 @@ public class SelfHarmTextTests
         Assert.True(SelfHarmText.TryMatch("Enemies take 9 damage. Lose 2 HP.", out int n));
         Assert.Equal(2, n);
     }
+
+    [Theory]
+    [InlineData("Unplayable. At the end of your turn, if this is in your Hand, take 3 damage.", 3, true)]
+    [InlineData("Take 3 damage.", 3, true)]
+    [InlineData("Lose 6 HP. Gain 2 Energy.", 6, false)]
+    [InlineData("At the end of your turn, if this is in your hand, lose 2 HP.", 2, false)]
+    public void Blockable_TakeDamageYes_LoseHpNo(string desc, int amount, bool blockable)
+    {
+        Assert.True(SelfHarmText.TryMatch(desc, out int a, out bool b));
+        Assert.Equal(amount, a);
+        Assert.Equal(blockable, b);
+    }
 }

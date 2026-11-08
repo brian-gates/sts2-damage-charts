@@ -14,7 +14,7 @@ internal static class SelfHarmText
     // clause (text start, or after . ! ? ; : , or a line break) or follows "you" that isn't a
     // whenever/when/if/after/each time/every time condition. Group "n" spans the self clause up to the
     // damage/HP word; the amount is the first number in it.
-    private const string Tail = @"(?:take|lose)\b(?<n>[^.!?;\n]{0,40}?)\b(?:damage|hp|health)\b";
+    private const string Tail = @"(?<v>take|lose)\b(?<n>[^.!?;\n]{0,40}?)\b(?<u>damage|hp|health)\b";
     private static readonly Regex Rx = new(
         @"(?:^|[.!?;:,\n])\s*" + Tail
         + @"|(?<!\b(?:whenever|when|if|after|each\s+time|every\s+time)\s+)\byou\s+" + Tail,
@@ -24,14 +24,20 @@ internal static class SelfHarmText
 
     // True when the text has a self-harm clause; amount is the number in that clause (0 when it has none,
     // e.g. "lose HP equal to ..."; callers then fall back to the card's fields).
-    public static bool TryMatch(string? desc, out int amount)
+    public static bool TryMatch(string? desc, out int amount) => TryMatch(desc, out amount, out _);
+
+    // blockable: "take N damage" is ordinary damage that Block absorbs; "lose N HP/health" bypasses Block.
+    public static bool TryMatch(string? desc, out int amount, out bool blockable)
     {
         amount = 0;
+        blockable = false;
         if (string.IsNullOrEmpty(desc)) return false;
         var m = Rx.Match(desc);
         if (!m.Success) return false;
         var n = NumRx.Match(m.Groups["n"].Value);
         if (n.Success && int.TryParse(n.Value, out int v)) amount = v;
+        blockable = m.Groups["v"].Value.Equals("take", System.StringComparison.OrdinalIgnoreCase)
+            && m.Groups["u"].Value.Equals("damage", System.StringComparison.OrdinalIgnoreCase);
         return true;
     }
 

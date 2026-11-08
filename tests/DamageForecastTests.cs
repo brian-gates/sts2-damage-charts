@@ -269,4 +269,14 @@ public class DamageForecastTests
         Assert.Equal(10, r.OstyHp);
         Assert.Equal(4, r.OstyHpLoss);
     }
+
+    [Fact]
+    public void HeldTakeDamageCard_IsAbsorbedByBlock()
+    {
+        // Infection held (take 3 damage, blockable) plus a 9 attack against 12 block: nothing gets through.
+        var infection = new ForecastItem("Infection", ForecastKind.Dot, 1, 3, blockable: true, conditional: false);
+        var r = Run(32, 66, 12, false, Attack(9), infection);
+        Assert.Equal(0, r.MaxLoss);
+        Assert.True(r.IsSafe);
+    }
 }

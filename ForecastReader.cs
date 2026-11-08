@@ -473,7 +473,7 @@ internal static class ForecastReader
                 // Self-harm cards tell the player to "take N damage" / "lose N HP" (SelfHarmText: only when the
                 // player is the subject, not "they take 9 damage"). The subject is fixed by the card's kind; only
                 // the number varies (upgrades, modifiers), so the per-type verdict stays valid.
-                bool selfHarm = SelfHarmText.TryMatch(desc, out int amount);
+                bool selfHarm = SelfHarmText.TryMatch(desc, out int amount, out bool blockable);
                 if (desc.Length > 0) _selfHarmByType[type] = selfHarm;   // an unresolved text isn't a verdict
                 if (!selfHarm) continue;
 
@@ -485,9 +485,9 @@ internal static class ForecastReader
                 // "if this is in your hand" / end-of-turn bite = guaranteed loss; otherwise conditional on play.
                 bool held = Contains(desc, "in your hand") || Contains(desc, "end of your turn") || Contains(tn, "Infection");
                 if (held)
-                    items.Add(new ForecastItem(label, ForecastKind.Dot, 1, amount, blockable: false, conditional: false));
+                    items.Add(new ForecastItem(label, ForecastKind.Dot, 1, amount, blockable, conditional: false));
                 else
-                    items.Add(new ForecastItem(label, ForecastKind.SelfCard, 1, amount, blockable: false, conditional: true));
+                    items.Add(new ForecastItem(label, ForecastKind.SelfCard, 1, amount, blockable, conditional: true));
             }
         }
         catch { }
