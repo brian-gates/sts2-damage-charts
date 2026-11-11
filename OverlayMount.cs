@@ -20,18 +20,23 @@ internal sealed class OverlayMount
     private readonly CanvasLayer _layer;
     private readonly int _rank;
     private readonly ulong _id;
+    // When set, also stay below the game's UI layer (NGlobalUi: map, top bar, overlay screens), so e.g. the
+    // map opens over the panel. Off for panels that must show over a game screen (the rewards summary).
+    private readonly bool _belowGameUi;
     public Control Holder { get; }
 
     // Holder instance id -> rank (its view's old layer number) for every live mount, so mounts sharing the
     // spot before the tips keep their old relative order (forecast over chart) without fighting over it.
     private static readonly Dictionary<ulong, int> _ranks = new();
     private static Node? _tips;
+    private static Node? _globalUi;
     private static ulong _nextResolveFrame;
     private static bool _logged;
 
-    public OverlayMount(Node root, CanvasLayer layer, string name)
+    public OverlayMount(Node root, CanvasLayer layer, string name, bool belowGameUi = false)
     {
         _root = root;
+        _belowGameUi = belowGameUi;
         _layer = layer;
         _rank = layer.Layer;
         Holder = new Control { Name = name, MouseFilter = Control.MouseFilterEnum.Ignore };
@@ -67,7 +72,12 @@ internal sealed class OverlayMount
 
             if (tips != null && tipsParent != null)
             {
-                int to = OverlayTransform.PlaceIndex(Holder.GetIndex(), tips.GetIndex(), _rank, i =>
+                // The spot to sit just under: the tips container, or (belowGameUi) whichever comes first of it
+                // and the sibling that holds NGlobalUi.
+                int anchor = tips.GetIndex();
+                if (_belowGameUi && SiblingHolding(tipsParent, ResolveGlobalUi(_root)) is { } ui && ui.GetIndex() < anchor)
+                    anchor = ui.GetIndex();
+                int to = OverlayTransform.PlaceIndex(Holder.GetIndex(), anchor, _rank, i =>
                 {
                     var ch = tipsParent.GetChild(i);
                     return ch != null && _ranks.TryGetValue(ch.GetInstanceId(), out int r) ? r : null;
@@ -119,6 +129,30 @@ internal sealed class OverlayMount
         }
         catch { _tips = null; }
         return _tips;
+    }
+
+    // NGlobalUi, cached while valid and attached (looked up only by mounts that ask for it).
+    private static Node? ResolveGlobalUi(Node root)
+    {
+        try
+        {
+            if (_globalUi != null && GodotObject.IsInstanceValid(_globalUi) && _globalUi.GetParent() != null) return _globalUi;
+            _globalUi = FindByType(root, "NGlobalUi");
+        }
+        catch { _globalUi = null; }
+        return _globalUi;
+    }
+
+    // The child of `parent` that is `node` or one of its ancestors; null when `node` isn't under `parent`.
+    private static Node? SiblingHolding(Node parent, Node? node)
+    {
+        try
+        {
+            for (Node? n = node; n != null; n = n.GetParent())
+                if (n.GetParent() == parent) return n;
+        }
+        catch { }
+        return null;
     }
 
     private static Node? FindByType(Node n, string typeName)

@@ -59,7 +59,7 @@ internal sealed class DamageForecastView
         var layer = new CanvasLayer { Layer = 129, Name = "Sts2DamageChartsForecast" };
         root.AddChild(layer);
         // Content mounts beneath the game's hover tips so potion/relic/power tips draw over the panel.
-        _mount = new OverlayMount(root, layer, "Sts2DamageChartsForecastMount");
+        _mount = new OverlayMount(root, layer, "Sts2DamageChartsForecastMount", belowGameUi: true);
 
         _container = new Control { Name = "Forecast", MouseFilter = Control.MouseFilterEnum.Ignore };
         _mount.Holder.AddChild(_container);

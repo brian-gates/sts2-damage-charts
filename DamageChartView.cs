@@ -71,7 +71,7 @@ internal sealed class DamageChartView
         var layer = new CanvasLayer { Layer = 128, Name = "Sts2DamageChartsBars" };
         root.AddChild(layer);
         // Content mounts beneath the game's hover tips so potion/relic/power tips draw over the chart.
-        _mount = new OverlayMount(root, layer, "Sts2DamageChartsBarsMount");
+        _mount = new OverlayMount(root, layer, "Sts2DamageChartsBarsMount", belowGameUi: true);
 
         _container = new Control { Name = "Bars", MouseFilter = Control.MouseFilterEnum.Ignore };
         _mount.Holder.AddChild(_container);
