@@ -160,6 +160,11 @@ After the first publish, subscribe in-client and verify the overlay loads in a r
   (Poison, Doom, Thorns, …) instead of the generic `Status`/`Other`, via a curated set of patched hooks.
   Some effects that deal their damage after an animation still show as `Status`. Set `false` to turn
   the hooks off.
+- `run_stats_file`: **default `true`.** In multiplayer runs, after each finished combat the mod saves
+  that fight's stats (floor, encounter, rounds, and per player: damage dealt and taken by source, healing,
+  Block, potions) to `damage-charts/runs/<run id>.json` in the game's user data folder
+  (`~/Library/Application Support/SlayTheSpire2` on macOS, `%APPDATA%\SlayTheSpire2` on Windows), for
+  STS2 Save Sync to upload. Single-player runs are never written. Set `false` to stop writing the file.
 
 Changes to `hotkey`, `show_bars` and `vfx_moments` are picked up live (within about half a second);
 the rest apply the next time the game starts.

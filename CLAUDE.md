@@ -85,6 +85,13 @@ doesn't reliably reach controls on these layers.
   detail comes from `RunAggregate.FightDetail`, which keeps each fight's by-source breakdown plus a
   `FightMeta` (floor, encounter name, Elite/Boss, rounds) captured best-effort at combat start.
 
+**Run stats file** (`RunStatsFile.cs`, pure; I/O in `TryWriteRunStats`): after each resolved multiplayer
+combat, the folded fight from `RunAggregate` is added to `<OS.GetUserDataDir()>/damage-charts/runs/<run_id>.json`
+(format v1, spec in sts2-saves `docs/specs/2026-11-11-damage-stats-format.md`; the server rejects any key
+not in the spec). `run_id` comes from `RunId.cs` (copied from the Run Library mod) over RunManager's private
+`_startTime`, `RunState.Rng.StringSeed` and the players' `NetId`s. The same id keys the recap aggregate
+(`RunAggregate.EnsureRun`), and a fight is written only if the run is unchanged at combat end.
+
 **Shared helpers:**
 - `UiTheme` — palette matching the game's `StsColors`, font/panel-style capture from the live tree,
   resolution `Scale()`, and (gated by `debug_theme` config) diagnostic dumps of the game's UI nodes/styleboxes.
