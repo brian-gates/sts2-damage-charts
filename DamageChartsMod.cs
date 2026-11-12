@@ -532,6 +532,8 @@ public static class DamageChartsMod
     // Powers/Relics/Orbs/Potions type, following async state machines and same-type helpers to
     // CreatureCmd.Damage/Kill/SetCurrentHp/LoseMaxHp). Pickup-time AfterObtained hooks and Fur Coat's
     // SetCurrentHp are left out. Re-run the sweep after game updates; missing names are skipped and logged.
+    // The list is the union of v0.107.1 and v0.111.0 (beta): v0.111 adds Cacophony and Doom's
+    // AfterSideTurnEnd and removes OutbreakPower (Outbreak became a card that triggers Poison directly).
     // Patching only these (instead of every hook override, ~791 methods) avoids the metadata corruption /
     // CLR deadlock described in docs/KNOWN_ISSUES.md.
     private static readonly (string Type, string[] Methods)[] DamageSourceHooks =
@@ -544,11 +546,12 @@ public static class DamageChartsMod
         ("Potions.FoulPotion", new[] { "OnUse" }),
         ("Potions.PotionShapedRock", new[] { "OnUse" }),
         ("Powers.BlackHolePower", new[] { "AfterCardPlayed", "AfterStarsGained", "DealDamageToAllEnemies" }),
+        ("Powers.CacophonyPower", new[] { "AfterCardDrawn" }),
         ("Powers.ConstrictPower", new[] { "AfterSideTurnEnd" }),
         ("Powers.CrimsonMantlePower", new[] { "AfterPlayerTurnStart" }),
         ("Powers.DemisePower", new[] { "AfterSideTurnEnd" }),
         ("Powers.DisintegrationPower", new[] { "AfterSideTurnEndLate" }),
-        ("Powers.DoomPower", new[] { "BeforeSideTurnEnd" }),
+        ("Powers.DoomPower", new[] { "AfterSideTurnEnd", "BeforeSideTurnEnd" }),
         ("Powers.FlameBarrierPower", new[] { "AfterDamageReceived" }),
         ("Powers.GalvanicPower", new[] { "AfterCardPlayed" }),
         ("Powers.GravityPower", new[] { "AfterCardPlayed" }),
