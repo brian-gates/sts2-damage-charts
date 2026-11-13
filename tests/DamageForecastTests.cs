@@ -373,4 +373,32 @@ public class DamageForecastTests
         Assert.Equal(10, r.MaxLoss);  // playing it spends Buffer first
         Assert.False(r.IsSafe);
     }
+
+    private static ForecastResult RunIntangible(int block, int buffer, params ForecastItem[] items) =>
+        DamageForecast.Compute(new ForecastInputs(40, 50, block, 0, false, new List<ForecastItem>(items), 0, -1, buffer, intangible: true));
+
+    [Fact]
+    public void Intangible_CapsEachHitAtOne()
+    {
+        // 3 hits (the game's intent number may be uncapped if read from the raw base) and a 4-HP DoT: 1 each.
+        var r = RunIntangible(0, 0, Attack(9, 3), Dot(4));
+        Assert.Equal(4, r.MinLoss);
+        Assert.Equal(4, r.Incoming);
+    }
+
+    [Fact]
+    public void Intangible_OneBlockPerHit()
+    {
+        // Capped before block: 2 block covers two 1-damage hits, the third lands.
+        var r = RunIntangible(2, 0, Attack(20, 3));
+        Assert.Equal(2, r.Mitigated);
+        Assert.Equal(1, r.MinLoss);
+    }
+
+    [Fact]
+    public void Intangible_WithBuffer_IsSafe()
+    {
+        var r = RunIntangible(0, 1, Attack(30));
+        Assert.True(r.IsSafe);
+    }
 }

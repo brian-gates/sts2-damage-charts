@@ -21,6 +21,7 @@ internal static class ForecastReader
     {
         var items = new List<ForecastItem>();
         int hp = 0, maxHp = 0, block = 0, ostyAbsorb = 0, ostyHp = 0, endTurnBlock = 0, buffer = 0;
+        bool intangible = false;
         bool hasHidden = false;
 
         try
@@ -35,6 +36,7 @@ internal static class ForecastReader
                 ostyAbsorb = ReadOstyAbsorb(mePlayer!, out ostyHp);
                 endTurnBlock = ReadEndTurnBlock(cs, mePlayer!, me, block);
                 buffer = ReadPowerAmount(me, "BufferPower");
+                intangible = ReadPowerAmount(me, "IntangiblePower") > 0;
                 if (Debug && !_dumped) { _dumped = true; DumpDiagnostics(cs, players, localSlot, me); }
                 ReadDots(me, items);
                 long ps = Perf.Start();
@@ -59,7 +61,7 @@ internal static class ForecastReader
         }
         catch { }
 
-        return new ForecastInputs(hp, maxHp, block, ostyAbsorb, hasHidden, items, endTurnBlock, ostyHp, buffer);
+        return new ForecastInputs(hp, maxHp, block, ostyAbsorb, hasHidden, items, endTurnBlock, ostyHp, buffer, intangible);
     }
 
     // A power's stack count on the creature (0 if absent or unreadable).

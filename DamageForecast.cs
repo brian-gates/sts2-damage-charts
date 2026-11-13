@@ -41,10 +41,11 @@ internal readonly struct ForecastInputs
     public readonly int EndTurnBlock; // block gained at the end of your turn (Plating, Orichalcum, ...), before enemies act
     public readonly int OstyHp;       // Osty's HP part of OstyAbsorb (the rest is its block)
     public readonly int Buffer;       // Buffer stacks: each cancels one HP loss (after block and Osty)
+    public readonly bool Intangible;  // every hit on the player deals and costs at most 1
 
     // ostyHp < 0: the HP/block split is unknown, so all of OstyAbsorb is treated as HP.
     public ForecastInputs(int currentHp, int maxHp, int block, int ostyAbsorb, bool hasHidden, IReadOnlyList<ForecastItem> items,
-                          int endTurnBlock = 0, int ostyHp = -1, int buffer = 0)
+                          int endTurnBlock = 0, int ostyHp = -1, int buffer = 0, bool intangible = false)
     {
         CurrentHp = currentHp;
         MaxHp = maxHp;
@@ -56,6 +57,7 @@ internal readonly struct ForecastInputs
         int absorb = Math.Max(0, ostyAbsorb);
         OstyHp = ostyHp < 0 ? absorb : Math.Min(ostyHp, absorb);
         Buffer = Math.Max(0, buffer);
+        Intangible = intangible;
     }
 }
 
@@ -116,13 +118,16 @@ internal static class DamageForecast
         //      then HP), then the player; unblockable ones go straight to HP.
         // Block and Osty are pools, so the order only matters for Buffer (BufferPower.ModifyHpLostAfterOstyLate):
         // each stack cancels the next hit that would still cost HP after block and Osty.
+        // Intangible caps every hit on the player at 1 (IntangiblePower.ModifyDamageCap before block, and
+        // ModifyHpLostAfterOsty for "lose HP"). Enemy intents already show the capped number (the game's
+        // preview runs the cap); self damage and HP loss items don't, so the cap is applied here to every hit.
         // End-of-turn block lands before the enemy turn, so it counts like block already on the player.
         int block = Math.Max(0, inp.Block) + Math.Max(0, inp.EndTurnBlock);
         int osty = Math.Max(0, inp.OstyAbsorb);
         int ostyHp = Math.Min(Math.Max(0, inp.OstyHp), osty);
 
-        var g = Simulate(inp.Items, block, osty, ostyHp, inp.Buffer, includeConditional: false);
-        var w = Simulate(inp.Items, block, osty, ostyHp, inp.Buffer, includeConditional: true);
+        var g = Simulate(inp.Items, block, osty, ostyHp, inp.Buffer, inp.Intangible, includeConditional: false);
+        var w = Simulate(inp.Items, block, osty, ostyHp, inp.Buffer, inp.Intangible, includeConditional: true);
 
         // Spare block in the worst case: the player's own block left after self damage and attacks (spare
         // Osty isn't block).
@@ -135,7 +140,7 @@ internal static class DamageForecast
     private static bool IsSelf(ForecastItem it) => it.Kind == ForecastKind.Dot || it.Kind == ForecastKind.SelfCard;
 
     private static Outcome Simulate(IReadOnlyList<ForecastItem> items, int block, int osty, int ostyHp, int buffer,
-        bool includeConditional)
+        bool intangible, bool includeConditional)
     {
         int ostyBlock = osty - ostyHp, ostyHpLeft = ostyHp;
         int incoming = 0, mitigated = 0, loss = 0;
@@ -150,7 +155,7 @@ internal static class DamageForecast
                 bool attack = !IsSelf(it) && it.Blockable;
                 for (int h = 0; h < it.Hits; h++)
                 {
-                    int dmg = it.DamagePerHit;
+                    int dmg = intangible ? Math.Min(1, it.DamagePerHit) : it.DamagePerHit;
                     if (dmg <= 0) continue;
                     if (!it.Conditional) incoming += dmg;
                     int rest = dmg;
