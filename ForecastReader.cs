@@ -20,7 +20,7 @@ internal static class ForecastReader
     public static ForecastInputs Build(CombatState cs, IReadOnlyList<Player> players, int localSlot)
     {
         var items = new List<ForecastItem>();
-        int hp = 0, maxHp = 0, block = 0, ostyAbsorb = 0, ostyHp = 0, endTurnBlock = 0;
+        int hp = 0, maxHp = 0, block = 0, ostyAbsorb = 0, ostyHp = 0, endTurnBlock = 0, buffer = 0;
         bool hasHidden = false;
 
         try
@@ -34,6 +34,7 @@ internal static class ForecastReader
                 block = GetInt(me, "Block", "CurrentBlock");
                 ostyAbsorb = ReadOstyAbsorb(mePlayer!, out ostyHp);
                 endTurnBlock = ReadEndTurnBlock(cs, mePlayer!, me, block);
+                buffer = ReadPowerAmount(me, "BufferPower");
                 if (Debug && !_dumped) { _dumped = true; DumpDiagnostics(cs, players, localSlot, me); }
                 ReadDots(me, items);
                 long ps = Perf.Start();
@@ -58,7 +59,20 @@ internal static class ForecastReader
         }
         catch { }
 
-        return new ForecastInputs(hp, maxHp, block, ostyAbsorb, hasHidden, items, endTurnBlock, ostyHp);
+        return new ForecastInputs(hp, maxHp, block, ostyAbsorb, hasHidden, items, endTurnBlock, ostyHp, buffer);
+    }
+
+    // A power's stack count on the creature (0 if absent or unreadable).
+    private static int ReadPowerAmount(Creature c, string powerType)
+    {
+        try
+        {
+            if (GetProp(c, "Powers") is IEnumerable powers)
+                foreach (var p in powers)
+                    if (p != null && p.GetType().Name == powerType) return Math.Max(0, GetInt(p, "Amount"));
+        }
+        catch { }
+        return 0;
     }
 
     // Mirrors the game's own check (NHealthBar.IsPoisonLethal, which turns the enemy's HP bar green):

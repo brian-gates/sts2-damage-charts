@@ -40,10 +40,11 @@ internal readonly struct ForecastInputs
     public readonly IReadOnlyList<ForecastItem> Items;
     public readonly int EndTurnBlock; // block gained at the end of your turn (Plating, Orichalcum, ...), before enemies act
     public readonly int OstyHp;       // Osty's HP part of OstyAbsorb (the rest is its block)
+    public readonly int Buffer;       // Buffer stacks: each cancels one HP loss (after block and Osty)
 
     // ostyHp < 0: the HP/block split is unknown, so all of OstyAbsorb is treated as HP.
     public ForecastInputs(int currentHp, int maxHp, int block, int ostyAbsorb, bool hasHidden, IReadOnlyList<ForecastItem> items,
-                          int endTurnBlock = 0, int ostyHp = -1)
+                          int endTurnBlock = 0, int ostyHp = -1, int buffer = 0)
     {
         CurrentHp = currentHp;
         MaxHp = maxHp;
@@ -54,6 +55,7 @@ internal readonly struct ForecastInputs
         EndTurnBlock = endTurnBlock;
         int absorb = Math.Max(0, ostyAbsorb);
         OstyHp = ostyHp < 0 ? absorb : Math.Min(ostyHp, absorb);
+        Buffer = Math.Max(0, buffer);
     }
 }
 
@@ -106,60 +108,66 @@ internal static class DamageForecast
 {
     public static ForecastResult Compute(ForecastInputs inp)
     {
-        // Blockable damage comes from two places that Osty treats differently:
-        //   * enemy attacks (incl. death blows): player block, then Osty (block, then HP), then the player;
-        //   * self damage ("take N damage" from the player's own powers/cards, e.g. Disintegration,
-        //     Infection): hits the player directly, so only the player's block absorbs it, never Osty. It
-        //     resolves first (during the turn or at end of turn, before enemies act), so it spends block first.
-        // Unblockable damage ("lose N HP", poison) bypasses everything.
-        int gAttack = 0, cAttack = 0, gSelf = 0, cSelf = 0, gUnblockable = 0, cUnblockable = 0;
-
-        var items = inp.Items;
-        for (int i = 0; i < items.Count; i++)
-        {
-            var it = items[i];
-            if (it.Kind == ForecastKind.Hidden) continue;
-            int t = it.Total;
-            if (t <= 0) continue;
-            bool self = it.Kind == ForecastKind.Dot || it.Kind == ForecastKind.SelfCard;
-            if (!it.Blockable) { if (it.Conditional) cUnblockable += t; else gUnblockable += t; }
-            else if (self) { if (it.Conditional) cSelf += t; else gSelf += t; }
-            else { if (it.Conditional) cAttack += t; else gAttack += t; }
-        }
-
+        // Hits resolve one at a time, in this order:
+        //   1. self damage (the player's own powers/cards, e.g. Disintegration, Infection, "lose N HP" DoTs):
+        //      during or at the end of the player's turn, before enemies act. "Take N damage" spends the
+        //      player's block only, never Osty; "lose N HP" bypasses block.
+        //   2. enemy items, in intent order: attacks (incl. death blows) hit player block, then Osty (block,
+        //      then HP), then the player; unblockable ones go straight to HP.
+        // Block and Osty are pools, so the order only matters for Buffer (BufferPower.ModifyHpLostAfterOstyLate):
+        // each stack cancels the next hit that would still cost HP after block and Osty.
         // End-of-turn block lands before the enemy turn, so it counts like block already on the player.
-        // The game applies the player's block first and then redirects the remaining HP loss to Osty
-        // (sts2.xml: ModifyHpLostBeforeOsty "runs ... after block is applied ... BEFORE damage is redirected
-        // from Necrobinder to Osty", via DieForYouPower). Osty's block is assumed to soak before its HP.
         int block = Math.Max(0, inp.Block) + Math.Max(0, inp.EndTurnBlock);
         int osty = Math.Max(0, inp.OstyAbsorb);
+        int ostyHp = Math.Min(Math.Max(0, inp.OstyHp), osty);
 
-        // Guaranteed case (min loss).
-        int gSelfBlocked = Math.Min(block, gSelf);
-        int gBlockLeft = block - gSelfBlocked;
-        int gAttackAbsorbed = Math.Min(gBlockLeft + osty, gAttack);
-        int minLoss = (gSelf - gSelfBlocked) + (gAttack - gAttackAbsorbed) + gUnblockable;
-        int mitigated = gSelfBlocked + gAttackAbsorbed;
+        var g = Simulate(inp.Items, block, osty, ostyHp, inp.Buffer, includeConditional: false);
+        var w = Simulate(inp.Items, block, osty, ostyHp, inp.Buffer, includeConditional: true);
 
-        // Worst case (max loss): every conditional source happens too.
-        int allSelf = gSelf + cSelf, allAttack = gAttack + cAttack;
-        int wSelfBlocked = Math.Min(block, allSelf);
-        int wBlockLeft = block - wSelfBlocked;
-        int wAttackAbsorbed = Math.Min(wBlockLeft + osty, allAttack);
-        int maxLoss = (allSelf - wSelfBlocked) + (allAttack - wAttackAbsorbed) + gUnblockable + cUnblockable;
-
-        int incoming = gAttack + gSelf + gUnblockable;
         // Spare block in the worst case: the player's own block left after self damage and attacks (spare
         // Osty isn't block).
-        int overblock = Math.Max(0, wBlockLeft - allAttack);
+        return new ForecastResult(g.Incoming, g.Mitigated, g.Loss, w.Loss,
+            block, osty, inp.CurrentHp, inp.MaxHp, inp.HasHidden, inp.Items, w.BlockLeft, ostyHp, w.OstyHpLoss);
+    }
 
-        // Osty's worst case: attacks past the player's remaining block hit Osty's block, then its HP.
-        int ostyHp = Math.Min(Math.Max(0, inp.OstyHp), osty);
-        int ostyBlock = osty - ostyHp;
-        int pastBlock = Math.Max(0, allAttack - wBlockLeft);
-        int ostyHpLoss = Math.Min(ostyHp, Math.Max(0, pastBlock - ostyBlock));
+    private readonly record struct Outcome(int Incoming, int Mitigated, int Loss, int BlockLeft, int OstyHpLoss);
 
-        return new ForecastResult(incoming, mitigated, minLoss, maxLoss,
-            block, osty, inp.CurrentHp, inp.MaxHp, inp.HasHidden, items, overblock, ostyHp, ostyHpLoss);
+    private static bool IsSelf(ForecastItem it) => it.Kind == ForecastKind.Dot || it.Kind == ForecastKind.SelfCard;
+
+    private static Outcome Simulate(IReadOnlyList<ForecastItem> items, int block, int osty, int ostyHp, int buffer,
+        bool includeConditional)
+    {
+        int ostyBlock = osty - ostyHp, ostyHpLeft = ostyHp;
+        int incoming = 0, mitigated = 0, loss = 0;
+        for (int phase = 0; phase < 2; phase++)
+        {
+            for (int i = 0; i < items.Count; i++)
+            {
+                var it = items[i];
+                if (it.Kind == ForecastKind.Hidden || it.Total <= 0) continue;
+                if (IsSelf(it) != (phase == 0)) continue;
+                if (it.Conditional && !includeConditional) continue;
+                bool attack = !IsSelf(it) && it.Blockable;
+                for (int h = 0; h < it.Hits; h++)
+                {
+                    int dmg = it.DamagePerHit;
+                    if (dmg <= 0) continue;
+                    if (!it.Conditional) incoming += dmg;
+                    int rest = dmg;
+                    if (it.Blockable)
+                    {
+                        int b = Math.Min(block, rest); block -= b; rest -= b; mitigated += b;
+                        if (attack)
+                        {
+                            int ob = Math.Min(ostyBlock, rest); ostyBlock -= ob; rest -= ob; mitigated += ob;
+                            int oh = Math.Min(ostyHpLeft, rest); ostyHpLeft -= oh; rest -= oh; mitigated += oh;
+                        }
+                    }
+                    if (rest > 0 && buffer > 0) { buffer--; rest = 0; }
+                    loss += rest;
+                }
+            }
+        }
+        return new Outcome(incoming, mitigated, loss, block, ostyHp - ostyHpLeft);
     }
 }

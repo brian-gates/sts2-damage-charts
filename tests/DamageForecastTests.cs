@@ -311,4 +311,66 @@ public class DamageForecastTests
         var r = RunOsty(30, 4, 11, SelfTake(6), Attack(5));
         Assert.Equal(2, r.MinLoss);
     }
+
+    private static ForecastResult RunBuffer(int block, int buffer, int ostyAbsorb, params ForecastItem[] items) =>
+        DamageForecast.Compute(new ForecastInputs(40, 50, block, ostyAbsorb, false, new List<ForecastItem>(items), 0, -1, buffer));
+
+    [Fact]
+    public void Buffer_CancelsAnUnblockedHit_IsSafe()
+    {
+        var r = RunBuffer(0, 1, 0, Attack(20));
+        Assert.Equal(0, r.MaxLoss);
+        Assert.True(r.IsSafe);
+    }
+
+    [Fact]
+    public void Buffer_CancelsOneHitPerStack()
+    {
+        // 3x5, Buffer 2: two hits cancelled, the third lands.
+        var r = RunBuffer(0, 2, 0, Attack(5, 3));
+        Assert.Equal(5, r.MinLoss);
+        Assert.False(r.IsSafe);
+    }
+
+    [Fact]
+    public void Buffer_NotSpentOnFullyBlockedHits()
+    {
+        // 6 block covers the first 6-damage hit; Buffer 1 cancels the second.
+        var r = RunBuffer(6, 1, 0, Attack(6, 2));
+        Assert.Equal(0, r.MaxLoss);
+        Assert.True(r.IsSafe);
+    }
+
+    [Fact]
+    public void Buffer_NotSpentOnHitsOstyAbsorbs()
+    {
+        // Osty soaks the first hit; Buffer cancels the second.
+        var r = RunBuffer(0, 1, 10, Attack(8, 2));
+        Assert.Equal(0, r.MaxLoss);
+        Assert.True(r.IsSafe);
+    }
+
+    [Fact]
+    public void Buffer_CoversUnblockableHpLoss()
+    {
+        var r = RunBuffer(0, 1, 0, Dot(4));
+        Assert.True(r.IsSafe);
+    }
+
+    [Fact]
+    public void Buffer_SpentBySelfDamageBeforeEnemyAttacks()
+    {
+        // Self damage resolves first and uses the only Buffer, so the attack lands.
+        var r = RunBuffer(0, 1, 0, Dot(3), Attack(10));
+        Assert.Equal(10, r.MinLoss);
+    }
+
+    [Fact]
+    public void Buffer_ConditionalHitCanUseItUp_WorstCaseOnly()
+    {
+        var r = RunBuffer(0, 1, 0, SelfCard(5), Attack(10));
+        Assert.Equal(0, r.MinLoss);   // without the card, Buffer cancels the attack
+        Assert.Equal(10, r.MaxLoss);  // playing it spends Buffer first
+        Assert.False(r.IsSafe);
+    }
 }
