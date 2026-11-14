@@ -359,7 +359,8 @@ public static class DamageChartsMod
         {
             var method = ResolveDamageMethod();
             if (method == null) { GD.Print("[STS2 Damage] damage hook not resolved; dealt attribution will use active player"); return; }
-            var prefix = new HarmonyMethod(typeof(DamageChartsMod).GetMethod(nameof(DamagePrefix), BindingFlags.NonPublic | BindingFlags.Static));
+            string prefixName = _damageHookTakesTargetData ? nameof(DamageTargetDataPrefix) : nameof(DamagePrefix);
+            var prefix = new HarmonyMethod(typeof(DamageChartsMod).GetMethod(prefixName, BindingFlags.NonPublic | BindingFlags.Static));
             new Harmony("com.sts2damagecharts").Patch(method, prefix: prefix);
             GD.Print("[STS2 Damage] damage dealer hook applied");
         }
@@ -510,18 +511,35 @@ public static class DamageChartsMod
     // a decimal amount, and dealer + cardSource. Pick the widest such overload: v0.107 has
     // (ctx, targets, decimal, ValueProp, dealer, cardSource); v0.111 appends a CardPlay, and a 6-param
     // DamageVar wrapper appears there that must not be mistaken for it.
+    private static bool _damageHookTakesTargetData;
+
+    private static bool IsTargetDataList(Type t) =>
+        t.IsGenericType && t.GetGenericTypeDefinition() == typeof(IEnumerable<>) && t.GetGenericArguments()[0].Name == "DamageTargetData";
+
     private static MethodBase? ResolveDamageMethod()
     {
+        // v0.113 adds the real innermost overload, (ctx, IEnumerable<DamageTargetData> targetData, decimal, ValueProp,
+        // dealer, cardSource, CardPlay, ModifyDamageHookType): the IEnumerable<Creature> one wraps each target in a
+        // DamageTargetData and calls it, but attacks with per-target hit VFX call it directly, so only it sees every hit.
         MethodInfo? best = null;
+        bool bestIsTargetData = false;
         foreach (var m in typeof(MegaCrit.Sts2.Core.Commands.CreatureCmd).GetMethods(BindingFlags.Public | BindingFlags.Static))
         {
             if (m.Name != "Damage") continue;
             var ps = m.GetParameters();
-            if (ps.Length < 2 || ps[1].ParameterType != typeof(IEnumerable<Creature>)) continue;
+            if (ps.Length < 2) continue;
+            bool targetData = IsTargetDataList(ps[1].ParameterType);
+            if (!targetData && ps[1].ParameterType != typeof(IEnumerable<Creature>)) continue;
             if (!ps.Any(p => p.ParameterType == typeof(decimal))) continue;
             if (!ps.Any(p => p.Name == "dealer") || !ps.Any(p => p.Name == "cardSource")) continue;
-            if (best == null || ps.Length > best.GetParameters().Length) best = m;
+            if (best == null || (targetData && !bestIsTargetData)
+                || (targetData == bestIsTargetData && ps.Length > best.GetParameters().Length))
+            {
+                best = m;
+                bestIsTargetData = targetData;
+            }
         }
+        _damageHookTakesTargetData = bestIsTargetData;
         if (best != null)
             GD.Print($"[STS2 Damage] damage hook: CreatureCmd.Damage({string.Join(", ", best.GetParameters().Select(p => p.ParameterType.Name))})");
         return best;
@@ -671,6 +689,27 @@ public static class DamageChartsMod
         }
         catch { }
     }
+
+    // v0.113's innermost overload. targetData is IEnumerable<DamageTargetData> (a record struct with a public
+    // `target` field); typed as object so this mod still loads on versions without that type.
+    private static void DamageTargetDataPrefix(object targetData, Creature dealer, CardModel cardSource)
+    {
+        try
+        {
+            if (targetData is not System.Collections.IEnumerable items) return;
+            var targets = new List<Creature>();
+            foreach (var d in items)
+            {
+                if (d == null) continue;
+                _targetField ??= d.GetType().GetField("target");
+                if (_targetField?.GetValue(d) is Creature c) targets.Add(c);
+            }
+            DamagePrefix(targets, dealer, cardSource);
+        }
+        catch { /* never disrupt damage resolution */ }
+    }
+
+    private static FieldInfo? _targetField;
 
     private static void DamagePrefix(IEnumerable<Creature> targets, Creature dealer, CardModel cardSource)
     {
