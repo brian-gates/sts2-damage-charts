@@ -236,16 +236,28 @@ public class ShareProgressTests
     [Fact]
     public void AnEntryFromBeforeThePressIsIgnored()
     {
-        var stale = new ShareEntry(Run, ShareState.Shared, null, Pressed - 1);   // the previous press of this run
+        var stale = new ShareEntry(Run, ShareState.Shared, null, Pressed - 3);   // the previous press of this run
         Assert.Equal(ShareAction.SharedNote, F(stale).Message);
         Assert.False(F(stale).Done);
     }
+
+    [Theory]
+    [InlineData(-2)]
+    [InlineData(-1)]
+    [InlineData(0)]
+    public void AnEntryStampedJustBeforeThePressSecondCounts(long offset) =>
+        // The app floors its stamp, and ours is taken separately: up to 2 s early is still this press.
+        Assert.Equal(ShareAction.DoneText, F(new ShareEntry(Run, ShareState.Shared, null, Pressed + offset)).Message);
 
     [Fact]
     public void AnOlderAppIsToldAfterTenSeconds()
     {
         Assert.Equal(ShareAction.SharedNote, F(null, reported: false, elapsed: 9.9).Message);
-        Assert.Equal(new ShareAction.Progress("Link copied. Open Spire Sync to confirm.", true, true), F(null, reported: false, elapsed: 10));
+        // Not the end: polling goes on, and a late answer from the app replaces the note.
+        Assert.Equal(new ShareAction.Progress("Link copied. Open Spire Sync to confirm.", false, false), F(null, reported: false, elapsed: 10));
+        Assert.Equal(ShareAction.DoneText, F(new ShareEntry(Run, ShareState.Shared, null, Pressed), reported: false, elapsed: 40).Message);
+        // An app that never reports keeps that note at the deadline, and polling stops.
+        Assert.Equal(new ShareAction.Progress(ShareAction.OldAppText, true, false), F(null, reported: false, elapsed: 360));
         // An app that does report, but not for this run yet, is still waited on.
         Assert.False(F(null, reported: true, elapsed: 30).Done);
     }
@@ -272,5 +284,37 @@ public class ShareProgressTests
             Assert.Equal(ShareState.Waiting, s.Share?.State);
         }
         finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void FailureReasonIsCleanedAndCapped()
+    {
+        var raw = "Upload\tfailed:\r\n  server\u0007 said\u202E no " + new string('x', 300);
+        var s = AppStatus.Read(WithShare(Entry("failed", raw.Replace("\\", "\\\\").Replace("\t", "\\t").Replace("\r", "\\r").Replace("\n", "\\n").Replace("\u0007", "\\u0007").Replace("\u202E", "\\u202E"))), Now);
+        var reason = s.Share?.Reason;
+        Assert.NotNull(reason);
+        Assert.StartsWith("Upload failed: server said no xxx", reason);
+        Assert.Equal(AppStatus.MaxReasonChars, reason!.Length);
+        Assert.EndsWith("\u2026", reason);
+        Assert.DoesNotContain(reason, char.IsControl);
+        Assert.DoesNotContain('\u202E', reason);
+    }
+
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData("", null)]
+    [InlineData(" \t\n ", null)]
+    [InlineData("  Steam   is\noffline  ", "Steam is offline")]
+    [InlineData("[b]bold[/b]", "[b]bold[/b]")]   // shown as plain text (a Label, not BBCode)
+    public void CleanReason(string? raw, string? expected) => Assert.Equal(expected, AppStatus.CleanReason(raw));
+
+    [Fact]
+    public void CleanReasonNeverSplitsASurrogatePair()
+    {
+        var raw = new string('a', AppStatus.MaxReasonChars - 2) + "\U0001F600\U0001F600";
+        var r = AppStatus.CleanReason(raw)!;
+        Assert.True(r.Length <= AppStatus.MaxReasonChars);
+        Assert.False(char.IsHighSurrogate(r[^2]));
+        Assert.EndsWith("\u2026", r);
     }
 }

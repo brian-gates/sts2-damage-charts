@@ -72,7 +72,8 @@ internal sealed class ShareButton
     // Following a share after a press (ShareAction.Follow): until Done, re-read the status file every PollMs.
     private bool _following;
     private long _pressedAtUnix;     // the press, unix seconds (floored): older share entries are ignored
-    private ulong _pressedAtMs;
+    private ulong _pressedAtMs;      // moved forward by time spent hidden, so the clock pauses while hidden
+    private ulong _hiddenAtMs;       // when the button was hidden while following (0 = shown)
     private ulong _nextPollMs;
     private bool _shareReported;     // some read since the press saw a `share` key (an app that reports)
     private ulong _shownAtMs;        // when the button first appeared on this screen (0 = not yet)
@@ -146,6 +147,7 @@ internal sealed class ShareButton
         _runId = runId;
         _message = null;
         _following = false;
+        _hiddenAtMs = 0;
         _armed = Target.None;
         _downLast = true;   // a button still held from the previous screen isn't a press here
         _shownAtMs = 0;
@@ -157,6 +159,7 @@ internal sealed class ShareButton
     public void Hide()
     {
         if (IsValid() && _layer.Visible) _layer.Visible = false;
+        if (_following && _hiddenAtMs == 0) _hiddenAtMs = Time.GetTicksMsec();
         _armed = Target.None;
         _downLast = true;   // a press that started while hidden isn't a click once shown
     }
@@ -170,6 +173,14 @@ internal sealed class ShareButton
             if (!_layer.Visible) _layer.Visible = true;
             ulong now = Time.GetTicksMsec();
             if (_shownAtMs == 0) _shownAtMs = now;
+            if (_hiddenAtMs != 0)
+            {
+                // Back from hiding (a menu or run history was on top): the follow clock didn't run meanwhile.
+                ulong away = now > _hiddenAtMs ? now - _hiddenAtMs : 0;
+                _pressedAtMs += away;
+                if (_noteUntilMs != 0) _noteUntilMs += away;
+                _hiddenAtMs = 0;
+            }
             if (_noteUntilMs != 0 && now >= _noteUntilMs) { _message = null; _noteUntilMs = 0; }
             if (_following && now >= _nextPollMs) Poll(now);
             Layout(now);
@@ -230,6 +241,9 @@ internal sealed class ShareButton
             Show(action.Message, action.ShowGetApp, transient: false);
             return;
         }
+        // The press time is taken before handing over the run, so the app's stamp can't predate it.
+        long pressedAtUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        ulong pressedAtMs = Time.GetTicksMsec();
         // Copy only once the app has been handed the run: a link to a run that isn't shared would not open.
         var err = OS.ShellOpen(action.AppLink!);
         if (err != Error.Ok)
@@ -243,9 +257,10 @@ internal sealed class ShareButton
         Show(action.Message, getApp: false, transient: false);
         _following = true;
         _shareReported = false;
-        _pressedAtUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        _pressedAtMs = Time.GetTicksMsec();
-        _nextPollMs = _pressedAtMs + PollMs;
+        _pressedAtUnix = pressedAtUnix;
+        _pressedAtMs = pressedAtMs;
+        _hiddenAtMs = 0;
+        _nextPollMs = Time.GetTicksMsec() + PollMs;
     }
 
     // Once a second while following: re-read the status file and update the note. Never throws; a failure stops

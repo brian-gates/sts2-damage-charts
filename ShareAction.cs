@@ -38,13 +38,17 @@ internal sealed record ShareAction(ShareKind Kind, string Message, string? AppLi
 
     // What the note says `elapsed` seconds after pressing Share for `runId` at `pressedAt` (unix seconds, floored).
     // `entry` is the file's latest share entry (null if none or malformed); `reported` is whether any read since
-    // the press saw a `share` key. Entries for another run or from before the press are ignored. Done = stop
-    // polling; AutoHide = the note goes away by itself (else it stays until closed).
+    // the press saw a `share` key. Entries for another run or from before the press (less PressSlackSeconds, as
+    // the app's stamp and ours are floored separately) are ignored. With no `share` key after OldAppSeconds the
+    // note says so but polling goes on: a slow app's later answer replaces it. Done = stop polling; AutoHide =
+    // the note goes away by itself (else it stays until closed).
     public readonly record struct Progress(string Message, bool Done, bool AutoHide);
+
+    public const long PressSlackSeconds = 2;
 
     public static Progress Follow(ShareEntry? entry, bool reported, string runId, long pressedAt, double elapsed)
     {
-        bool ours = entry != null && string.Equals(entry.RunId, runId, StringComparison.OrdinalIgnoreCase) && entry.At >= pressedAt;
+        bool ours = entry != null && string.Equals(entry.RunId, runId, StringComparison.OrdinalIgnoreCase) && entry.At >= pressedAt - PressSlackSeconds;
         if (ours)
         {
             switch (entry!.State)
@@ -54,8 +58,9 @@ internal sealed record ShareAction(ShareKind Kind, string Message, string? AppLi
                 default: if (elapsed < GiveUpSeconds) return new Progress(WaitingText, false, false); break;
             }
         }
-        if (elapsed >= GiveUpSeconds) return new Progress(TimedOutText, true, false);
-        if (!reported && elapsed >= OldAppSeconds) return new Progress(OldAppText, true, true);
+        // An app that never reported keeps the older-app note at the deadline; one that did gets the timeout.
+        if (elapsed >= GiveUpSeconds) return new Progress(reported ? TimedOutText : OldAppText, true, false);
+        if (!reported && elapsed >= OldAppSeconds) return new Progress(OldAppText, false, false);
         return new Progress(SharedNote, false, false);
     }
 

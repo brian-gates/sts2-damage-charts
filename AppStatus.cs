@@ -85,8 +85,32 @@ internal sealed partial record AppStatus(AppState State, string? Server, string?
         if (state == null) return null;
         if (!el.TryGetProperty("at", out var at) || at.ValueKind != JsonValueKind.Number || !at.TryGetInt64(out long atS))
             return null;
-        string? reason = Str(el, "reason")?.Trim();
-        return new ShareEntry(runId, state.Value, string.IsNullOrEmpty(reason) ? null : reason, atS);
+        return new ShareEntry(runId, state.Value, CleanReason(Str(el, "reason")), atS);
+    }
+
+    public const int MaxReasonChars = 120;
+
+    // The failure reason is shown as-is in a plain Label (no BBCode), but it comes from another process: drop
+    // control and format characters (newlines, bidi overrides), collapse whitespace, cap at MaxReasonChars
+    // (with an ellipsis, never splitting a surrogate pair). Empty = null.
+    public static string? CleanReason(string? raw)
+    {
+        if (raw == null) return null;
+        var sb = new System.Text.StringBuilder(Math.Min(raw.Length, MaxReasonChars + 1));
+        bool space = false;
+        foreach (char c in raw)
+        {
+            if (char.IsWhiteSpace(c) || char.IsControl(c)) { space = sb.Length > 0; continue; }
+            if (char.GetUnicodeCategory(c) == System.Globalization.UnicodeCategory.Format) continue;
+            if (space) { sb.Append(' '); space = false; }
+            sb.Append(c);
+            if (sb.Length > MaxReasonChars) break;
+        }
+        if (sb.Length == 0) return null;
+        if (sb.Length <= MaxReasonChars) return sb.ToString();
+        int cut = MaxReasonChars - 1;
+        if (char.IsHighSurrogate(sb[cut - 1])) cut--;
+        return sb.ToString(0, cut).TrimEnd() + "\u2026";
     }
 
     private static string? Str(JsonElement root, string name) =>
