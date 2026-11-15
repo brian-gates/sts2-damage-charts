@@ -11,19 +11,19 @@
 
   <!-- Compile the pure sources directly (they have no Godot/game refs), so tests need no game DLLs. -->
   <ItemGroup>
-    <Compile Include="../DamageForecast.cs" Link="DamageForecast.cs" />
-    <Compile Include="../DamageTracker.cs" Link="DamageTracker.cs" />
-    <Compile Include="../RunAggregate.cs" Link="RunAggregate.cs" />
-    <Compile Include="../GroupDetail.cs" Link="GroupDetail.cs" />
-    <Compile Include="../SelfHarmText.cs" Link="SelfHarmText.cs" />
-    <Compile Include="../OverlayTransform.cs" Link="OverlayTransform.cs" />
-    <Compile Include="../IntentRules.cs" Link="IntentRules.cs" />
-    <Compile Include="../RunId.cs" Link="RunId.cs" />
-    <Compile Include="../RunStatsFile.cs" Link="RunStatsFile.cs" />
-    <Compile Include="../AppStatus.cs" Link="AppStatus.cs" />
-    <Compile Include="../ShareAction.cs" Link="ShareAction.cs" />
-    <Compile Include="../ShareLayout.cs" Link="ShareLayout.cs" />
-    <Compile Include="../CardPortrait.cs" Link="CardPortrait.cs" />
+    <Compile Include="../Forecast/DamageForecast.cs" Link="DamageForecast.cs" />
+    <Compile Include="../Tracking/DamageTracker.cs" Link="DamageTracker.cs" />
+    <Compile Include="../Tracking/RunAggregate.cs" Link="RunAggregate.cs" />
+    <Compile Include="../Tracking/GroupDetail.cs" Link="GroupDetail.cs" />
+    <Compile Include="../Forecast/SelfHarmText.cs" Link="SelfHarmText.cs" />
+    <Compile Include="../Overlay/OverlayTransform.cs" Link="OverlayTransform.cs" />
+    <Compile Include="../Forecast/IntentRules.cs" Link="IntentRules.cs" />
+    <Compile Include="../Stats/RunId.cs" Link="RunId.cs" />
+    <Compile Include="../Stats/RunStatsFile.cs" Link="RunStatsFile.cs" />
+    <Compile Include="../Share/AppStatus.cs" Link="AppStatus.cs" />
+    <Compile Include="../Share/ShareAction.cs" Link="ShareAction.cs" />
+    <Compile Include="../Share/ShareLayout.cs" Link="ShareLayout.cs" />
+    <Compile Include="../Ui/CardPortrait.cs" Link="CardPortrait.cs" />
   </ItemGroup>
 
   <ItemGroup>

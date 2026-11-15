@@ -15,6 +15,14 @@ using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Platform;
 using MegaCrit.Sts2.Core.Runs;
+using STS2_DamageCharts.Charts;
+using STS2_DamageCharts.Common;
+using STS2_DamageCharts.Forecast;
+using STS2_DamageCharts.Overlay;
+using STS2_DamageCharts.Share;
+using STS2_DamageCharts.Stats;
+using STS2_DamageCharts.Tracking;
+using STS2_DamageCharts.Ui;
 
 namespace STS2_DamageCharts;
 

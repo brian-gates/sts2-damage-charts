@@ -8,7 +8,7 @@ A standalone damage analytics and incoming-damage forecast mod for **Slay the Sp
 game). In combat it shows a forecast of HP about to be lost (docked beside the player) and a hotkey-toggled
 by-source breakdown; after combat, a summary beside the rewards list; out of combat, a run recap. A small
 always-on dealt/taken-per-round chart sits above the forecast (`show_bars`, `bars_style`). With `native_visuals` on (default) every panel uses
-the game's own fonts, icons and frames via `GameAssets.cs`. It reads game state directly and depends on no
+the game's own fonts, icons and frames via `Ui/GameAssets.cs`. It reads game state directly and depends on no
 other mod.
 
 ## Build & install
@@ -38,6 +38,9 @@ the DLL in place while the game runs (it is memory-mapped); stage it and `mv` it
 lines go to the Godot console/log; the mod self-disables after 5 consecutive per-frame exceptions.
 
 ## Architecture
+
+Source layout: `DamageChartsMod.cs` at the root; feature folders `Tracking/`, `Charts/`, `Forecast/`, `Overlay/`,
+`Stats/`, `Share/`, `Ui/`, `Common/`. Namespaces follow folders (`STS2_DamageCharts.<Folder>`); `tests/` mirrors them.
 
 Entry point is `DamageChartsMod.Initialize()` (marked `[ModInitializer("Initialize")]`). It connects a
 `SceneTree.ProcessFrame` callback (`Tick`), applies Harmony patches, and owns all global state. Everything
@@ -81,18 +84,18 @@ doesn't reliably reach controls on these layers.
   the rewards screen. Sized dynamically from the viewport per mode.
 - `DamageTooltipView` — hover popup near the cursor for a chart group: a round of the compact chart or of
   the full view's per-round chart, or a fight of the recap's per-fight chart. It draws a `GroupDetail`
-  (`GroupDetail.cs`, pure: the model, per-round/per-fight builders and the group hit-test). Per-fight
+  (`Tracking/GroupDetail.cs`, pure: the model, per-round/per-fight builders and the group hit-test). Per-fight
   detail comes from `RunAggregate.FightDetail`, which keeps each fight's by-source breakdown plus a
   `FightMeta` (floor, encounter name, Elite/Boss, rounds) captured best-effort at combat start.
 
-**Run stats file** (`RunStatsFile.cs`, pure; I/O in `TryWriteRunStats`): after each resolved combat
+**Run stats file** (`Stats/RunStatsFile.cs`, pure; I/O in `TryWriteRunStats`): after each resolved combat
 (single-player and co-op), the folded fight from `RunAggregate` is added to `<OS.GetUserDataDir()>/damage-charts/runs/<run_id>.json`
 (format v1, spec in sts2-saves `docs/specs/2026-11-11-damage-stats-format.md`; the server rejects any key
-not in the spec). `run_id` comes from `RunId.cs` (copied from the Run Library mod) over RunManager's private
+not in the spec). `run_id` comes from `Stats/RunId.cs` (copied from the Run Library mod) over RunManager's private
 `_startTime`, `RunState.Rng.StringSeed` and the players' `NetId`s. The same id keys the recap aggregate
 (`RunAggregate.EnsureRun`), and a fight is written only if the run is unchanged at combat end.
 
-**Share button** (`ShareButton.cs`; pure logic in `ShareAction.cs` + `AppStatus.cs`): a postfix on
+**Share button** (`Share/ShareButton.cs`; pure logic in `Share/ShareAction.cs` + `Share/AppStatus.cs`): a postfix on
 `NGameOverScreen._Ready` (`TryApplyGameOverHook`) records the screen and picks its run id with `ShareRun.Pick`:
 only when the screen's RunState is the live run (else no button; never the wrong run). `UpdateShare` in `Tick`
 creates the button lazily and shows it while that screen is on top; a prefix on `NClickableControl.HandleMouse*`
