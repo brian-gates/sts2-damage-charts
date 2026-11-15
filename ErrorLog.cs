@@ -9,6 +9,13 @@ namespace STS2_DamageCharts;
 internal static class ErrorLog
 {
     private static readonly Dictionary<(string What, string Message), int> _seen = new();
+    private static readonly HashSet<string> _noted = new();
+
+    // A silent skip worth knowing about (a game change, a mismatch): printed the first time only.
+    public static void NoteOnce(string message)
+    {
+        if (_noted.Add(message)) Godot.GD.Print($"[STS2 Damage] {message}");
+    }
 
     public static void Once(string what, Exception ex)
     {

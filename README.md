@@ -23,6 +23,11 @@ A standalone damage analytics and incoming-damage forecast mod for [Slay the Spi
   of dealt / taken / healed / block, by source and per fight. Hover a fight in the recap's chart for its
   floor, encounter (Elite/Boss tagged), rounds, and each player's top damage dealt and taken sources,
   healing and block.
+- **Share** (victory and death screens): a Share button that makes the run public on
+  [Spire Sync](https://sts2.thegates.house/) and copies its link. Works with Spire Sync 0.3.3 or later,
+  running and signed in; otherwise the button says what to do (open Spire Sync, or sign in to it). The
+  mod itself makes no network calls: it reads the status file Spire Sync keeps in the game's user data
+  folder and hands the run to the app.
 - **Game-native look**: uses the game's own fonts, icons, hover-tip frames, scrollbars and shaders
   (loaded from your install, never bundled). Optional **big-moment effects** reuse the game's own
   damage-number and flash VFX.
@@ -160,6 +165,11 @@ After the first publish, subscribe in-client and verify the overlay loads in a r
   (Poison, Doom, Thorns, …) instead of the generic `Status`/`Other`, via a curated set of patched hooks.
   Some effects that deal their damage after an animation still show as `Status`. Set `false` to turn
   the hooks off.
+- `run_stats_file`: **default `true`.** After each finished combat (single-player and multiplayer) the
+  mod saves that fight's stats (floor, encounter, rounds, and per player: damage dealt and taken by source, healing,
+  Block, potions) to `damage-charts/runs/<run id>.json` in the game's user data folder
+  (`~/Library/Application Support/SlayTheSpire2` on macOS, `%APPDATA%\SlayTheSpire2` on Windows), for
+  Spire Sync to upload. Set `false` to stop writing the file.
 
 Changes to `hotkey`, `show_bars` and `vfx_moments` are picked up live (within about half a second);
 the rest apply the next time the game starts.
