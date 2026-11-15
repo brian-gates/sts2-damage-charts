@@ -63,6 +63,10 @@ internal sealed class ShareButton
     private bool _rowValid;
     private Vector2 _rowVp;
     private float _rowScale;
+    private Transform2D _rowXf;      // the screen transform the row was computed with (shake excluded)
+    private readonly bool[] _restOk = new bool[AnchorNames.Length];   // a real _showPosition and size were read
+    private RowFreeze _freeze;       // until frozen the rests are re-read and the button stays hidden
+    private ulong _boundAtMs;
     private int _spot = ShareLayout.NoSpot;   // which side of the row the button is on (kept while it fits)
 
     // The game buttons' private `_showPosition` field, looked up once per button type (null = none).
@@ -155,7 +159,10 @@ internal sealed class ShareButton
         _armed = Target.None;
         _downLast = true;   // a button still held from the previous screen isn't a press here
         _shownAtMs = 0;
+        _row = default;
         _rowValid = false;
+        _freeze = default;
+        _boundAtMs = Time.GetTicksMsec();
         _spot = ShareLayout.NoSpot;
         Bind(screen);
     }
@@ -211,7 +218,7 @@ internal sealed class ShareButton
     public bool Covers(Vector2 p)
     {
         if (!IsValid() || !_layer.Visible) return false;
-        return _btn.GetGlobalRect().HasPoint(p) || (_msg.Visible && _msg.GetGlobalRect().HasPoint(p));
+        return (_btn.Visible && _btn.GetGlobalRect().HasPoint(p)) || (_msg.Visible && _msg.GetGlobalRect().HasPoint(p));
     }
 
     private Target Hit(Vector2 p)
@@ -221,7 +228,7 @@ internal sealed class ShareButton
             if (_get.Visible && _get.GetGlobalRect().HasPoint(p)) return Target.GetApp;
             if (_close.Visible && _close.GetGlobalRect().Grow(6f).HasPoint(p)) return Target.Close;
         }
-        return _btn.GetGlobalRect().HasPoint(p) ? Target.Share : Target.None;
+        return _btn.Visible && _btn.GetGlobalRect().HasPoint(p) ? Target.Share : Target.None;
     }
 
     private void Press(Target t)
@@ -297,15 +304,15 @@ internal sealed class ShareButton
 
     // ----- The screen's controls -----
 
-    // Once per screen (allocates: node paths). Each button's resting rect is the game's own `_showPosition`
-    // with the size it has then (its buttons slide in and out and grow on hover, so the live rect moves);
-    // without that field (or while it is still zero), its position now. The buttons' _Ready, which sets it,
-    // runs before the screen's, so it is in place by the time the screen is bound; it is not re-read later, so
-    // the row (and the Share button) never moves when a button shows or hides.
+    // Once per screen (allocates: node paths): finds the row buttons and the content to stay off, and reads
+    // each button's resting rect (ReadRest). Until the row is frozen (RowFreeze), Layout re-reads the buttons
+    // whose rect isn't real yet; after that nothing is re-read, so the row (and the Share button) never moves
+    // when a button shows or hides.
     private void Bind(Node screen)
     {
         _screen = null; _shake = null; _summary = null; _board = null;
         Array.Clear(_anchors);
+        Array.Clear(_restOk);
         try
         {
             if (screen is not Control sc) return;
@@ -329,18 +336,36 @@ internal sealed class ShareButton
         catch (Exception ex) { ErrorLog.Once("share bind", ex); }
     }
 
-    // A button's resting position and size (allocates: one boxed read; at most twice per button per screen).
+    // A button's resting rect: the game's own `_showPosition` (its buttons slide in and out and grow on hover,
+    // so the live rect moves) with its size. Without that field, or while it is zero, its position now, and the
+    // rect isn't counted as real (`_restOk`). Allocates one boxed read; only until the row is frozen.
     private void ReadRest(int i, Control c)
     {
         _rest[i] = c.Position;
         _restSize[i] = c.Size;
+        bool shown = false;
         try
         {
             var t = c.GetType();
             if (!_showField.TryGetValue(t, out var f)) _showField[t] = f = AccessTools.Field(t, "_showPosition");
-            if (f != null && f.GetValue(c) is Vector2 v && v != Vector2.Zero) _rest[i] = v;
+            if (f != null && f.GetValue(c) is Vector2 v && v != Vector2.Zero) { _rest[i] = v; shown = true; }
         }
         catch { }
+        _restOk[i] = shown && _restSize[i].X > 0f && _restSize[i].Y > 0f;
+    }
+
+    // Before the freeze: re-read the buttons without a real rect yet. True when every found button has one.
+    private bool RefreshRests()
+    {
+        bool all = true;
+        for (int i = 0; i < _anchors.Length; i++)
+        {
+            var c = _anchors[i];
+            if (c == null || !GodotObject.IsInstanceValid(c) || _restOk[i]) continue;
+            ReadRest(i, c);
+            all &= _restOk[i];
+        }
+        return all;
     }
 
     // The game's button row in viewport pixels: the union of every row button's resting rect, visible or not
@@ -392,12 +417,32 @@ internal sealed class ShareButton
         if (sc != _styledScale) { StyleButton(sc); _styledScale = sc; }
 
         Box summary = default, board = default;
-        if (ScreenTransform(out var screen))
+        bool haveScreen = ScreenTransform(out var screen);
+        if (haveScreen && !_freeze.Frozen)
         {
-            if (!_rowValid || vp != _rowVp || sc != _rowScale)
+            bool complete = RefreshRests();
+            Vector2 s = screen.Scale;
+            _freeze.Step(complete, screen.Origin.X, screen.Origin.Y, s.X, s.Y, now - _boundAtMs);
+        }
+        else if (!haveScreen && !_freeze.Frozen && now - _boundAtMs >= RowFreeze.MaxWaitMs)
+            _freeze.Step(true, 0f, 0f, 1f, 1f, RowFreeze.MaxWaitMs);   // no screen to read: the scene default
+        if (!_freeze.Frozen)
+        {
+            // Not placed yet: hidden, and the first-appearance glow waits for it.
+            if (_btn.Visible) _btn.Visible = false;
+            if (_glow.Visible) _glow.Visible = false;
+            _shownAtMs = 0;
+            return;
+        }
+        if (!_btn.Visible) _btn.Visible = true;
+        if (haveScreen)
+        {
+            // Recomputed only on a new screen, a resize, a UI-scale change or a real move of the screen (its
+            // transform excludes the shake), never on a button showing or hiding.
+            if (!_rowValid || vp != _rowVp || sc != _rowScale || screen != _rowXf)
             {
                 _row = RestRow(screen);
-                _rowValid = true; _rowVp = vp; _rowScale = sc;
+                _rowValid = true; _rowVp = vp; _rowScale = sc; _rowXf = screen;
             }
             summary = Content(_summary, screen);
             board = Content(_board, screen);

@@ -166,3 +166,30 @@ internal static class ShareLayout
         return fade * (0.35f + 0.65f * wave);
     }
 }
+
+// When the Share button's row may be fixed for the rest of a game-over screen. Until then the button stays
+// hidden, so it never visibly jumps after it appears. Fixed once every row button has a real resting rect
+// (non-zero position and size) and the screen's transform (shake excluded) has held still for StableFrames
+// frames, or after MaxWaitMs whatever the state (then with the best rects known). Pure; one per screen.
+internal struct RowFreeze
+{
+    public const int StableFrames = 3;
+    public const double MaxWaitMs = 2000;
+
+    public bool Frozen { get; private set; }
+    private int _same;              // consecutive frames with the same transform as the one before
+    private bool _seen;
+    private float _ox, _oy, _sx, _sy;
+
+    public bool Step(bool restsComplete, float originX, float originY, float scaleX, float scaleY, double sinceBindMs)
+    {
+        if (Frozen) return true;
+        bool same = _seen && originX == _ox && originY == _oy && scaleX == _sx && scaleY == _sy;
+        _same = same ? _same + 1 : 1;
+        _seen = true;
+        _ox = originX; _oy = originY; _sx = scaleX; _sy = scaleY;
+        if ((restsComplete && _same >= StableFrames) || !(sinceBindMs < MaxWaitMs)) Frozen = true;
+        return Frozen;
+    }
+}
+

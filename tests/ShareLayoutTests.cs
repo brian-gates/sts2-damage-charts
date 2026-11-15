@@ -256,4 +256,37 @@ public class ShareLayoutTests
         Assert.Equal(page1, daily);
         Assert.False(page1.Intersects(MainMenu) || page1.Intersects(Continue) || page1.Intersects(Rests[3]));
     }
+
+    [Fact]
+    public void RowFreezesOnceRectsAreRealAndTheScreenHoldsStill()
+    {
+        var f = new RowFreeze();
+        Assert.False(f.Step(true, 0, 0, 1, 1, 0));
+        Assert.False(f.Step(true, 0, 0, 1, 1, 16));
+        Assert.True(f.Step(true, 0, 0, 1, 1, 33));     // three frames the same
+        Assert.True(f.Frozen);
+        // Frozen for the rest of the screen: later changes (a page change, a button hiding) don't unfreeze it.
+        Assert.True(f.Step(false, 50, 50, 2, 2, 5000));
+    }
+
+    [Fact]
+    public void RowWaitsWhileTheScreenAnimatesIn()
+    {
+        var f = new RowFreeze();
+        for (int i = 0; i < 20; i++)   // an open tween: scale grows each frame
+            Assert.False(f.Step(true, 0, 0, 0.8f + i * 0.01f, 0.8f + i * 0.01f, i * 16));
+        Assert.False(f.Step(true, 0, 0, 1, 1, 400));
+        Assert.False(f.Step(true, 0, 0, 1, 1, 416));
+        Assert.True(f.Step(true, 0, 0, 1, 1, 432));
+    }
+
+    [Fact]
+    public void RowWaitsForRealRestRectsThenGivesUpAfterTwoSeconds()
+    {
+        var f = new RowFreeze();
+        for (double t = 0; t < RowFreeze.MaxWaitMs; t += 16)
+            Assert.False(f.Step(false, 0, 0, 1, 1, t));   // a button still without a resting rect
+        Assert.True(f.Step(false, 0, 0, 1, 1, RowFreeze.MaxWaitMs));
+        Assert.True(new RowFreeze().Step(false, 0, 0, 1, 1, double.NaN));   // a bad clock never waits forever
+    }
 }
