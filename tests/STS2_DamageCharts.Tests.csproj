@@ -20,6 +20,7 @@
     <Compile Include="../IntentRules.cs" Link="IntentRules.cs" />
     <Compile Include="../RunId.cs" Link="RunId.cs" />
     <Compile Include="../RunStatsFile.cs" Link="RunStatsFile.cs" />
+    <Compile Include="../AppStatus.cs" Link="AppStatus.cs" />
   </ItemGroup>
 
   <ItemGroup>
