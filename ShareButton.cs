@@ -48,10 +48,17 @@ internal sealed class ShareButton
     // content the button must stay off.
     private Control? _screen;
     private readonly Control?[] _anchors = new Control?[AnchorNames.Length];
-    private readonly Vector2[] _rest = new Vector2[AnchorNames.Length];
+    private readonly Vector2[] _rest = new Vector2[AnchorNames.Length];   // resting position
+    private readonly Vector2[] _restSize = new Vector2[AnchorNames.Length]; // size at rest (hover grows it)
+    private readonly bool[] _settled = new bool[AnchorNames.Length];        // re-read once it was first visible
+    private Control? _shake;         // ScreenshakeContainer: its offset is the screen shake
     private Control? _summary;
     private Control? _board;
     private Box _lastRow;            // the row as last seen, while none of its buttons is visible
+    private int _spot = ShareLayout.NoSpot;   // which side of the row the button is on (kept while it fits)
+
+    // The game buttons' private `_showPosition` field, looked up once per button type (null = none).
+    private static readonly System.Collections.Generic.Dictionary<Type, FieldInfo?> _showField = new();
 
     private string _runId = "";
     private string? _message;        // the panel's text; null = no panel
@@ -127,6 +134,7 @@ internal sealed class ShareButton
         _downLast = true;   // a button still held from the previous screen isn't a press here
         _shownAtMs = 0;
         _lastRow = default;
+        _spot = ShareLayout.NoSpot;
         Bind(screen);
     }
 
@@ -226,13 +234,15 @@ internal sealed class ShareButton
 
     // ----- The screen's controls -----
 
-    // Once per screen (allocates: node paths, one reflective read per button). Each button's resting position
-    // is the game's own `_showPosition` (its buttons slide in and out and grow on hover, so the live rect
-    // moves); without it, the position the button has now.
+    // Once per screen (allocates: node paths). Each button's resting rect is the game's own `_showPosition`
+    // with the size it has then (its buttons slide in and out and grow on hover, so the live rect moves);
+    // without that field, its position now. Read here and again once the button is first visible, in case the
+    // game only sets it when the button is shown.
     private void Bind(Node screen)
     {
-        _screen = null; _summary = null; _board = null;
+        _screen = null; _shake = null; _summary = null; _board = null;
         Array.Clear(_anchors);
+        Array.Clear(_settled);
         try
         {
             if (screen is not Control sc) return;
@@ -241,13 +251,9 @@ internal sealed class ShareButton
             {
                 if (sc.GetNodeOrNull(AnchorNames[i]) is not Control c) continue;
                 _anchors[i] = c;
-                _rest[i] = c.Position;
-                try
-                {
-                    if (AccessTools.Field(c.GetType(), "_showPosition") is FieldInfo f && f.GetValue(c) is Vector2 v) _rest[i] = v;
-                }
-                catch { }
+                ReadRest(i, c);
             }
+            _shake = sc.GetNodeOrNull("%ScreenshakeContainer") as Control;
             // The summary's content is the MarginContainer's VBox (the container itself has 250 px side margins);
             // the leaderboard's visible part is its Panel (the control itself runs off the bottom of the screen).
             var summary = sc.GetNodeOrNull("%RunSummaryContainer");
@@ -260,33 +266,60 @@ internal sealed class ShareButton
         catch (Exception ex) { ErrorLog.Once("share bind", ex); }
     }
 
+    // A button's resting position and size (allocates: one boxed read; at most twice per button per screen).
+    private void ReadRest(int i, Control c)
+    {
+        _rest[i] = c.Position;
+        _restSize[i] = c.Size;
+        try
+        {
+            var t = c.GetType();
+            if (!_showField.TryGetValue(t, out var f)) _showField[t] = f = AccessTools.Field(t, "_showPosition");
+            if (f != null && f.GetValue(c) is Vector2 v && v != Vector2.Zero) _rest[i] = v;
+        }
+        catch { }
+    }
+
     // The game's button row now, in viewport pixels: the visible buttons at rest; else the row as last seen
     // (between the screen's two pages none is visible); else where Continue will appear; else empty.
-    private Box Row()
+    private Box Row(Transform2D xf)
     {
-        if (_screen == null || !GodotObject.IsInstanceValid(_screen)) return _lastRow;
-        // The buttons sit in Ui, which fills the screen at offset 0 inside ScreenshakeContainer; resting rects
-        // map through the screen's own transform, so the screen shake doesn't shake our button.
-        Transform2D xf = _screen.GetGlobalTransformWithCanvas();
+        if (_screen == null) return _lastRow;
         Box row = default, first = default;
         for (int i = 0; i < _anchors.Length; i++)
         {
             var c = _anchors[i];
             if (c == null || !GodotObject.IsInstanceValid(c)) continue;
+            bool visible = c.IsVisibleInTree();
+            if (visible && !_settled[i]) { ReadRest(i, c); _settled[i] = true; }
             Vector2 o = xf * _rest[i];
-            Vector2 s = c.Size * xf.Scale;
+            Vector2 s = _restSize[i] * xf.Scale;
             var b = new Box(o.X, o.Y, s.X, s.Y);
             if (first.IsEmpty) first = b;
-            if (c.IsVisibleInTree()) row = row.Union(b);
+            if (visible) row = row.Union(b);
         }
         if (!row.IsEmpty) return _lastRow = row;
         return _lastRow.IsEmpty ? first : _lastRow;
     }
 
-    private static Box Content(Control? c)
+    // The screen's transform, which the shake doesn't move: the buttons sit in Ui, and the content in
+    // ScreenshakeContainer's other children, both of which fill the screen at offset 0.
+    private bool ScreenTransform(out Transform2D xf)
+    {
+        xf = Transform2D.Identity;
+        if (_screen == null || !GodotObject.IsInstanceValid(_screen)) return false;
+        xf = _screen.GetGlobalTransformWithCanvas();
+        return true;
+    }
+
+    // A content control's rect with the shake taken out: its transform relative to ScreenshakeContainer, mapped
+    // through the screen's transform.
+    private Box Content(Control? c, Transform2D screen)
     {
         if (c == null || !GodotObject.IsInstanceValid(c) || !c.IsVisibleInTree()) return default;
         Transform2D xf = c.GetGlobalTransformWithCanvas();
+        if (_shake != null && GodotObject.IsInstanceValid(_shake))
+            xf = screen * (_shake.GetGlobalTransformWithCanvas().AffineInverse() * xf);
         Vector2 s = c.Size * xf.Scale;
         return new Box(xf.Origin.X, xf.Origin.Y, s.X, s.Y);
     }
@@ -302,8 +335,15 @@ internal sealed class ShareButton
 
         if (sc != _styledScale) { StyleButton(sc); _styledScale = sc; }
 
-        Box row = Row();
-        Box at = ShareLayout.Place(row, Content(_summary), Content(_board), vp.X, vp.Y, sc);
+        Box row = default, summary = default, board = default;
+        if (ScreenTransform(out var screen))
+        {
+            row = Row(screen);
+            summary = Content(_summary, screen);
+            board = Content(_board, screen);
+        }
+        else row = _lastRow;
+        Box at = ShareLayout.Place(row, summary, board, vp.X, vp.Y, sc, ref _spot);
         var btnPos = new Vector2(at.X, at.Y);
         var btnSize = new Vector2(at.W, at.H);
         if (_btn.Position != btnPos) _btn.Position = btnPos;
@@ -371,11 +411,8 @@ internal sealed class ShareButton
         }
         var msgSize = new Vector2(w, h);
         if (_msg.Size != msgSize) _msg.Size = msgSize;
-        // Above the button, left edges aligned; if that would sit on the game's buttons (the button went below
-        // them), above those instead. Kept inside the viewport.
-        var panel = new Box(at.X, at.Y - 10f * sc - h, w, h);
-        if (panel.Intersects(row)) panel = panel with { Y = row.Y - 10f * sc - h };
-        panel = ShareLayout.Clamp(panel, vp.X, vp.Y, ShareLayout.Margin * sc);
+        // Above the button, never over it or the game's buttons where avoidable (ShareLayout.PlacePanel).
+        var panel = ShareLayout.PlacePanel(at, row, w, h, vp.X, vp.Y, sc);
         var msgPos = new Vector2(panel.X, panel.Y);
         if (_msg.Position != msgPos) _msg.Position = msgPos;
     }

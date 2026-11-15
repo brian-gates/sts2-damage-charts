@@ -36,22 +36,77 @@ internal static class ShareLayout
     public static Box FallbackRow(float vpW, float vpH, float scale) =>
         new(vpW * 0.5f - 130f * scale, vpH - 170f * scale, 260f * scale, 58f * scale);
 
-    // Candidates in order: right of the row (vertically centred on it), left of it, then centred below it.
-    // The first that fits the viewport and touches neither the row nor an obstacle wins; if none does, the
-    // right-hand spot, clamped to the viewport. Obstacles are the screen's content (empty = absent).
-    public static Box Place(Box row, Box obstacleA, Box obstacleB, float vpW, float vpH, float scale)
+    // Spots in order of preference: right of the row (vertically centred on it), left of it, centred below it.
+    public const int Right = 0, Left = 1, Below = 2, NoSpot = -1;
+
+    // `spot` carries the last choice between frames (start with NoSpot). The last spot is kept while it still
+    // fits, so content that moves (a panel animating in) doesn't flip the button between spots each frame.
+    // Otherwise the first spot that fits the viewport and touches neither the row nor an obstacle wins; if none
+    // does, the clamped spot that overlaps least (the game's buttons count RowWeight times the content).
+    // Obstacles are the screen's content (empty = absent).
+    public static Box Place(Box row, Box obstacleA, Box obstacleB, float vpW, float vpH, float scale, ref int spot)
     {
         if (!(scale > 0f) || !float.IsFinite(scale)) scale = 1f;
         float w = ButtonW * scale, h = ButtonH * scale, gap = Gap * scale, m = Margin * scale;
         if (row.IsEmpty) row = FallbackRow(vpW, vpH, scale);
 
-        var right = new Box(row.Right + gap, row.CenterY - h * 0.5f, w, h);
-        if (Fits(right, row, obstacleA, obstacleB, vpW, vpH, m)) return right;
-        var left = new Box(row.X - gap - w, right.Y, w, h);
-        if (Fits(left, row, obstacleA, obstacleB, vpW, vpH, m)) return left;
-        var below = new Box(row.CenterX - w * 0.5f, row.Bottom + gap * 0.5f, w, h);
-        if (Fits(below, row, obstacleA, obstacleB, vpW, vpH, m)) return below;
-        return Clamp(right, vpW, vpH, m);
+        if (spot >= Right && spot <= Below)
+        {
+            var kept = Spot(spot, row, w, h, gap);
+            if (Fits(kept, row, obstacleA, obstacleB, vpW, vpH, m)) return kept;
+        }
+        for (int i = Right; i <= Below; i++)
+        {
+            var b = Spot(i, row, w, h, gap);
+            if (Fits(b, row, obstacleA, obstacleB, vpW, vpH, m)) { spot = i; return b; }
+        }
+        int best = NoSpot;
+        float bestCost = float.MaxValue;
+        Box bestBox = default;
+        for (int i = Right; i <= Below; i++)
+        {
+            var b = Clamp(Spot(i, row, w, h, gap), vpW, vpH, m);
+            float cost = RowWeight * Overlap(b, row) + Overlap(b, obstacleA) + Overlap(b, obstacleB);
+            // Ties go to the spot already shown, so an unchanged scene never moves the button.
+            if (cost < bestCost || (cost == bestCost && i == spot)) { best = i; bestCost = cost; bestBox = b; }
+        }
+        spot = best;
+        return bestBox;
+    }
+
+    public const float RowWeight = 4f;
+
+    private static Box Spot(int i, Box row, float w, float h, float gap) => i switch
+    {
+        Left => new Box(row.X - gap - w, row.CenterY - h * 0.5f, w, h),
+        Below => new Box(row.CenterX - w * 0.5f, row.Bottom + gap * 0.5f, w, h),
+        _ => new Box(row.Right + gap, row.CenterY - h * 0.5f, w, h),
+    };
+
+    // The message panel (w x h): above the button with left edges aligned, else above the game's row, else below
+    // the button; each kept inside the viewport. The first that covers neither the button nor the row wins,
+    // else the one that overlaps them least.
+    public static Box PlacePanel(Box button, Box row, float w, float h, float vpW, float vpH, float scale)
+    {
+        if (!(scale > 0f) || !float.IsFinite(scale)) scale = 1f;
+        float gap = 10f * scale, m = Margin * scale;
+        Box best = default;
+        float bestCost = float.MaxValue;
+        for (int i = 0; i < 3; i++)
+        {
+            float y = i == 0 ? button.Y - gap - h : i == 1 ? Math.Min(button.Y, row.IsEmpty ? button.Y : row.Y) - gap - h : button.Bottom + gap;
+            var b = Clamp(new Box(button.X, y, w, h), vpW, vpH, m);
+            float cost = RowWeight * Overlap(b, row) + RowWeight * Overlap(b, button);
+            if (cost == 0f) return b;
+            if (cost < bestCost) { best = b; bestCost = cost; }
+        }
+        return best;
+    }
+
+    public static float Overlap(Box a, Box b)
+    {
+        if (!a.Intersects(b)) return 0f;
+        return (Math.Min(a.Right, b.Right) - Math.Max(a.X, b.X)) * (Math.Min(a.Bottom, b.Bottom) - Math.Max(a.Y, b.Y));
     }
 
     private static bool Fits(Box b, Box row, Box oa, Box ob, float vpW, float vpH, float m) =>
