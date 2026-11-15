@@ -77,6 +77,25 @@ internal static class GameAssets
     public static Texture2D? Texture(string resPath) => Load<Texture2D>(resPath);
 
     // Game mapping (PowerModel/RelicModel/PotionModel getters): images/atlases/<kind>_atlas.sprites/<entry lower>.tres.
+    /// <summary>
+    /// A card's portrait: its final art (CardModel.PortraitPath) when the game ships it, else its placeholder art
+    /// (BetaPortraitPath, e.g. new characters such as The Fool in v0.113). Read by name so older game versions
+    /// without BetaPortraitPath still work. Null when neither resource exists.
+    /// </summary>
+    public static string? CardPortraitPath(object? card)
+    {
+        if (card == null) return null;
+        foreach (var prop in new[] { "PortraitPath", "BetaPortraitPath" })
+        {
+            try
+            {
+                if (card.GetType().GetProperty(prop)?.GetValue(card) is string p && p.Length > 0 && Existing(p) is { } hit) return hit;
+            }
+            catch { }
+        }
+        return null;
+    }
+
     public static string? PowerIconPath(object? modelOrId) => SpritePath("power_atlas", modelOrId, "PackedIconPath");
     public static string? PotionIconPath(object? modelOrId) => SpritePath("potion_atlas", modelOrId, "PackedImagePath");
     public static string? RelicIconPath(object? modelOrId)

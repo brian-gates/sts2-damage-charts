@@ -293,7 +293,7 @@ internal sealed class ForecastLedgerView
 // matches, and the row simply has no icon):
 //   Attack   -> intent_attack_N, N from the game's AttackIntent thresholds on the row's TOTAL damage.
 //   DoT      -> the power's icon (PowerModel.PackedIconPath); held cards like Infection fall back to cards.
-//   SelfCard -> the card's portrait (CardModel.PortraitPath, else PortraitPngPath).
+//   SelfCard -> the card's portrait (GameAssets.CardPortraitPath: final art, else beta art).
 // ForecastItem only carries the localized title, so titles are matched against the canonical models in
 // ModelDb.AllPowers / ModelDb.AllCards (reflection by name), built once and cached per label.
 internal static class ForecastIcons
@@ -348,19 +348,7 @@ internal static class ForecastIcons
     private static Texture2D? CardTex(string n)
     {
         if (_cards == null || !_cards.TryGetValue(n, out var card)) return null;
-        foreach (var prop in new[] { "PortraitPath", "PortraitPngPath" })
-        {
-            try
-            {
-                if (card.GetType().GetProperty(prop)?.GetValue(card) is string p && p.Length > 0)
-                {
-                    var t = GameAssets.Texture(p);
-                    if (t != null) return t;
-                }
-            }
-            catch { }
-        }
-        return null;
+        return GameAssets.CardPortraitPath(card) is { } p ? GameAssets.Texture(p) : null;
     }
 
     // Title -> canonical model maps from MegaCrit.Sts2.Core.Models.ModelDb's static AllPowers / AllCards.

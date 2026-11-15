@@ -721,7 +721,7 @@ public static class DamageChartsMod
             if (cardSource != null)
             {
                 label = TextHelper.SafeGetText(() => cardSource.Title) ?? "Card";
-                try { if (cardSource.HasPortrait) icon = cardSource.PortraitPath; } catch { }
+                icon = GameAssets.CardPortraitPath(cardSource);
             }
             else if (dealer != null && dealer.IsPet)
             {
