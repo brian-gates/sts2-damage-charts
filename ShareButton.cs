@@ -37,6 +37,9 @@ internal sealed class ShareButton
     private readonly Panel _glow;
     private readonly Panel _btn;
     private readonly Label _btnLabel;
+    private readonly Control _icon;   // the share glyph left of the label, drawn on its Draw signal
+    private const string ButtonText = "Share run";
+    private float _iconSize, _iconGap, _textW;   // set on a scale change (StyleButton)
     private readonly StyleBoxFlat _sIdle, _sHover, _sPressed, _sGlow;
     private readonly Panel _msg;
     private readonly Label _msgText;
@@ -99,8 +102,13 @@ internal sealed class ShareButton
         _btnLabel = UiTheme.MakeLabel(26, Ink);
         _btnLabel.HorizontalAlignment = HorizontalAlignment.Center;
         _btnLabel.VerticalAlignment = VerticalAlignment.Center;
-        _btnLabel.Text = "Share run";
+        _btnLabel.Text = ButtonText;
         _btn.AddChild(_btnLabel);
+        // A plain Control drawn from its Draw signal (the mod has no Godot source generators, so a _Draw
+        // override on a subclass would not be called). Godot only redraws it on QueueRedraw or a resize.
+        _icon = new Control { Name = "ShareIcon", MouseFilter = Control.MouseFilterEnum.Ignore };
+        _icon.Draw += DrawIcon;
+        _btn.AddChild(_icon);
 
         _msg = UiTheme.MakePanel(0.92f, 1f);
         _msg.MouseFilter = Control.MouseFilterEnum.Stop;
@@ -349,6 +357,16 @@ internal sealed class ShareButton
         if (_btn.Position != btnPos) _btn.Position = btnPos;
         if (_btn.Size != btnSize) _btn.Size = btnSize;
         if (_btnLabel.Size != btnSize) _btnLabel.Size = btnSize;
+        // Glyph + label centred as a pair: the centre-aligned label shifts right by half the glyph and gap.
+        var (ix, iy, shift) = ShareLayout.IconRow(btnSize.X, btnSize.Y, _iconSize, _iconGap, _textW);
+        var labelPos = new Vector2(shift, 0f);
+        if (_btnLabel.Position != labelPos) _btnLabel.Position = labelPos;
+        bool iconOn = _iconSize > 0f;
+        if (_icon.Visible != iconOn) _icon.Visible = iconOn;
+        var iconPos = new Vector2(ix, iy);
+        var iconSize = new Vector2(_iconSize, _iconSize);
+        if (_icon.Position != iconPos) _icon.Position = iconPos;
+        if (_icon.Size != iconSize) _icon.Size = iconSize;
 
         // The first-appearance glow: a gold halo that pulses, fades, then hides for good on this screen.
         float glow = ShareLayout.Glow(now - _shownAtMs);
@@ -430,9 +448,34 @@ internal sealed class ShareButton
             _sGlow.SetCornerRadiusAll(radius);
             _sGlow.ShadowColor = new Color(UiTheme.BrandGold, 0.85f);
             _sGlow.ShadowSize = Math.Max(1, (int)Math.Round(22 * sc));
-            UiTheme.Apply(_btnLabel, (int)Math.Round(26 * sc), Ink, GameAssets.KreonBold, Colors.Transparent, 0);
+            int fs = (int)Math.Round(26 * sc);
+            var font = GameAssets.KreonBold ?? UiTheme.DefaultFont;
+            UiTheme.Apply(_btnLabel, fs, Ink, font, Colors.Transparent, 0);
+            _iconSize = (float)Math.Round(ShareLayout.IconSize(fs));
+            _iconGap = (float)Math.Round(fs * 0.35f);
+            _textW = font != null ? font.GetStringSize(ButtonText, HorizontalAlignment.Left, -1f, fs).X : fs * 0.5f * ButtonText.Length;
+            _icon.QueueRedraw();
         }
         catch (Exception ex) { ErrorLog.Once("share style", ex); }
+    }
+
+    // Drawn only when Godot asks (QueueRedraw on a scale change, or a resize): two lines, then three nodes.
+    private void DrawIcon()
+    {
+        try
+        {
+            var g = ShareLayout.ShareGlyph(_icon.Size.X);
+            if (g.Radius <= 0f) return;
+            var l = new Vector2(g.LX, g.LY);
+            var t = new Vector2(g.TX, g.TY);
+            var b = new Vector2(g.BX, g.BY);
+            _icon.DrawLine(l, t, Ink, g.Line, true);
+            _icon.DrawLine(l, b, Ink, g.Line, true);
+            _icon.DrawCircle(l, g.Radius, Ink, true, -1f, true);
+            _icon.DrawCircle(t, g.Radius, Ink, true, -1f, true);
+            _icon.DrawCircle(b, g.Radius, Ink, true, -1f, true);
+        }
+        catch (Exception ex) { ErrorLog.Once("share icon", ex); }
     }
 
     private static void Face(StyleBoxFlat sb, Color face, Color rim, int radius, int border, float sc)

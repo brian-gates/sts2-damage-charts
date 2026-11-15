@@ -120,6 +120,31 @@ internal static class ShareLayout
         return b with { X = float.IsFinite(x) ? x : m, Y = float.IsFinite(y) ? y : m };
     }
 
+    // ----- The share glyph beside the label -----
+
+    // The glyph's square side for a label font size: about the font's cap height (Kreon's caps are ~0.7 em).
+    public static float IconSize(float fontSize) => fontSize > 0f && float.IsFinite(fontSize) ? fontSize * 0.7f : 0f;
+
+    // Glyph then label, the pair centred in the button and the glyph centred vertically. Returns the glyph's
+    // top-left and how far the (full-width, centre-aligned) label shifts right to make room for it.
+    public static (float IconX, float IconY, float LabelShift) IconRow(float btnW, float btnH, float icon, float gap, float textW)
+    {
+        if (!(icon > 0f) || !float.IsFinite(icon)) return (0f, 0f, 0f);
+        float pair = icon + gap + Math.Max(0f, textW);
+        return ((btnW - pair) * 0.5f, (btnH - icon) * 0.5f, (icon + gap) * 0.5f);
+    }
+
+    // The common share symbol in a `size` square: a node on the left, two on the right (top and bottom), with a
+    // line from the left one to each. Radius and line width scale with the size.
+    public readonly record struct Glyph(float LX, float LY, float TX, float TY, float BX, float BY, float Radius, float Line);
+
+    public static Glyph ShareGlyph(float size)
+    {
+        if (!(size > 0f) || !float.IsFinite(size)) return default;
+        float r = size * 0.16f;
+        return new Glyph(r, size * 0.5f, size - r, r, size - r, size - r, r, Math.Max(1f, size * 0.09f));
+    }
+
     // The first-appearance glow: 0..1 strength `ms` after the button appeared. Pulses PulsePeriodMs, fades
     // out over the last FadeMs, and is 0 from PulseMs on (then the button is static).
     public const float PulseMs = 3000f, PulsePeriodMs = 1000f, FadeMs = 600f;

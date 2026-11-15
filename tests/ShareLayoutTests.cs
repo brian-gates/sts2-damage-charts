@@ -182,4 +182,49 @@ public class ShareLayoutTests
             Assert.InRange(g, 0f, 1f);
         }
     }
+
+    [Fact]
+    public void IconAndLabelAreCentredAsAPair()
+    {
+        // 220x60 button, 18 px glyph, 9 px gap, 100 px of text: the pair is 127 wide.
+        var (x, y, shift) = ShareLayout.IconRow(220, 60, 18, 9, 100);
+        Assert.Equal(46.5f, x);
+        Assert.Equal(21f, y);
+        Assert.Equal(13.5f, shift);
+        // The text's centre (label centred in the button, then shifted) sits right after the glyph and gap.
+        float textLeft = 220 / 2f + shift - 100 / 2f;
+        Assert.Equal(x + 18 + 9, textLeft);
+        Assert.Equal(220 - (textLeft + 100), x);   // equal margins either side
+        Assert.Equal((0f, 0f, 0f), ShareLayout.IconRow(220, 60, 0, 9, 100));
+        Assert.Equal((0f, 0f, 0f), ShareLayout.IconRow(220, 60, float.NaN, 9, 100));
+    }
+
+    [Fact]
+    public void IconIsAboutTheCapHeightAndScales()
+    {
+        Assert.Equal(18.2f, ShareLayout.IconSize(26), 3);
+        Assert.Equal(2 * ShareLayout.IconSize(26), ShareLayout.IconSize(52), 3);
+        Assert.Equal(0f, ShareLayout.IconSize(0));
+        Assert.Equal(0f, ShareLayout.IconSize(float.PositiveInfinity));
+    }
+
+    [Fact]
+    public void GlyphHasOneNodeLeftAndTwoRightInsideItsSquare()
+    {
+        var g = ShareLayout.ShareGlyph(20);
+        Assert.True(g.LX < g.TX && g.TX == g.BX);           // left node, two on the right
+        Assert.True(g.TY < g.LY && g.LY < g.BY);            // top, middle, bottom
+        Assert.Equal(10f, g.LY);
+        Assert.Equal(g.LY - g.TY, g.BY - g.LY, 3);           // symmetric about the middle
+        foreach (var (cx, cy) in new[] { (g.LX, g.LY), (g.TX, g.TY), (g.BX, g.BY) })
+        {
+            Assert.InRange(cx - g.Radius, -0.001f, 20.001f);
+            Assert.InRange(cx + g.Radius, -0.001f, 20.001f);
+            Assert.InRange(cy - g.Radius, -0.001f, 20.001f);
+            Assert.InRange(cy + g.Radius, -0.001f, 20.001f);
+        }
+        Assert.True(g.Line >= 1f && g.Line < 2 * g.Radius);
+        Assert.Equal(default, ShareLayout.ShareGlyph(0));
+        Assert.Equal(2 * g.Radius, ShareLayout.ShareGlyph(40).Radius, 3);
+    }
 }
