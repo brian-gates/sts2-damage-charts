@@ -749,7 +749,8 @@ public static class DamageChartsMod
             {
                 if (d == null) continue;
                 _targetField ??= d.GetType().GetField("target");
-                if (_targetField?.GetValue(d) is Creature c) targets.Add(c);
+                if (_targetField == null) { ErrorLog.NoteOnce($"{d.GetType().Name}.target not found (game changed?): damage not attributed"); return; }
+                if (_targetField.GetValue(d) is Creature c) targets.Add(c);
             }
             DamagePrefix(targets, dealer, cardSource);
         }
@@ -858,7 +859,8 @@ public static class DamageChartsMod
                 h.Patch(m, prefix: new HarmonyMethod(typeof(DamageChartsMod).GetMethod(prefix, BindingFlags.NonPublic | BindingFlags.Static)));
                 patched++;
             }
-            GD.Print($"[STS2 Damage] share click guard applied to {patched} method(s)");
+            if (patched == 0) GD.Print("[STS2 Damage] share click guard not applied (no HandleMousePress/Release found): clicks on Share may reach the screen");
+            else GD.Print($"[STS2 Damage] share click guard applied to {patched} method(s)");
         }
         catch (Exception ex) { GD.PrintErr($"[STS2 Damage] share click guard skipped: {ex.GetType().Name}: {ex.Message}"); }
     }
@@ -1400,7 +1402,11 @@ public static class DamageChartsMod
                 if (_startTimeField == null) GD.Print("[STS2 Damage] run start time not found (game changed?): no run stats file");
             }
             if (_startTimeField?.GetValue(RunManager.Instance) is not long start || start <= 0) return null;
-            if (InstanceGet(InstanceGet(rs, "Rng"), "StringSeed") is not string seed || seed.Length == 0) return null;
+            if (InstanceGet(InstanceGet(rs, "Rng"), "StringSeed") is not string seed || seed.Length == 0)
+            {
+                ErrorLog.NoteOnce("run seed (Rng.StringSeed) not found: no run stats file or Share for this run");
+                return null;
+            }
             var players = rs.Players;
             if (players == null || players.Count == 0) return null;
             var raw = new string[players.Count];
@@ -1438,8 +1444,17 @@ public static class DamageChartsMod
                 GD.Print("[STS2 Damage] run stats: run changed during combat, fight not written");
                 return;
             }
-            if (_run.RunKey != ident.RunId || !_run.TryGetFight(_run.FightCount, out var meta, out var sources)) return;
-            if (sources.Length != ident.SteamIds.Length) return;
+            if (_run.RunKey != ident.RunId)
+            {
+                ErrorLog.NoteOnce("run stats: recap is keyed to another run, fight not written");
+                return;
+            }
+            if (!_run.TryGetFight(_run.FightCount, out var meta, out var sources)) return;
+            if (sources.Length != ident.SteamIds.Length)
+            {
+                ErrorLog.NoteOnce($"run stats: {sources.Length} player slot(s) but {ident.SteamIds.Length} Steam ID(s), fight not written");
+                return;
+            }
 
             int floor = meta.Floor;
             if (floor > 0 && ident.RunId == _statsRunId && floor == _statsFloor) _statsFloorCount++;
