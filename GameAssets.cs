@@ -19,6 +19,7 @@ namespace STS2_DamageCharts;
 //   Font(path)              any Font/FontVariation resource.
 //   Texture(path)           any Texture2D, including the game's atlas sprites (*.sprites/*.tres paths are
 //                           served by the game's own AtlasResourceLoader, even ones absent from the pack).
+//   CardPortraitPath(card)  res:// path of a card's final or placeholder art; a path check, NOT gated by Enabled.
 //   PowerIconPath/RelicIconPath/PotionIconPath(model|id|entry) -> res:// path string (for views that
 //                           cache icons by path); PowerIcon/RelicIcon/PotionIcon -> the Texture2D.
 //                           Accepts a game model object, a ModelId, "CATEGORY.ENTRY" or a bare entry name.
@@ -76,26 +77,19 @@ internal static class GameAssets
     // --- Textures / icons ---
     public static Texture2D? Texture(string resPath) => Load<Texture2D>(resPath);
 
-    // Game mapping (PowerModel/RelicModel/PotionModel getters): images/atlases/<kind>_atlas.sprites/<entry lower>.tres.
     /// <summary>
-    /// A card's portrait: its final art (CardModel.PortraitPath) when the game ships it, else its placeholder art
-    /// (BetaPortraitPath, e.g. new characters such as The Fool in v0.113). Read by name so older game versions
-    /// without BetaPortraitPath still work. Null when neither resource exists.
+    /// A card's portrait path (final art, else placeholder art; see CardPortrait). A path check only, so unlike the
+    /// other helpers it does not depend on Enabled: the charts show card art even with native_visuals off.
     /// </summary>
-    public static string? CardPortraitPath(object? card)
+    public static string? CardPortraitPath(object? card) => CardPortrait.Pick(card, ResourceExists);
+
+    private static bool ResourceExists(string path)
     {
-        if (card == null) return null;
-        foreach (var prop in new[] { "PortraitPath", "BetaPortraitPath" })
-        {
-            try
-            {
-                if (card.GetType().GetProperty(prop)?.GetValue(card) is string p && p.Length > 0 && Existing(p) is { } hit) return hit;
-            }
-            catch { }
-        }
-        return null;
+        try { return ResourceLoader.Exists(path); }
+        catch { return false; }
     }
 
+    // Game mapping (PowerModel/RelicModel/PotionModel getters): images/atlases/<kind>_atlas.sprites/<entry lower>.tres.
     public static string? PowerIconPath(object? modelOrId) => SpritePath("power_atlas", modelOrId, "PackedIconPath");
     public static string? PotionIconPath(object? modelOrId) => SpritePath("potion_atlas", modelOrId, "PackedImagePath");
     public static string? RelicIconPath(object? modelOrId)

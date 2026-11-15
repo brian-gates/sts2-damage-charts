@@ -22,6 +22,7 @@
     <Compile Include="../RunStatsFile.cs" Link="RunStatsFile.cs" />
     <Compile Include="../AppStatus.cs" Link="AppStatus.cs" />
     <Compile Include="../ShareAction.cs" Link="ShareAction.cs" />
+    <Compile Include="../CardPortrait.cs" Link="CardPortrait.cs" />
   </ItemGroup>
 
   <ItemGroup>
