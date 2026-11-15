@@ -227,4 +227,33 @@ public class ShareLayoutTests
         Assert.Equal(default, ShareLayout.ShareGlyph(0));
         Assert.Equal(2 * g.Radius, ShareLayout.ShareGlyph(40).Radius, 3);
     }
+
+    // The resting rects at 1920x1080: Continue, Leaderboard (same spot), Main Menu, View Run.
+    private static readonly Box[] Rests = { Continue, Continue, MainMenu, new Box(702, 910, 260, 58) };
+
+    [Fact]
+    public void RowIsTheUnionOfEveryButtonAtRest()
+    {
+        Assert.Equal(new Box(702, 910, 388, 58), ShareLayout.Row(Rests));
+        Assert.Equal(Continue, ShareLayout.Row(new[] { None, Continue, None }));
+        Assert.True(ShareLayout.Row(new Box[0]).IsEmpty);
+    }
+
+    [Fact]
+    public void StaysPutAcrossTheScreensPages()
+    {
+        // The row doesn't depend on which buttons are shown, so neither does the spot: page one (Continue) and
+        // page two (Main Menu, run summary above the row) place Share identically.
+        var row = ShareLayout.Row(Rests);
+        int spot = ShareLayout.NoSpot;
+        var page1 = ShareLayout.Place(row, None, None, 1920, 1080, 1f, ref spot);
+        var summary = new Box(250, 239, 1420, 640);   // ends above the row
+        var page2 = ShareLayout.Place(row, summary, None, 1920, 1080, 1f, ref spot);
+        var leaderboard = new Box(708, 402, 512, 440);
+        var daily = ShareLayout.Place(row, None, leaderboard, 1920, 1080, 1f, ref spot);
+        Assert.Equal(new Box(1114, 909, 220, 60), page1);
+        Assert.Equal(page1, page2);
+        Assert.Equal(page1, daily);
+        Assert.False(page1.Intersects(MainMenu) || page1.Intersects(Continue) || page1.Intersects(Rests[3]));
+    }
 }

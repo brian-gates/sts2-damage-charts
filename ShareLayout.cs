@@ -36,6 +36,15 @@ internal static class ShareLayout
     public static Box FallbackRow(float vpW, float vpH, float scale) =>
         new(vpW * 0.5f - 130f * scale, vpH - 170f * scale, 260f * scale, 58f * scale);
 
+    // The game's button row: the union of its buttons' resting rects (empty ones skipped). Every button counts,
+    // shown or not, so the row is the same on both of the screen's pages.
+    public static Box Row(ReadOnlySpan<Box> rests)
+    {
+        Box row = default;
+        foreach (var b in rests) row = row.Union(b);
+        return row;
+    }
+
     // Spots in order of preference: right of the row (vertically centred on it), left of it, centred below it.
     public const int Right = 0, Left = 1, Below = 2, NoSpot = -1;
 

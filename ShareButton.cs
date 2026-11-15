@@ -10,9 +10,9 @@ namespace STS2_DamageCharts;
 // and copy <server>/runs/<run_id> (a short note), or explain how to get there (a panel that stays until closed
 // or Share is pressed again). The mod itself makes no network calls.
 //
-// Placement (ShareLayout): beside the game's own button row, bottom-centre (Continue, later Main Menu or
-// Leaderboard), read each frame from those buttons' resting rects, never over them or over the run summary or
-// leaderboard panel. It is a filled gold button with dark text that glows gently for its first few seconds.
+// Placement (ShareLayout): beside the game's own button row, bottom-centre: the union of the resting rects of
+// all its row buttons (Continue, Leaderboard, Main Menu, View Run), shown or not, so the spot stays put across
+// the screen's pages. Never over them or over the run summary or leaderboard panel. It is a filled gold button with dark text that glows gently for its first few seconds.
 //
 // Like the other views it sits on its own high CanvasLayer and reads the mouse by polling (press and release
 // over the same target is a click), since GUI input doesn't reliably reach controls on these layers. Its
@@ -54,11 +54,15 @@ internal sealed class ShareButton
     private readonly Control?[] _anchors = new Control?[AnchorNames.Length];
     private readonly Vector2[] _rest = new Vector2[AnchorNames.Length];   // resting position
     private readonly Vector2[] _restSize = new Vector2[AnchorNames.Length]; // size at rest (hover grows it)
-    private readonly bool[] _settled = new bool[AnchorNames.Length];        // re-read once it was first visible
     private Control? _shake;         // ScreenshakeContainer: its offset is the screen shake
     private Control? _summary;
     private Control? _board;
-    private Box _lastRow;            // the row as last seen, while none of its buttons is visible
+    private readonly Box[] _restBoxes = new Box[AnchorNames.Length];
+    // The row, computed once per screen, viewport size and UI scale (never on a button showing or hiding).
+    private Box _row;
+    private bool _rowValid;
+    private Vector2 _rowVp;
+    private float _rowScale;
     private int _spot = ShareLayout.NoSpot;   // which side of the row the button is on (kept while it fits)
 
     // The game buttons' private `_showPosition` field, looked up once per button type (null = none).
@@ -151,7 +155,7 @@ internal sealed class ShareButton
         _armed = Target.None;
         _downLast = true;   // a button still held from the previous screen isn't a press here
         _shownAtMs = 0;
-        _lastRow = default;
+        _rowValid = false;
         _spot = ShareLayout.NoSpot;
         Bind(screen);
     }
@@ -295,13 +299,13 @@ internal sealed class ShareButton
 
     // Once per screen (allocates: node paths). Each button's resting rect is the game's own `_showPosition`
     // with the size it has then (its buttons slide in and out and grow on hover, so the live rect moves);
-    // without that field, its position now. Read here and again once the button is first visible, in case the
-    // game only sets it when the button is shown.
+    // without that field (or while it is still zero), its position now. The buttons' _Ready, which sets it,
+    // runs before the screen's, so it is in place by the time the screen is bound; it is not re-read later, so
+    // the row (and the Share button) never moves when a button shows or hides.
     private void Bind(Node screen)
     {
         _screen = null; _shake = null; _summary = null; _board = null;
         Array.Clear(_anchors);
-        Array.Clear(_settled);
         try
         {
             if (screen is not Control sc) return;
@@ -339,26 +343,19 @@ internal sealed class ShareButton
         catch { }
     }
 
-    // The game's button row now, in viewport pixels: the visible buttons at rest; else the row as last seen
-    // (between the screen's two pages none is visible); else where Continue will appear; else empty.
-    private Box Row(Transform2D xf)
+    // The game's button row in viewport pixels: the union of every row button's resting rect, visible or not
+    // (ShareLayout.Row). Empty when none was found (ShareLayout then uses Continue's spot from the scene).
+    private Box RestRow(Transform2D xf)
     {
-        if (_screen == null) return _lastRow;
-        Box row = default, first = default;
         for (int i = 0; i < _anchors.Length; i++)
         {
             var c = _anchors[i];
-            if (c == null || !GodotObject.IsInstanceValid(c)) continue;
-            bool visible = c.IsVisibleInTree();
-            if (visible && !_settled[i]) { ReadRest(i, c); _settled[i] = true; }
+            if (c == null || !GodotObject.IsInstanceValid(c)) { _restBoxes[i] = default; continue; }
             Vector2 o = xf * _rest[i];
             Vector2 s = _restSize[i] * xf.Scale;
-            var b = new Box(o.X, o.Y, s.X, s.Y);
-            if (first.IsEmpty) first = b;
-            if (visible) row = row.Union(b);
+            _restBoxes[i] = new Box(o.X, o.Y, s.X, s.Y);
         }
-        if (!row.IsEmpty) return _lastRow = row;
-        return _lastRow.IsEmpty ? first : _lastRow;
+        return ShareLayout.Row(_restBoxes);
     }
 
     // The screen's transform, which the shake doesn't move: the buttons sit in Ui, and the content in
@@ -394,14 +391,20 @@ internal sealed class ShareButton
 
         if (sc != _styledScale) { StyleButton(sc); _styledScale = sc; }
 
-        Box row = default, summary = default, board = default;
+        Box summary = default, board = default;
         if (ScreenTransform(out var screen))
         {
-            row = Row(screen);
+            if (!_rowValid || vp != _rowVp || sc != _rowScale)
+            {
+                _row = RestRow(screen);
+                _rowValid = true; _rowVp = vp; _rowScale = sc;
+            }
             summary = Content(_summary, screen);
             board = Content(_board, screen);
         }
-        else row = _lastRow;
+        Box row = _row;
+        // The side is kept while it fits (hysteresis), so content arriving on the second page moves it at most
+        // once, and only if it would otherwise be covered.
         Box at = ShareLayout.Place(row, summary, board, vp.X, vp.Y, sc, ref _spot);
         var btnPos = new Vector2(at.X, at.Y);
         var btnSize = new Vector2(at.W, at.H);
