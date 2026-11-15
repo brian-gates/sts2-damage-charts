@@ -11,6 +11,7 @@ internal static class UiTheme
     // StsColors-matching palette (hex values lifted from the game's StsColors).
     public static readonly Color Cream = Html("FFF6E2");   // primary text
     public static readonly Color Gold = Html("EFC851");    // headers / highlights
+    public static readonly Color BrandGold = Html("F2B632"); // the mod's brand gold (the Share button's face)
     public static readonly Color Red = Html("FF5555");     // taken / incoming
     public static readonly Color Gray = new(0.75f, 0.75f, 0.75f);
     public static readonly Color Border = new(0.55f, 0.60f, 0.72f, 0.30f);

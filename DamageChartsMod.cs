@@ -943,7 +943,7 @@ public static class DamageChartsMod
                 _share = new ShareButton(((SceneTree)Engine.GetMainLoop()).Root);
                 _shareRunIdNew = true;
             }
-            if (_shareRunIdNew) { _share.Reset(_shareRunId!); _shareRunIdNew = false; }
+            if (_shareRunIdNew) { _share.Reset(_shareRunId!, screen); _shareRunIdNew = false; }
             _share.Update(Input.IsMouseButtonPressed(MouseButton.Left));
         }
         catch (Exception ex) { try { _share?.Hide(); } catch { } ErrorLog.Once("share", ex); }
