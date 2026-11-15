@@ -11,7 +11,7 @@ internal enum ShareKind { Share, NeedApp, NeedSignIn }
 internal sealed record ShareAction(ShareKind Kind, string Message, string? AppLink = null, string? WebLink = null)
 {
     public const string DownloadUrl = "https://sts2.thegates.house/";
-    public const string SharedNote = "Link copied: the run is being shared";
+    public const string SharedNote = "Sharing… link copied";
     public const string NeedAppText = "Sharing goes through Spire Sync. Open Spire Sync, then press Share again.";
     public const string NeedSignInText = "Sign in to Spire Sync, then press Share again.";
     public const string OpenFailedText = "Spire Sync didn't open. Open it, then press Share again.";
@@ -26,6 +26,39 @@ internal sealed record ShareAction(ShareKind Kind, string Message, string? AppLi
         _ => new ShareAction(ShareKind.NeedApp, NeedAppText),
     };
 
+    // ----- After a press: following the app's progress for this run -----
+
+    public const string WaitingText = "Waiting for the run to reach Spire Sync…";
+    public const string DoneText = "Shared! Link copied";
+    public const string FailedText = "Couldn't share. Check Spire Sync.";
+    public const string TimedOutText = "Spire Sync didn't confirm. Check the app.";
+    public const string OldAppText = "Link copied. Open Spire Sync to confirm.";
+    public const double GiveUpSeconds = 360;    // 6 minutes
+    public const double OldAppSeconds = 10;     // no `share` key in the file by then: an app that doesn't report
+
+    // What the note says `elapsed` seconds after pressing Share for `runId` at `pressedAt` (unix seconds, floored).
+    // `entry` is the file's latest share entry (null if none or malformed); `reported` is whether any read since
+    // the press saw a `share` key. Entries for another run or from before the press are ignored. Done = stop
+    // polling; AutoHide = the note goes away by itself (else it stays until closed).
+    public readonly record struct Progress(string Message, bool Done, bool AutoHide);
+
+    public static Progress Follow(ShareEntry? entry, bool reported, string runId, long pressedAt, double elapsed)
+    {
+        bool ours = entry != null && string.Equals(entry.RunId, runId, StringComparison.OrdinalIgnoreCase) && entry.At >= pressedAt;
+        if (ours)
+        {
+            switch (entry!.State)
+            {
+                case ShareState.Shared: return new Progress(DoneText, true, true);
+                case ShareState.Failed: return new Progress(entry.Reason ?? FailedText, true, false);
+                default: if (elapsed < GiveUpSeconds) return new Progress(WaitingText, false, false); break;
+            }
+        }
+        if (elapsed >= GiveUpSeconds) return new Progress(TimedOutText, true, false);
+        if (!reported && elapsed >= OldAppSeconds) return new Progress(OldAppText, true, true);
+        return new Progress(SharedNote, false, false);
+    }
+
     // The status file is written by another process: skip anything over MaxStatusBytes (it is ~200 bytes) and
     // treat a missing, locked or unreadable file as "app not running". Never throws.
     public const int MaxStatusBytes = 64 * 1024;
@@ -36,11 +69,16 @@ internal sealed record ShareAction(ShareKind Kind, string Message, string? AppLi
         {
             using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             // Read at most one byte past the cap rather than trusting Length, which can change under us.
-            var buf = new byte[MaxStatusBytes + 1];
-            int total = 0, n;
-            while (total < buf.Length && (n = fs.Read(buf, total, buf.Length - total)) > 0) total += n;
-            if (total > MaxStatusBytes) return AppStatus.NotRunning;
-            return AppStatus.Read(System.Text.Encoding.UTF8.GetString(buf, 0, total).TrimStart('\uFEFF'), now);
+            // A pooled buffer: this is read about once a second while a share is followed.
+            var buf = System.Buffers.ArrayPool<byte>.Shared.Rent(MaxStatusBytes + 1);
+            try
+            {
+                int cap = MaxStatusBytes + 1, total = 0, n;
+                while (total < cap && (n = fs.Read(buf, total, cap - total)) > 0) total += n;
+                if (total > MaxStatusBytes) return AppStatus.NotRunning;
+                return AppStatus.Read(System.Text.Encoding.UTF8.GetString(buf, 0, total).TrimStart('\uFEFF'), now);
+            }
+            finally { System.Buffers.ArrayPool<byte>.Shared.Return(buf); }
         }
         catch (Exception)
         {

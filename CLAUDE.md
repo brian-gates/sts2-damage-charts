@@ -98,8 +98,9 @@ only when the screen's RunState is the live run (else no button; never the wrong
 creates the button lazily and shows it while that screen is on top; a prefix on `NClickableControl.HandleMouse*`
 keeps the game's buttons from reacting to presses over it. Pressing
 it reads Spire Sync's status file (`spire-sync-status.json` in the user data dir, size-capped) and either opens
-`spiresync://share/<run_id>` + copies `<server>/runs/<run_id>`, or explains (app not running / signed out). No
-network calls of its own.
+`spiresync://share/<run_id>` + copies `<server>/runs/<run_id>`, then re-reads the status file once a second
+and follows its `share` entry for that run (`ShareAction.Follow`: waiting, shared, failed, 6 min timeout,
+older app), or explains (app not running / signed out). No network calls of its own.
 
 **Shared helpers:**
 - `UiTheme` — palette matching the game's `StsColors`, font/panel-style capture from the live tree,

@@ -20,7 +20,8 @@ namespace STS2_DamageCharts;
 // Never throws; nothing here allocates per frame once a screen is bound and styled.
 internal sealed class ShareButton
 {
-    private const double NoteSeconds = 5.0;
+    private const double NoteSeconds = 6.0;
+    private const ulong PollMs = 1000;    // how often the status file is re-read while a share is followed
 
     private static readonly Color Ink = new(0.13f, 0.08f, 0.02f);               // label on gold
     private static readonly Color FaceIdle = UiTheme.BrandGold;
@@ -68,6 +69,12 @@ internal sealed class ShareButton
     private bool _showGetApp;
     private bool _closable;
     private ulong _noteUntilMs;      // a transient note hides itself at this time (0 = stays)
+    // Following a share after a press (ShareAction.Follow): until Done, re-read the status file every PollMs.
+    private bool _following;
+    private long _pressedAtUnix;     // the press, unix seconds (floored): older share entries are ignored
+    private ulong _pressedAtMs;
+    private ulong _nextPollMs;
+    private bool _shareReported;     // some read since the press saw a `share` key (an app that reports)
     private ulong _shownAtMs;        // when the button first appeared on this screen (0 = not yet)
     private bool _downLast;
     private Target _armed;           // what the mouse went down on
@@ -138,6 +145,7 @@ internal sealed class ShareButton
     {
         _runId = runId;
         _message = null;
+        _following = false;
         _armed = Target.None;
         _downLast = true;   // a button still held from the previous screen isn't a press here
         _shownAtMs = 0;
@@ -163,6 +171,7 @@ internal sealed class ShareButton
             ulong now = Time.GetTicksMsec();
             if (_shownAtMs == 0) _shownAtMs = now;
             if (_noteUntilMs != 0 && now >= _noteUntilMs) { _message = null; _noteUntilMs = 0; }
+            if (_following && now >= _nextPollMs) Poll(now);
             Layout(now);
 
             Vector2 mouse = _root.GetViewport().GetMousePosition();
@@ -206,12 +215,13 @@ internal sealed class ShareButton
         {
             case Target.Share: Share(); break;
             case Target.GetApp: OS.ShellOpen(ShareAction.DownloadUrl); break;
-            case Target.Close: _message = null; break;
+            case Target.Close: _message = null; _following = false; break;
         }
     }
 
     private void Share()
     {
+        _following = false;
         var status = ShareAction.ReadStatusFile(AppStatus.FilePath(), DateTimeOffset.UtcNow);
         var action = ShareAction.For(status, _runId);
         GD.Print($"[STS2 Damage] share {_runId}: Spire Sync {status.State}");
@@ -229,7 +239,33 @@ internal sealed class ShareButton
             return;
         }
         DisplayServer.ClipboardSet(action.WebLink!);
-        Show(action.Message, getApp: false, transient: true);
+        // Keep the note up and follow the app's progress for this run (Poll).
+        Show(action.Message, getApp: false, transient: false);
+        _following = true;
+        _shareReported = false;
+        _pressedAtUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        _pressedAtMs = Time.GetTicksMsec();
+        _nextPollMs = _pressedAtMs + PollMs;
+    }
+
+    // Once a second while following: re-read the status file and update the note. Never throws; a failure stops
+    // following and leaves the note as it was.
+    private void Poll(ulong now)
+    {
+        _nextPollMs = now + PollMs;
+        try
+        {
+            var status = ShareAction.ReadStatusFile(AppStatus.FilePath(), DateTimeOffset.UtcNow);
+            _shareReported |= status.ShareReported;
+            var p = ShareAction.Follow(status.Share, _shareReported, _runId, _pressedAtUnix, (now - _pressedAtMs) / 1000.0);
+            if (!ReferenceEquals(p.Message, _message) || p.Done)
+            {
+                if (p.Done) GD.Print($"[STS2 Damage] share {_runId}: {(status.Share?.RunId == _runId ? status.Share.State.ToString() : "no confirmation")}");
+                Show(p.Message, getApp: false, transient: p.AutoHide);
+            }
+            if (p.Done) _following = false;
+        }
+        catch (Exception ex) { _following = false; ErrorLog.Once("share progress", ex); }
     }
 
     private void Show(string text, bool getApp, bool transient)

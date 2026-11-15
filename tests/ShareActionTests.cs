@@ -19,7 +19,7 @@ public class ShareActionTests
         Assert.Equal(ShareKind.Share, a.Kind);
         Assert.Equal("spiresync://share/0123456789abcdef", a.AppLink);
         Assert.Equal("https://sts2.thegates.house/runs/0123456789abcdef", a.WebLink);
-        Assert.Equal("Link copied: the run is being shared", a.Message);
+        Assert.Equal("Sharing… link copied", a.Message);
         Assert.False(a.ShowGetApp);
     }
 
@@ -142,4 +142,135 @@ public class ShareRunTests
     [Fact]
     public void NothingResolvedGivesNoId() =>
         Assert.Equal((null, ShareRun.Why.Unresolved), ShareRun.Pick(true, true, null, true, null));
+}
+
+// Following a share after a press: the `share` entry in the status file and what the note says.
+public class ShareProgressTests
+{
+    private const string Run = "0123456789abcdef";
+    private static readonly DateTimeOffset Now = DateTimeOffset.FromUnixTimeSeconds(1_800_000_000);
+
+    private static string Json() =>
+        "{\"v\":1,\"running\":true,\"signed_in\":true,\"steam_id\":\"76561198000000001\",\"server\":\"https://sts2.thegates.house/\",\"app_version\":\"0.3.3\",\"updated\":1800000000}";
+
+    private const long Pressed = 1_800_000_000;
+
+    private static string WithShare(string share) => Json().TrimEnd('}') + ",\"share\":" + share + "}";
+
+    private static string Entry(string state, string? reason = null, long at = Pressed, string run = Run) =>
+        $"{{\"run_id\":\"{run}\",\"state\":\"{state}\",\"reason\":{(reason == null ? "null" : "\"" + reason + "\"")},\"at\":{at}}}";
+
+    [Theory]
+    [InlineData("pending", "Pending")]
+    [InlineData("waiting", "Waiting")]
+    [InlineData("shared", "Shared")]
+    [InlineData("failed", "Failed")]
+    public void ParsesTheShareEntry(string state, string expectedName)
+    {
+        var expected = Enum.Parse<ShareState>(expectedName);
+        var s = AppStatus.Read(WithShare(Entry(state, state == "failed" ? "Not signed in to Steam" : null)), Now);
+        Assert.Equal(AppState.Ready, s.State);
+        Assert.True(s.ShareReported);
+        Assert.Equal(new ShareEntry(Run, expected, state == "failed" ? "Not signed in to Steam" : null, Pressed), s.Share);
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("[]")]
+    [InlineData("\"shared\"")]
+    [InlineData("{\"run_id\":\"0123456789abcdef\",\"state\":\"done\",\"at\":1800000000}")]
+    [InlineData("{\"run_id\":\"0123456789abcdef\",\"state\":\"shared\",\"at\":\"1800000000\"}")]
+    [InlineData("{\"run_id\":7,\"state\":\"shared\",\"at\":1800000000}")]
+    [InlineData("{\"state\":\"shared\",\"at\":1800000000}")]
+    public void MalformedShareIsReportedButHasNoEntry(string share)
+    {
+        var s = AppStatus.Read(WithShare(share), Now);
+        Assert.Equal(AppState.Ready, s.State);   // the rest of the file still counts
+        Assert.True(s.ShareReported);
+        Assert.Null(s.Share);
+    }
+
+    [Fact]
+    public void NoShareKeyIsNotReported()
+    {
+        var s = AppStatus.Read(Json(), Now);
+        Assert.False(s.ShareReported);
+        Assert.Null(s.Share);
+    }
+
+    [Fact]
+    public void ShareIsReadEvenFromAStaleFile()
+    {
+        var stale = WithShare(Entry("shared")).Replace("\"updated\":1800000000", "\"updated\":1700000000");
+        var s = AppStatus.Read(stale, Now);
+        Assert.Equal(AppState.NotRunning, s.State);
+        Assert.Equal(ShareState.Shared, s.Share?.State);
+    }
+
+    private static ShareAction.Progress F(ShareEntry? e, bool reported = true, double elapsed = 2) =>
+        ShareAction.Follow(e, reported, Run, Pressed, elapsed);
+
+    [Fact]
+    public void EachStateHasItsMessage()
+    {
+        Assert.Equal(new ShareAction.Progress("Waiting for the run to reach Spire Sync…", false, false), F(new ShareEntry(Run, ShareState.Pending, null, Pressed)));
+        Assert.Equal(new ShareAction.Progress("Waiting for the run to reach Spire Sync…", false, false), F(new ShareEntry(Run, ShareState.Waiting, null, Pressed + 3)));
+        Assert.Equal(new ShareAction.Progress("Shared! Link copied", true, true), F(new ShareEntry(Run, ShareState.Shared, null, Pressed + 3)));
+        Assert.Equal(new ShareAction.Progress("Steam is offline", true, false), F(new ShareEntry(Run, ShareState.Failed, "Steam is offline", Pressed)));
+        Assert.Equal(new ShareAction.Progress("Couldn't share. Check Spire Sync.", true, false), F(new ShareEntry(Run, ShareState.Failed, null, Pressed)));
+    }
+
+    [Fact]
+    public void BeforeAnyEntryTheNoteSaysSharing() =>
+        Assert.Equal(new ShareAction.Progress("Sharing… link copied", false, false), F(null));
+
+    [Fact]
+    public void AnotherRunsEntryIsIgnored()
+    {
+        var other = new ShareEntry("fedcba9876543210", ShareState.Shared, null, Pressed + 1);
+        Assert.Equal(ShareAction.SharedNote, F(other).Message);
+        Assert.False(F(other).Done);
+        Assert.Equal(ShareAction.DoneText, F(new ShareEntry(Run.ToUpperInvariant(), ShareState.Shared, null, Pressed)).Message);
+    }
+
+    [Fact]
+    public void AnEntryFromBeforeThePressIsIgnored()
+    {
+        var stale = new ShareEntry(Run, ShareState.Shared, null, Pressed - 1);   // the previous press of this run
+        Assert.Equal(ShareAction.SharedNote, F(stale).Message);
+        Assert.False(F(stale).Done);
+    }
+
+    [Fact]
+    public void AnOlderAppIsToldAfterTenSeconds()
+    {
+        Assert.Equal(ShareAction.SharedNote, F(null, reported: false, elapsed: 9.9).Message);
+        Assert.Equal(new ShareAction.Progress("Link copied. Open Spire Sync to confirm.", true, true), F(null, reported: false, elapsed: 10));
+        // An app that does report, but not for this run yet, is still waited on.
+        Assert.False(F(null, reported: true, elapsed: 30).Done);
+    }
+
+    [Fact]
+    public void GivesUpAfterSixMinutes()
+    {
+        var pending = new ShareEntry(Run, ShareState.Pending, null, Pressed);
+        Assert.False(F(pending, elapsed: 359).Done);
+        Assert.Equal(new ShareAction.Progress("Spire Sync didn't confirm. Check the app.", true, false), F(pending, elapsed: 360));
+        Assert.Equal(ShareAction.TimedOutText, F(null, elapsed: 400).Message);
+        // A terminal answer still wins at the deadline.
+        Assert.Equal(ShareAction.DoneText, F(new ShareEntry(Run, ShareState.Shared, null, Pressed), elapsed: 400).Message);
+    }
+
+    [Fact]
+    public void ReadsTheShareFromTheFile()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"share-status-{Guid.NewGuid():N}.json");
+        try
+        {
+            File.WriteAllText(path, WithShare(Entry("waiting")));
+            var s = ShareAction.ReadStatusFile(path, Now);
+            Assert.Equal(ShareState.Waiting, s.Share?.State);
+        }
+        finally { File.Delete(path); }
+    }
 }
