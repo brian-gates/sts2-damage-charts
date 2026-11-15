@@ -6,6 +6,10 @@
     <LangVersion>12.0</LangVersion>
     <AssemblyName>STS2_DamageCharts</AssemblyName>
     <RootNamespace>STS2_DamageCharts</RootNamespace>
+    <!-- Assembly version = mod_manifest.json "version" (single source of truth). The mod reads the manifest
+         beside the DLL at runtime and falls back to this when it is missing (run stats "mod_version"). -->
+    <Version>$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)mod_manifest.json')), '(?&lt;="version"\s*:\s*")[^"]+').Value)</Version>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <!-- Set your STS2 install path here, or pass as: dotnet build -p:STS2GameDir="..." -->
     <STS2GameDir Condition="'$(STS2GameDir)' == ''">D:\SteamLibrary\steamapps\common\Slay the Spire 2</STS2GameDir>
     <STS2GameDataDir Condition="'$(STS2GameDataDir)' == '' and '$(OS)' == 'Windows_NT'">$(STS2GameDir)/data_sts2_windows_x86_64</STS2GameDataDir>

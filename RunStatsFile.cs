@@ -55,6 +55,15 @@ internal static class RunStatsFile
         };
     }
 
+    // The "mod_version" to write: the installed manifest's version, else the DLL's own version (stamped from the
+    // manifest at build time), else the build tag. Never empty, since the server requires the field.
+    public static string ModVersion(string? manifest, string? assembly, string buildTag)
+    {
+        foreach (var v in new[] { manifest, assembly })
+            if (!string.IsNullOrWhiteSpace(v)) return v.Trim();
+        return buildTag;
+    }
+
     // At most `max` UTF-16 units (the server's string length), never splitting a surrogate pair.
     public static string? Clip(string? s, int max = MaxString)
     {
@@ -215,7 +224,7 @@ internal static class RunStatsFile
         return o;
     }
 
-    public static string Serialize(string runId, string recordedBy, string? modVersion, long updated, List<JsonObject> fights)
+    public static string Serialize(string runId, string recordedBy, string modVersion, long updated, List<JsonObject> fights)
     {
         // "index" must start at 1 and strictly increase: keep the stored numbers when they do, else renumber.
         bool ordered = true;
@@ -235,7 +244,7 @@ internal static class RunStatsFile
             ["run_id"] = runId,
             ["recorded_by"] = recordedBy,
         };
-        if (!string.IsNullOrEmpty(modVersion)) root["mod_version"] = Clip(modVersion);
+        root["mod_version"] = Clip(modVersion); // required by the server: a file without it is rejected
         root["updated"] = updated;
         root["fights"] = arr;
         return root.ToJsonString(Json);
@@ -245,7 +254,7 @@ internal static class RunStatsFile
     // and the new file text comes back; null when nothing should be written (the file is full, or even a
     // fight without source lists would push it past the size cap). The new fight's source lists shrink as
     // needed to fit; earlier fights are never rewritten. `existing` is left unchanged.
-    public static string? AddFight(List<JsonObject> existing, string runId, string recordedBy, string? modVersion,
+    public static string? AddFight(List<JsonObject> existing, string runId, string recordedBy, string modVersion,
         long updated, FightMeta? meta, IReadOnlyList<PlayerSources?> perPlayer, IReadOnlyList<string?> steamIds,
         int floorOrdinal, out Outcome outcome)
     {

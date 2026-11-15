@@ -103,7 +103,7 @@ public class RunStatsFileTests
     }
 
     [Fact]
-    public void UnknownMetaIsNullAndModVersionIsOmittedWhenUnknown()
+    public void UnknownMetaIsNullAndModVersionFallsBackWhenManifestIsUnknown()
     {
         var f = RunStatsFile.BuildFight(new FightMeta(), TwoPlayers(), new[] { A, B });
         Assert.Null(f["floor"]);
@@ -111,8 +111,15 @@ public class RunStatsFileTests
         Assert.Null(f["rounds"]);
         Assert.Equal("unknown", (string)f["kind"]!);
         Assert.Equal("unknown", RunStatsFile.KindName(null));
-        var root = JsonNode.Parse(RunStatsFile.Serialize(Run, A, null, 1, new List<JsonObject> { f }))!;
-        Assert.False(root.AsObject().ContainsKey("mod_version"));
+        // The server requires mod_version: an unreadable manifest falls back to the DLL's version, then the build tag.
+        Assert.Equal("1.4.0", RunStatsFile.ModVersion(" 1.4.0 ", "1.3.9", "2026-11-15"));
+        Assert.Equal("1.4.0", RunStatsFile.ModVersion(null, "1.4.0", "2026-11-15"));
+        Assert.Equal("2026-11-15", RunStatsFile.ModVersion(null, null, "2026-11-15"));
+        Assert.Equal("2026-11-15", RunStatsFile.ModVersion("", " ", "2026-11-15"));
+        string version = RunStatsFile.ModVersion(null, null, "2026-11-15");
+        var root = JsonNode.Parse(RunStatsFile.Serialize(Run, A, version, 1, new List<JsonObject> { f }))!;
+        Assert.Equal("2026-11-15", (string)root["mod_version"]!);
+        AssertOnlySpecKeys(root);
     }
 
     [Fact]
@@ -224,7 +231,7 @@ public class RunStatsFileTests
         var fights = new List<JsonObject>();
         for (int i = 1; i <= RunStatsFile.MaxFights; i++) RunStatsFile.Upsert(fights, Fight(i), 1);
         Assert.Equal(RunStatsFile.Outcome.Full, RunStatsFile.Upsert(fights, Fight(999), 1));
-        Assert.Null(RunStatsFile.AddFight(fights, Run, A, null, 1, Meta(999), TwoPlayers(), new[] { A, B }, 1, out var o));
+        Assert.Null(RunStatsFile.AddFight(fights, Run, A, "1.4.0", 1, Meta(999), TwoPlayers(), new[] { A, B }, 1, out var o));
         Assert.Equal(RunStatsFile.Outcome.Full, o);
     }
 
@@ -258,7 +265,7 @@ public class RunStatsFileTests
             "\"players\":[{\"steam_id\":\"" + A + "\",\"y\":2,\"dealt\":{\"total\":1,\"z\":3,\"sources\":[{\"name\":\"S\",\"amount\":1,\"icon\":\"res://x\"}]}," +
             "\"taken\":{\"total\":0,\"sources\":[]}}]}]}";
         var fights = RunStatsFile.ParseFights(json, Run)!;
-        var root = JsonNode.Parse(RunStatsFile.Serialize(Run, A, null, 1, fights))!;
+        var root = JsonNode.Parse(RunStatsFile.Serialize(Run, A, "1.4.0", 1, fights))!;
         AssertOnlySpecKeys(root);
         Assert.Equal("S", (string)root["fights"]![0]!["players"]![0]!["dealt"]!["sources"]![0]!["name"]!);
     }
@@ -269,7 +276,7 @@ public class RunStatsFileTests
         string json = "{\"v\":1,\"run_id\":\"ba18b6e0404293b2\",\"fights\":[" +
             "{\"index\":2,\"kind\":\"monster\",\"players\":[]},{\"index\":2,\"kind\":\"elite\",\"players\":[]}]}";
         var fights = RunStatsFile.ParseFights(json, Run)!;
-        var root = JsonNode.Parse(RunStatsFile.Serialize(Run, A, null, 1, fights))!;
+        var root = JsonNode.Parse(RunStatsFile.Serialize(Run, A, "1.4.0", 1, fights))!;
         Assert.Equal(new[] { 1, 2 }, root["fights"]!.AsArray().Select(f => (int)f!["index"]!).ToArray());
     }
 
@@ -285,10 +292,10 @@ public class RunStatsFileTests
         {
             var trial = new List<JsonObject>(existing);
             RunStatsFile.Upsert(trial, RunStatsFile.BuildFight(Meta(trial.Count + 1), fat, ids), 1);
-            if (System.Text.Encoding.UTF8.GetByteCount(RunStatsFile.Serialize(Run, ids[0], null, 1, trial)) > RunStatsFile.MaxBytes - 20_000) break;
+            if (System.Text.Encoding.UTF8.GetByteCount(RunStatsFile.Serialize(Run, ids[0], "1.4.0", 1, trial)) > RunStatsFile.MaxBytes - 20_000) break;
             existing = trial;
         }
-        string? text = RunStatsFile.AddFight(existing, Run, ids[0], null, 1, Meta(500), fat, ids, 1, out var o);
+        string? text = RunStatsFile.AddFight(existing, Run, ids[0], "1.4.0", 1, Meta(500), fat, ids, 1, out var o);
         Assert.NotNull(text);
         Assert.Equal(RunStatsFile.Outcome.Appended, o);
         Assert.True(System.Text.Encoding.UTF8.GetByteCount(text!) <= RunStatsFile.MaxBytes);

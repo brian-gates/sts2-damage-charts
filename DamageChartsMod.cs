@@ -99,7 +99,7 @@ public static class DamageChartsMod
     private static FightMeta _fightMeta = new(); // this combat's floor / name / elite-boss / rounds, for the recap
     // Per-run damage stats file (single-player and co-op; "run_stats_file": false turns it off). See RunStatsFile.cs.
     private static bool _runStatsFile = true;
-    private static string? _modVersion;          // from the mod manifest next to the DLL; null = unknown
+    private static string _modVersion = BuildTag; // run stats "mod_version" (RunStatsFile.ModVersion); never empty
     // Which run this combat belongs to, read at combat start; the fight is written only if the run is the
     // same at combat end, and the recap aggregate is keyed to it, so another run's stats never mix in.
     private sealed record RunIdent(string RunId, string[] SteamIds, string? LocalId);
@@ -134,7 +134,7 @@ public static class DamageChartsMod
         try
         {
             if (!LoadConfig()) { GD.Print("[STS2 Damage] disabled via config"); return; }
-            _modVersion = ReadModVersion();
+            _modVersion = RunStatsFile.ModVersion(ReadModVersion(), AssemblyVersion(), BuildTag);
 
             var tree = (SceneTree)Engine.GetMainLoop();
             _tickCallable = Callable.From(Tick);
@@ -214,6 +214,18 @@ public static class DamageChartsMod
             if (!File.Exists(path)) return null;
             using var doc = JsonDocument.Parse(File.ReadAllText(path));
             return doc.RootElement.TryGetProperty("version", out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        }
+        catch { return null; }
+    }
+
+    // The DLL's own version (the csproj stamps mod_manifest.json's "version" into it): informational, else file.
+    private static string? AssemblyVersion()
+    {
+        try
+        {
+            var asm = Assembly.GetExecutingAssembly();
+            return asm.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+                ?? asm.GetCustomAttribute<AssemblyFileVersionAttribute>()?.Version;
         }
         catch { return null; }
     }
