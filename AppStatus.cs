@@ -14,6 +14,7 @@ internal sealed partial record AppStatus(AppState State, string? Server, string?
 {
     public const string FileName = "spire-sync-status.json";
     public const int StaleSeconds = 150;
+    public const int FutureSkewSeconds = 300;
 
     public static readonly AppStatus NotRunning = new(AppState.NotRunning, null, null);
 
@@ -34,14 +35,19 @@ internal sealed partial record AppStatus(AppState State, string? Server, string?
                 return NotRunning;
             if (!root.TryGetProperty("updated", out var upd) || upd.ValueKind != JsonValueKind.Number
                 || !upd.TryGetInt64(out long updated)) return NotRunning;
-            if (now.ToUnixTimeSeconds() - updated > StaleSeconds) return NotRunning;
-            bool signedIn = root.TryGetProperty("signed_in", out var si) && si.ValueKind == JsonValueKind.True;
-            if (!signedIn) return new AppStatus(AppState.SignedOut, null, null);
-            string? server = Str(root, "server")?.TrimEnd('/');
+            long nowS = now.ToUnixTimeSeconds();
+            // Compare without subtracting from `updated` (no overflow); a far-future stamp is not "fresh forever".
+            if (updated < nowS - StaleSeconds || updated > nowS + FutureSkewSeconds) return NotRunning;
+            if (!root.TryGetProperty("signed_in", out var si)
+                || (si.ValueKind != JsonValueKind.True && si.ValueKind != JsonValueKind.False)) return NotRunning;
+            if (si.ValueKind == JsonValueKind.False) return new AppStatus(AppState.SignedOut, null, null);
+            string? server = Str(root, "server")?.Trim().TrimEnd('/').Trim();
+            if (string.IsNullOrEmpty(server)) return NotRunning;
             return new AppStatus(AppState.Ready, server, Str(root, "steam_id"));
         }
-        catch (JsonException)
+        catch (Exception)
         {
+            // Never throw on a file another process writes: JsonException, lone-surrogate InvalidOperation, etc.
             return NotRunning;
         }
     }

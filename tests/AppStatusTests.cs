@@ -61,4 +61,66 @@ public class AppStatusTests
     [Fact]
     public void PathIsFileInDataDir() =>
         Assert.Equal(System.IO.Path.Combine("d", "spire-sync-status.json"), AppStatus.PathIn("d"));
+
+    private static AppStatus Safe(string json) => AppStatus.Read(json, Now);
+    private const string U = "1800000000";
+
+    [Fact]
+    public void SteamIdAsNumberIsIgnoredNotFatal()
+    {
+        var s = Safe($"{{\"v\":1,\"signed_in\":true,\"steam_id\":123,\"server\":\"https://x\",\"updated\":{U}}}");
+        Assert.Equal(AppState.Ready, s.State);
+        Assert.Null(s.SteamId);
+    }
+
+    [Fact]
+    public void UpdatedAsStringIsNotRunning() =>
+        Assert.Equal(AppState.NotRunning, Safe("{\"v\":1,\"signed_in\":true,\"server\":\"https://x\",\"updated\":\"1800000000\"}").State);
+
+    [Fact]
+    public void SignedInAsStringIsNotRunning() =>
+        Assert.Equal(AppState.NotRunning, Safe($"{{\"v\":1,\"signed_in\":\"true\",\"server\":\"https://x\",\"updated\":{U}}}").State);
+
+    [Fact]
+    public void MissingUpdatedIsNotRunning() =>
+        Assert.Equal(AppState.NotRunning, Safe("{\"v\":1,\"signed_in\":true,\"server\":\"https://x\"}").State);
+
+    [Theory]
+    [InlineData("1800000000.5")]
+    [InlineData("99999999999999999999999")]
+    [InlineData("-9223372036854775808")]
+    [InlineData("9223372036854775807")]
+    [InlineData("1800000301")]
+    public void BadOrOutOfRangeUpdatedIsNotRunning(string updated) =>
+        Assert.Equal(AppState.NotRunning,
+            Safe($"{{\"v\":1,\"signed_in\":true,\"server\":\"https://x\",\"updated\":{updated}}}").State);
+
+    [Fact]
+    public void SmallClockSkewIntoFutureIsFine() =>
+        Assert.Equal(AppState.Ready, Safe(Json(1_800_000_300)).State);
+
+    [Fact]
+    public void DeeplyNestedJunkDoesNotThrow()
+    {
+        string junk = new string('[', 5000) + new string(']', 5000);
+        Assert.Equal(AppState.NotRunning, Safe(junk).State);
+        Assert.Equal(AppState.NotRunning, Safe($"{{\"v\":1,\"x\":{junk},\"updated\":{U}}}").State);
+    }
+
+    [Fact]
+    public void LoneSurrogateEscapeInServerIsNotRunning() =>
+        Assert.Equal(AppState.NotRunning, Safe($"{{\"v\":1,\"signed_in\":true,\"server\":\"\\ud800\",\"updated\":{U}}}").State);
+
+    [Fact]
+    public void RawLoneSurrogateInInputDoesNotThrow() =>
+        Assert.Equal(AppState.NotRunning, Safe("{\"v\":1,\"server\":\"\ud800\"}").State);
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(",\"server\":null")]
+    [InlineData(",\"server\":5")]
+    [InlineData(",\"server\":\"  /\"")]
+    public void ReadyNeedsUsableServer(string serverPart) =>
+        Assert.Equal(AppState.NotRunning,
+            Safe($"{{\"v\":1,\"signed_in\":true,\"updated\":{U}{serverPart}}}").State);
 }
