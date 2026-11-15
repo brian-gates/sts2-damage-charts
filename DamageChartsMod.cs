@@ -26,7 +26,7 @@ namespace STS2_DamageCharts;
 public static class DamageChartsMod
 {
     private const string ConfigFileName = "STS2_DamageCharts.conf";
-    private const string BuildTag = "2026-11-04";  // stamped at init so logs identify the loaded DLL
+    private const string BuildTag = "2026-11-15";  // stamped at init so logs identify the loaded DLL
 
     // Per-player colors for the current run: each class's own color (as on the game's Statistics
     // screen), with a different shade for a repeated class. Set at combat start.
