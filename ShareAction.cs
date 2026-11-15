@@ -48,3 +48,24 @@ internal sealed record ShareAction(ShareKind Kind, string Message, string? AppLi
         }
     }
 }
+
+// Which run the game-over screen's Share button shares. The run id is built from RunManager's private start
+// time, which belongs to whatever run is loaded, so an id is trusted only when the finished run is the loaded
+// one: a run is in progress and the screen's own RunState is that live RunState. The last combat's id is the
+// fallback only when that combat was fought in the same live RunState. Anything else (a run abandoned from the
+// main menu that isn't loaded, a screen whose RunState can't be read) gives no id: sharing the wrong run is
+// worse than no button. Pure: the tests compile it directly.
+internal static class ShareRun
+{
+    public enum Why { Live, LastCombat, NoRun, ScreenNotLive, Unresolved }
+
+    public static (string? Id, Why Why) Pick(bool runInProgress, bool screenIsLiveRun, string? liveId,
+        bool fightIsLiveRun, string? fightId)
+    {
+        if (!runInProgress) return (null, Why.NoRun);
+        if (!screenIsLiveRun) return (null, Why.ScreenNotLive);
+        if (!string.IsNullOrEmpty(liveId)) return (liveId, Why.Live);
+        if (fightIsLiveRun && !string.IsNullOrEmpty(fightId)) return (fightId, Why.LastCombat);
+        return (null, Why.Unresolved);
+    }
+}

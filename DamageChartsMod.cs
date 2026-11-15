@@ -104,6 +104,7 @@ public static class DamageChartsMod
     // same at combat end, and the recap aggregate is keyed to it, so another run's stats never mix in.
     private sealed record RunIdent(string RunId, string[] SteamIds, string? LocalId);
     private static RunIdent? _fightRun;
+    private static RunState? _fightRunState;   // the RunState _fightRun was read from (Share button fallback)
     private static FieldInfo? _startTimeField;
     private static bool _startTimeResolved;
     // Fights written this session on the current floor of the current run: tells a fight replayed after a
@@ -796,13 +797,16 @@ public static class DamageChartsMod
 
     // ===== Share button (victory and death screens) =====
 
-    // Postfix on NGameOverScreen._Ready: remember the screen and resolve the run id now, while the run is
-    // still loaded. ShareButton (driven from Tick) shows while that screen is on top. A run id that can't be
-    // resolved means no button: sharing the wrong run would be worse than not offering it.
+    // Postfix on NGameOverScreen._Ready records the screen and picks its run id right away, while the finished
+    // run is still loaded (ShareRun.Pick says when an id can be trusted). ShareButton is created lazily and
+    // driven from Tick while that screen is on top. No trustworthy id means no button: sharing the wrong run
+    // would be worse than not offering it.
     private static ShareButton? _share;
     private static Node? _gameOverScreen;
     private static string? _shareRunId;
+    private static bool _shareRunIdNew;          // a new screen: reset the button before showing it
     private static bool _shareIdMissLogged;
+    private static Type? _clickableType;
 
     private static void TryApplyGameOverHook()
     {
@@ -814,8 +818,52 @@ public static class DamageChartsMod
             var postfix = new HarmonyMethod(typeof(DamageChartsMod).GetMethod(nameof(GameOverReadyPostfix), BindingFlags.NonPublic | BindingFlags.Static));
             new Harmony("com.sts2damagecharts").Patch(ready, postfix: postfix);
             GD.Print("[STS2 Damage] game-over hook applied (Share button)");
+            TryApplyShareClickGuard();
         }
         catch (Exception ex) { GD.PrintErr($"[STS2 Damage] game-over hook skipped: {ex.GetType().Name}: {ex.Message}"); }
+    }
+
+    // The game's buttons (NClickableControl) react to the mouse on their own, not only through GUI input that
+    // our MouseFilter.Stop controls could absorb, and our clicks are polled after input is dispatched (too late
+    // for SetInputAsHandled). So while the cursor is over the Share button or its panel, skip the game's
+    // HandleMousePress/HandleMouseRelease: nothing under it (Continue, View Run, Main Menu, Leaderboard) reacts.
+    // Only void or Task methods are patched (a skipped Task method returns a completed task); anything else is
+    // left alone and logged.
+    private static void TryApplyShareClickGuard()
+    {
+        try
+        {
+            _clickableType = AccessTools.TypeByName("MegaCrit.Sts2.Core.Nodes.GodotExtensions.NClickableControl");
+            if (_clickableType == null) { GD.Print("[STS2 Damage] share click guard not resolved: clicks on Share may reach the screen"); return; }
+            var h = new Harmony("com.sts2damagecharts");
+            int patched = 0;
+            foreach (var m in _clickableType.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
+            {
+                if (m.Name != "HandleMousePress" && m.Name != "HandleMouseRelease") continue;
+                string? prefix = m.ReturnType == typeof(void) ? nameof(ShareClickGuardPrefix)
+                    : m.ReturnType == typeof(System.Threading.Tasks.Task) ? nameof(ShareClickGuardTaskPrefix) : null;
+                if (prefix == null) { GD.Print($"[STS2 Damage] share click guard: {m.Name} returns {m.ReturnType.Name}, not patched"); continue; }
+                h.Patch(m, prefix: new HarmonyMethod(typeof(DamageChartsMod).GetMethod(prefix, BindingFlags.NonPublic | BindingFlags.Static)));
+                patched++;
+            }
+            GD.Print($"[STS2 Damage] share click guard applied to {patched} method(s)");
+        }
+        catch (Exception ex) { GD.PrintErr($"[STS2 Damage] share click guard skipped: {ex.GetType().Name}: {ex.Message}"); }
+    }
+
+    private static bool ShareCoversMouse()
+    {
+        try { return _share != null && _share.IsValid() && _share.Covers(RootMouse()); }
+        catch { return false; }
+    }
+
+    private static bool ShareClickGuardPrefix() => !ShareCoversMouse();
+
+    private static bool ShareClickGuardTaskPrefix(ref System.Threading.Tasks.Task __result)
+    {
+        if (!ShareCoversMouse()) return true;
+        __result = System.Threading.Tasks.Task.CompletedTask;
+        return false;
     }
 
     private static void GameOverReadyPostfix(object __instance)
@@ -823,21 +871,27 @@ public static class DamageChartsMod
         try
         {
             if (__instance is not Node screen) return;
-            // The screen is created with the finished run's RunState; fall back to the live run, then to the
-            // run of the last combat (a run ends in combat, and the new-run edge in Tick clears it).
-            var ident = ReadRunIdentity(RunStateOf(screen)) ?? ReadRunIdentity(SafeRunState()) ?? _fightRun;
             _gameOverScreen = screen;
-            _shareRunId = ident?.RunId;
-            if (_shareRunId == null)
+            _shareRunId = null;
+            _shareRunIdNew = true;
+            bool inProgress = SafeIsRunInProgress();
+            var live = inProgress ? SafeRunState() : null;
+            var screenRun = RunStateOf(screen);
+            bool screenIsLive = live != null && ReferenceEquals(screenRun, live);
+            bool fightIsLive = live != null && ReferenceEquals(_fightRunState, live);
+            var (id, why) = ShareRun.Pick(inProgress, screenIsLive,
+                screenIsLive ? ReadRunIdentity(live)?.RunId : null, fightIsLive, _fightRun?.RunId);
+            _shareRunId = id;
+            if (id == null)
             {
-                if (!_shareIdMissLogged) GD.Print("[STS2 Damage] run id not resolved on the game-over screen: no Share button");
+                if (!_shareIdMissLogged)
+                    GD.Print($"[STS2 Damage] game-over screen: no trustworthy run id ({why}, run in progress={inProgress}, " +
+                             $"screen run found={screenRun != null}): no Share button");
                 _shareIdMissLogged = true;
-                return;
             }
-            _share ??= new ShareButton(((SceneTree)Engine.GetMainLoop()).Root);
-            _share.Reset(_shareRunId);
+            else GD.Print($"[STS2 Damage] game-over screen: Share run {id} ({why})");
         }
-        catch (Exception ex) { ErrorLog.Once("game-over hook", ex); }
+        catch (Exception ex) { _shareRunId = null; ErrorLog.Once("game-over hook", ex); }
     }
 
     private static RunState? RunStateOf(object screen)
@@ -855,24 +909,30 @@ public static class DamageChartsMod
     // overlay such as run history, or the mod's own run recap). Never counts toward the tick's error limit.
     private static void UpdateShare()
     {
-        if (_share == null) return;
         try
         {
             var screen = _gameOverScreen;
             if (screen == null || !GodotObject.IsInstanceValid(screen) || !screen.IsInsideTree())
             {
                 _gameOverScreen = null;
-                _share.Hide();
+                _share?.Hide();
                 return;
             }
             string? top = TopOverlayName();
             bool shown = _shareRunId != null && !_recapVisible && !IsMenuOpen()
                 && (top == null || top == "NGameOverScreen")
                 && (screen is not CanvasItem ci || ci.IsVisibleInTree());
-            if (shown) _share.Update(Input.IsMouseButtonPressed(MouseButton.Left));
-            else _share.Hide();
+            if (!shown) { _share?.Hide(); return; }
+            if (_share == null || !_share.IsValid())
+            {
+                _share?.Dispose();
+                _share = new ShareButton(((SceneTree)Engine.GetMainLoop()).Root);
+                _shareRunIdNew = true;
+            }
+            if (_shareRunIdNew) { _share.Reset(_shareRunId!); _shareRunIdNew = false; }
+            _share.Update(Input.IsMouseButtonPressed(MouseButton.Left));
         }
-        catch (Exception ex) { try { _share.Hide(); } catch { } ErrorLog.Once("share", ex); }
+        catch (Exception ex) { try { _share?.Hide(); } catch { } ErrorLog.Once("share", ex); }
     }
 
     // ===== Per-frame tick =====
@@ -895,7 +955,7 @@ public static class DamageChartsMod
             // Run lifecycle: a fresh run (not-in-progress -> in-progress) clears the run-wide aggregate
             // so the recap never shows a previous run's data.
             bool runActive = SafeIsRunInProgress();
-            if (runActive && !_runActiveLast) { _run.Clear(); _recapVisible = false; _fightRun = null; }
+            if (runActive && !_runActiveLast) { _run.Clear(); _recapVisible = false; _fightRun = null; _fightRunState = null; }
             _runActiveLast = runActive;
 
             bool inCombat = SafeIsInCombat();
@@ -1230,8 +1290,10 @@ public static class DamageChartsMod
         var rs = SafeRunState();
         _players = rs?.Players ?? (IReadOnlyList<Player>)Array.Empty<Player>();
         _fightRun = null;
+        _fightRunState = null;
         if (_players.Count == 0) return;
         _fightRun = ReadRunIdentity(rs);
+        _fightRunState = _fightRun != null ? rs : null;
         if (_run.EnsureRun(_fightRun?.RunId)) GD.Print("[STS2 Damage] another run: run recap reset");
 
         var labels = new string[_players.Count];

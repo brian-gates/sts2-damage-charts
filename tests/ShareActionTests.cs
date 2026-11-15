@@ -110,3 +110,36 @@ public class ShareActionTests
         finally { File.Delete(p); }
     }
 }
+
+public class ShareRunTests
+{
+    private const string Live = "1111111111111111", Fight = "2222222222222222";
+
+    [Fact]
+    public void LiveRunMatchingTheScreenIsShared() =>
+        Assert.Equal((Live, ShareRun.Why.Live), ShareRun.Pick(true, true, Live, true, Fight));
+
+    [Fact]
+    public void NoRunInProgressGivesNoId()
+    {
+        // e.g. a run abandoned from the main menu without being loaded: the live start time isn't its own.
+        Assert.Equal((null, ShareRun.Why.NoRun), ShareRun.Pick(false, true, Live, true, Fight));
+        Assert.Equal((null, ShareRun.Why.NoRun), ShareRun.Pick(false, false, null, false, Fight));
+    }
+
+    [Fact]
+    public void ScreenForAnotherRunGivesNoId() =>
+        Assert.Equal((null, ShareRun.Why.ScreenNotLive), ShareRun.Pick(true, false, Live, true, Fight));
+
+    [Fact]
+    public void LastCombatIsUsedOnlyWhenFoughtInTheLiveRun()
+    {
+        Assert.Equal((Fight, ShareRun.Why.LastCombat), ShareRun.Pick(true, true, null, true, Fight));
+        // Run A's last combat while run B is loaded: never shared as B.
+        Assert.Equal((null, ShareRun.Why.Unresolved), ShareRun.Pick(true, true, null, false, Fight));
+    }
+
+    [Fact]
+    public void NothingResolvedGivesNoId() =>
+        Assert.Equal((null, ShareRun.Why.Unresolved), ShareRun.Pick(true, true, null, true, null));
+}

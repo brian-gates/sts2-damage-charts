@@ -93,8 +93,10 @@ not in the spec). `run_id` comes from `RunId.cs` (copied from the Run Library mo
 (`RunAggregate.EnsureRun`), and a fight is written only if the run is unchanged at combat end.
 
 **Share button** (`ShareButton.cs`; pure logic in `ShareAction.cs` + `AppStatus.cs`): a postfix on
-`NGameOverScreen._Ready` (`TryApplyGameOverHook`) records the screen and resolves its run id (`ReadRunIdentity`,
-falling back to the last combat's); `UpdateShare` in `Tick` shows the button while that screen is on top. Pressing
+`NGameOverScreen._Ready` (`TryApplyGameOverHook`) records the screen and picks its run id with `ShareRun.Pick`:
+only when the screen's RunState is the live run (else no button; never the wrong run). `UpdateShare` in `Tick`
+creates the button lazily and shows it while that screen is on top; a prefix on `NClickableControl.HandleMouse*`
+keeps the game's buttons from reacting to presses over it. Pressing
 it reads Spire Sync's status file (`spire-sync-status.json` in the user data dir, size-capped) and either opens
 `spiresync://share/<run_id>` + copies `<server>/runs/<run_id>`, or explains (app not running / signed out). No
 network calls of its own.

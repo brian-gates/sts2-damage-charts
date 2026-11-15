@@ -119,6 +119,14 @@ internal sealed class ShareButton
         catch (Exception ex) { ErrorLog.Once("share button", ex); }
     }
 
+    // True while the button (or its panel) is on screen under `p`: the mod keeps the game's own buttons from
+    // reacting to that press.
+    public bool Covers(Vector2 p)
+    {
+        if (!IsValid() || !_layer.Visible) return false;
+        return _btn.GetGlobalRect().HasPoint(p) || (_msg.Visible && _msg.GetGlobalRect().HasPoint(p));
+    }
+
     private Target Hit(Vector2 p)
     {
         if (_msg.Visible)
@@ -149,14 +157,16 @@ internal sealed class ShareButton
             Show(action.Message, action.ShowGetApp, transient: false);
             return;
         }
-        DisplayServer.ClipboardSet(action.WebLink!);
+        // Copy only once the app has been handed the run: a link to a run that isn't shared would not open.
         var err = OS.ShellOpen(action.AppLink!);
         if (err != Error.Ok)
         {
             GD.PrintErr($"[STS2 Damage] share: opening Spire Sync failed ({err})");
             Show(ShareAction.OpenFailedText, getApp: false, transient: false);
+            return;
         }
-        else Show(action.Message, getApp: false, transient: true);
+        DisplayServer.ClipboardSet(action.WebLink!);
+        Show(action.Message, getApp: false, transient: true);
     }
 
     private void Show(string text, bool getApp, bool transient)
