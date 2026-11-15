@@ -47,4 +47,25 @@ public class RunIdTests
     [Fact]
     public void IsSixteenLowercaseHex() =>
         Assert.Matches("^[0-9a-f]{16}$", RunId.Compute("1785480255", "3RB6T30C9E", new[] { A }));
+
+    // Single-player: the game's lone player has the placeholder net id 1; the save library keys the run with the
+    // owner's Steam ID (sts2-saves parseSave/parseHistory soloOwner), so the mod must too.
+    [Fact]
+    public void SinglePlayerPlaceholderBecomesTheLocalSteamId() =>
+        Assert.Equal(new[] { A }, RunId.ResolveSolo(new[] { "1" }, A));
+
+    [Fact]
+    public void SinglePlayerWithoutALocalSteamIdIsUnknown() =>
+        Assert.Null(RunId.ResolveSolo(new[] { "1" }, null));
+
+    [Fact]
+    public void RealSteamIdsAreKept()
+    {
+        Assert.Equal(new[] { A, B }, RunId.ResolveSolo(new[] { A, B }, C));
+        Assert.Equal(new[] { B }, RunId.ResolveSolo(new[] { B }, C));
+    }
+
+    [Fact]
+    public void MultiplayerWithAPlaceholderIsUnknown() =>
+        Assert.Null(RunId.ResolveSolo(new[] { A, "2" }, C));
 }

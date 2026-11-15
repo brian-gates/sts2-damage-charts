@@ -97,7 +97,7 @@ public static class DamageChartsMod
     private static bool _sourceHooks = true;
     private static bool _combatResolved;      // this combat reached a win/loss (not abandoned)
     private static FightMeta _fightMeta = new(); // this combat's floor / name / elite-boss / rounds, for the recap
-    // Per-run damage stats file (multiplayer only; "run_stats_file": false turns it off). See RunStatsFile.cs.
+    // Per-run damage stats file (single-player and co-op; "run_stats_file": false turns it off). See RunStatsFile.cs.
     private static bool _runStatsFile = true;
     private static string? _modVersion;          // from the mod manifest next to the DLL; null = unknown
     // Which run this combat belongs to, read at combat start; the fight is written only if the run is the
@@ -1209,6 +1209,27 @@ public static class DamageChartsMod
 
     // The save library's run id for the live run (start time, seed, players' SteamID64s), plus each slot's
     // SteamID64 and the local player's. Null when any part can't be read: then nothing is written.
+    // This Steam account's SteamID64, from the game's PlatformUtil.GetLocalPlayerId(PrimaryPlatform), read by name
+    // so versions without it just skip single-player stats. Cached; null when unavailable.
+    private static string? _localSteamId;
+    private static bool _localSteamResolved;
+    private static string? LocalSteamId()
+    {
+        if (_localSteamResolved) return _localSteamId;
+        _localSteamResolved = true;
+        try
+        {
+            var util = AccessTools.TypeByName("MegaCrit.Sts2.Core.Platform.PlatformUtil");
+            var platform = util?.GetProperty("PrimaryPlatform")?.GetValue(null);
+            var get = util?.GetMethod("GetLocalPlayerId", new[] { platform?.GetType() ?? typeof(object) });
+            if (get?.Invoke(null, new[] { platform }) is ulong id && id != 0)
+                _localSteamId = id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        catch { }
+        if (_localSteamId == null) GD.Print("[STS2 Damage] local Steam ID not found: no single-player run stats file");
+        return _localSteamId;
+    }
+
     private static RunIdent? ReadRunIdentity(RunState? rs)
     {
         if (rs == null) return null;
@@ -1225,20 +1246,25 @@ public static class DamageChartsMod
             if (InstanceGet(InstanceGet(rs, "Rng"), "StringSeed") is not string seed || seed.Length == 0) return null;
             var players = rs.Players;
             if (players == null || players.Count == 0) return null;
-            var ids = new string[players.Count];
+            var raw = new string[players.Count];
             for (int i = 0; i < players.Count; i++)
             {
                 ulong id = players[i].NetId;
                 if (id == 0) return null;
-                ids[i] = id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                raw[i] = id.ToString(System.Globalization.CultureInfo.InvariantCulture);
             }
-            string? local = LocalContext.GetMe(rs)?.NetId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            string? me = LocalContext.GetMe(rs)?.NetId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            // Single-player: the lone player's net id is a placeholder (1); the run belongs to this Steam account.
+            string? localSteam = raw.Length == 1 && raw[0] == me ? LocalSteamId() : null;
+            var ids = RunId.ResolveSolo(raw, localSteam);
+            if (ids == null) return null;
+            string? local = ids.Length == 1 && raw.Length == 1 ? ids[0] : me;
             return new RunIdent(RunId.Compute(start.ToString(System.Globalization.CultureInfo.InvariantCulture), seed, ids), ids, local);
         }
         catch { return null; }
     }
 
-    // After a finished multiplayer combat: add it to <user dir>/damage-charts/runs/<run_id>.json (temp file +
+    // After a finished combat: add it to <user dir>/damage-charts/runs/<run_id>.json (temp file +
     // rename). Never throws; a failure costs this fight's entry only.
     private static void TryWriteRunStats()
     {
@@ -1247,7 +1273,7 @@ public static class DamageChartsMod
             if (!_runStatsFile || !_combatResolved) return; // an abandoned fight is replayed on continue
             var ident = _fightRun;
             // recorded_by must be one of the run's players (the server checks it).
-            if (ident == null || ident.SteamIds.Length < 2 || string.IsNullOrEmpty(ident.LocalId)
+            if (ident == null || ident.SteamIds.Length < 1 || string.IsNullOrEmpty(ident.LocalId)
                 || Array.IndexOf(ident.SteamIds, ident.LocalId) < 0) return;
             var now = ReadRunIdentity(SafeRunState());
             if (now == null || now.RunId != ident.RunId)

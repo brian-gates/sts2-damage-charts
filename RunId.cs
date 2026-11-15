@@ -30,4 +30,18 @@ internal static class RunId
     public static string Compute(long startTime, string seed, IEnumerable<ulong> netIds) =>
         Compute(startTime.ToString(CultureInfo.InvariantCulture), seed,
             netIds.Select(id => id.ToString(CultureInfo.InvariantCulture)));
+
+    /// <summary>
+    /// The players' Steam IDs as the save library keys the run. A single-player run's lone player has the
+    /// placeholder net id 1, not a Steam ID: it becomes <paramref name="localSteamId"/> (the server does the same
+    /// with the uploader). Null when that can't be resolved, or a multiplayer run has a non-Steam id.
+    /// </summary>
+    public static string[]? ResolveSolo(string[] ids, string? localSteamId)
+    {
+        if (ids.All(IsSteamId)) return ids;
+        if (ids.Length == 1 && localSteamId != null && IsSteamId(localSteamId)) return new[] { localSteamId };
+        return null;
+    }
+
+    private static bool IsSteamId(string s) => s.Length == 17 && s.All(char.IsAsciiDigit);
 }
