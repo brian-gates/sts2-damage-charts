@@ -1,0 +1,587 @@
+using System;
+using System.Collections.Generic;
+using Godot;
+using STS2_DamageCharts.Common;
+using STS2_DamageCharts.Forecast;
+using STS2_DamageCharts.Overlay;
+using STS2_DamageCharts.Tracking;
+using STS2_DamageCharts.Ui;
+
+namespace STS2_DamageCharts.Charts;
+
+// Compact, always-on, draggable, resolution-scaled "Damage / Round" chart. Dealt bars stack one
+// segment per source (repeats combined → "xN", icon-badged); taken is a single red bar. Native nodes
+// only; poll-based mouse (UpdateMouse / TryGetHover from the tick). Position persists as a viewport
+// fraction so it stays put across resolutions.
+internal sealed class DamageChartView
+{
+    private const float BaseWidth = 340f;
+    private const float BaseHeight = 168f;
+    private const float BaseMargin = 14f;
+    private const float BaseHeaderH = 24f;
+    private const int MaxGroups = 6;
+    // Compact: the always-on strip. Forecast-panel width, no axis labels/icons; hover still breaks it down.
+    private const float CompactWidth = 216f;
+    private const float CompactHeight = 92f;
+    private const int CompactMaxGroups = 8;
+    private const float BaseMaxIcon = 34f;
+    private const float ChartFrameAlpha = 0.92f; // always-on: let a sliver of the fight show through
+
+    private readonly OverlayMount _mount;
+    private readonly Control _container;
+    private readonly Panel _bg;
+    private readonly Panel _frameShadow;  // native_visuals: the game's hover-tip frame + its drop shadow
+    private readonly Panel _frame;
+    private bool _frameStyled;
+    private readonly StyleBoxEmpty _emptyBox = new();
+    private bool _native;                 // this render uses the game's look (frame loaded, native_visuals on)
+    private readonly Control _gridLayer;
+    private readonly Control _barLayer;
+    private readonly Control _iconLayer;
+    private readonly Label _title;
+    private readonly List<ColorRect> _bars = new();
+    private readonly List<ColorRect> _grid = new();
+    private readonly List<Label> _labels = new();
+    private readonly List<TextureRect> _icons = new();
+    private readonly Dictionary<string, Texture2D?> _texCache = new();
+
+    private readonly List<(Rect2 Rect, int Round, int Slot)> _cellRects = new();
+    private ChartSnapshot? _lastSnap;
+
+    // User multiplier from config (ui_scale): enlarges the whole widget (panel + text) on top of the
+    // automatic resolution scale, for legibility.
+    public float UiScaleMul = 1f;
+    public bool Compact { get; set; }
+    // Docked mode: stack directly above this rect (the forecast panel, viewport coords; null = free).
+    // A drag undocks it, like the forecast's own player anchor.
+    public bool Docked { get; set; }
+    public Rect2? DockRect { get; set; }
+
+    private Vector2 _posFrac;     // top-left as fraction of viewport
+    private bool _posFracInit;
+    private bool _dragging;
+    private bool _leftLast;
+    private Vector2 _dragOffset;  // cursor − absolute pos at drag start
+    private Vector2 _pressStart;
+    private bool _pressedOverPanel;
+    private bool _clicked;
+
+    // cached each render for UpdateMouse/hover
+    private Vector2 _vp = new(1920, 1080);
+    private float _w = BaseWidth, _h = BaseHeight, _headerH = BaseHeaderH;
+    private float _topInset;
+
+    public DamageChartView(Node root, Vector2? savedPosFrac)
+    {
+        var layer = new CanvasLayer { Layer = 128, Name = "Sts2DamageChartsBars" };
+        root.AddChild(layer);
+        // Content mounts beneath the game's hover tips so potion/relic/power tips draw over the chart.
+        _mount = new OverlayMount(root, layer, "Sts2DamageChartsBarsMount", belowGameUi: true);
+
+        _container = new Control { Name = "Bars", MouseFilter = Control.MouseFilterEnum.Ignore };
+        _mount.Holder.AddChild(_container);
+
+        _bg = UiTheme.MakePanel(0.5f, 1f);
+        _bg.MouseFilter = Control.MouseFilterEnum.Stop; // block click-through over the panel
+        _bg.SetPosition(Vector2.Zero);
+        _container.AddChild(_bg);
+
+        // Native frame sits where _bg does (only one of the two is visible), styled once its art loads.
+        _frameShadow = NativeLook.MakeFramePanel();
+        _container.AddChild(_frameShadow);
+        _frame = NativeLook.MakeFramePanel();
+        _container.AddChild(_frame);
+
+        // Gridlines sit just above the bg and below the bars.
+        _gridLayer = new Control { MouseFilter = Control.MouseFilterEnum.Ignore };
+        _gridLayer.SetPosition(Vector2.Zero);
+        _container.AddChild(_gridLayer);
+
+        // Dedicated layers so icons always paint above bars regardless of pool growth order:
+        // bg < grid < bars < icons < labels (labels are added to _container later, i.e. on top).
+        _barLayer = new Control { MouseFilter = Control.MouseFilterEnum.Ignore };
+        _barLayer.SetPosition(Vector2.Zero);
+        _container.AddChild(_barLayer);
+        _iconLayer = new Control { MouseFilter = Control.MouseFilterEnum.Ignore };
+        _iconLayer.SetPosition(Vector2.Zero);
+        _container.AddChild(_iconLayer);
+
+        _title = UiTheme.MakeLabel(11, new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.85f));
+        _title.Text = "Damage";
+        _container.AddChild(_title);
+
+        if (savedPosFrac.HasValue) { _posFrac = savedPosFrac.Value; _posFracInit = true; }
+    }
+
+    public bool IsValid() => _mount.IsValid && GodotObject.IsInstanceValid(_container);
+    public void Show() { _mount.Visible = true; }
+    public void Hide() { _mount.Visible = false; }
+    public void Dispose() => _mount.Dispose();
+    public Vector2 PositionFraction => _posFrac;
+    public bool IsDragging => _dragging;
+    public bool TakeClick() { var c = _clicked; _clicked = false; return c; }
+
+    public bool UpdateMouse(bool leftDown)
+    {
+        if (!IsValid()) return false;
+        bool savedNow = false;
+        try
+        {
+            Vector2 local = _container.GetLocalMousePosition();
+            Vector2 global = _container.GetViewport().GetMousePosition();   // viewport coords, like _posFrac * _vp
+            bool overPanel = local.X >= 0 && local.X <= _w && local.Y >= 0 && local.Y <= _h;
+            bool overHeader = overPanel && local.Y <= _headerH;
+
+            if (leftDown && !_leftLast) // press
+            {
+                _pressStart = global;
+                _pressedOverPanel = overPanel;
+                if (overHeader) { _dragging = true; _dragOffset = global - new Vector2(_posFrac.X * _vp.X, _posFrac.Y * _vp.Y); }
+            }
+            else if (leftDown && _dragging) // dragging the header
+            {
+                Vector2 abs = global - _dragOffset;
+                float yMin = _vp.Y > 0 ? _topInset / _vp.Y : 0f;
+                float x = _vp.X > 0 ? Math.Clamp(abs.X / _vp.X, 0f, Math.Max(0f, 1f - _w / _vp.X)) : 0f;
+                float y = _vp.Y > 0 ? Math.Clamp(abs.Y / _vp.Y, yMin, Math.Max(yMin, 1f - _h / _vp.Y)) : 0f;
+                _posFrac = new Vector2(x, y);
+            }
+            else if (!leftDown && _leftLast) // release
+            {
+                bool moved = (global - _pressStart).Length() > 5f;
+                if (_dragging) { _dragging = false; if (moved) { savedNow = true; Docked = false; } else if (_pressedOverPanel) _clicked = true; }
+                else if (_pressedOverPanel && !moved) _clicked = true; // click on the panel → toggle details
+                _pressedOverPanel = false;
+            }
+            _leftLast = leftDown;
+        }
+        catch { }
+        return savedNow;
+    }
+
+    public bool TryGetHover(out GroupDetail info)
+    {
+        info = null!;
+        if (!IsValid() || _dragging || _lastSnap == null) return false;
+        try
+        {
+            Vector2 local = _container.GetLocalMousePosition();
+            foreach (var c in _cellRects)
+            {
+                if (!c.Rect.HasPoint(local)) continue;
+                var built = BuildHover(c.Round, c.Slot);
+                if (built == null) return false;
+                info = built;
+                return true;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    // Rebuilt only when the hovered cell or its data changes; the tooltip keeps the same object otherwise.
+    private (int Round, int Slot, int Dealt, int Taken, int Hits) _hoverKey = (int.MinValue, -1, 0, 0, 0);
+    private GroupDetail? _hoverDetail;
+
+    private GroupDetail? BuildHover(int round, int slot)
+    {
+        var snap = _lastSnap;
+        if (snap == null) return null;
+        foreach (var row in snap.Rows)
+        {
+            if (row.Round != round) continue;
+            if (slot < 0 || slot >= row.DealtSegs.Length) return null;
+            var key = (round, slot, row.Dealt[slot], row.Taken[slot], row.DealtSegs[slot].Count);
+            if (_hoverDetail != null && key == _hoverKey) return _hoverDetail;
+            _hoverKey = key;
+            _hoverDetail = GroupDetails.ForRound(row, snap.Labels, snap.PlayerCount, slot, showPct: false, maxRows: 8);
+            return _hoverDetail;
+        }
+        return null;
+    }
+
+    // Y floor (viewport px) that keeps the chart below the game's top bar instead of sliding under the
+    // higher-layer HUD. The bar is ~8% of viewport height (letterbox-excluded); 9% leaves a hair below.
+    private static float TopInset(Vector2 vp) => Math.Max(48f, vp.Y * 0.09f);
+
+    public void Render(ChartSnapshot snap, Color[] palette)
+    {
+        if (!IsValid()) return;
+        try
+        {
+            _mount.Place();
+            _mount.Visible = true;
+            _lastSnap = snap;
+            _cellRects.Clear();
+
+            _vp = _container.GetViewportRect().Size;
+            float sc = UiTheme.Scale(_vp) * Math.Clamp(UiScaleMul, 0.5f, 4f);
+            _w = (Compact ? CompactWidth : BaseWidth) * sc; _h = (Compact ? CompactHeight : BaseHeight) * sc;
+            _headerH = (Compact ? 18f : BaseHeaderH) * sc;
+            float margin = BaseMargin * sc;
+            int maxGroups = Compact ? CompactMaxGroups : MaxGroups;
+
+            _container.SetSize(new Vector2(_w, _h));
+            _bg.SetSize(new Vector2(_w, _h));
+            _gridLayer.SetSize(new Vector2(_w, _h));
+            _barLayer.SetSize(new Vector2(_w, _h));
+            _iconLayer.SetSize(new Vector2(_w, _h));
+            _native = NativeLook.EnsureFrame(_frame, _frameShadow, ref _frameStyled);
+            if (_native)
+            {
+                // _bg stays (it blocks click-through to the game) but draws nothing; the frame is the visual.
+                _bg.Visible = true;
+                Th.Stylebox(_bg, "panel", _emptyBox);
+                NativeLook.LayoutFrame(_frame, _frameShadow, _w, _h, sc, ChartFrameAlpha);
+            }
+            else
+            {
+                _bg.Visible = true;
+                NativeLook.HideFrame(_frame, _frameShadow);
+                UiTheme.RestylePanel(_bg, 0.5f, sc);
+            }
+            // Native: keep content clear of the frame's bevelled border (the flat look needs no inset).
+            float ix = _native ? 6f * sc : 0f, iy = _native ? 5f * sc : 0f;
+            var numFont = _native ? GameAssets.NumericFont : null;
+            var boldFont = _native ? GameAssets.KreonBold : null;
+
+            float inset = TopInset(_vp);
+            _topInset = inset;
+            if (!_posFracInit)
+            {
+                _posFrac = new Vector2(_vp.X > 0 ? (_vp.X - _w - margin) / _vp.X : 0.7f, _vp.Y > 0 ? Math.Max(margin, inset) / _vp.Y : 0.02f);
+                _posFracInit = true;
+            }
+            if (Docked && !_dragging && DockRect is Rect2 dock && _vp.X > 0 && _vp.Y > 0)
+            {
+                // Above the forecast, left edges aligned; below it if there's no room under the top bar.
+                float gap = 6f * sc;
+                float dy = dock.Position.Y - gap - _h;
+                if (dy < inset) dy = dock.End.Y + gap;
+                _posFrac = new Vector2(dock.Position.X / _vp.X, dy / _vp.Y);
+            }
+            float px = Math.Clamp(_posFrac.X * _vp.X, 0f, Math.Max(0f, _vp.X - _w));
+            float py = Math.Clamp(_posFrac.Y * _vp.Y, inset, Math.Max(inset, _vp.Y - _h));
+            _container.SetPosition(new Vector2(px, py));
+
+            int titleSize = Compact ? 12 : 15;
+            if (_native) NativeLook.Style(_title, F(titleSize, sc), UiTheme.Gold, numFont, 0);
+            else { NativeLook.Reset(_title); UiTheme.Apply(_title, F(titleSize - 1, sc), new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.85f)); }
+            _title.SetPosition(Compact ? new Vector2(14 * sc + ix, 2 * sc + iy) : new Vector2(8 * sc + ix, 4 * sc + iy));
+
+            int labelCur = 0, barCur = 0, iconCur = 0, gridCur = 0;
+            float maxIcon = BaseMaxIcon * sc;
+
+            // Title reads "Damage Out | In / Round", with Out and In in their bar colours as the legend.
+            {
+                var titleColor = _native ? UiTheme.Gold : new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.85f);
+                var dim = new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.55f);
+                var outColor = snap.PlayerCount == 1 ? palette[0] : UiTheme.Cream;
+                int ts = _native ? F(titleSize, sc) : F(titleSize - 1, sc);
+                float tx = _title.Position.X + _title.GetMinimumSize().X;
+                foreach (var (text, color) in new[] { (" Out", outColor), (" | ", dim), ("In", UiTheme.Red), (" / Round", titleColor) })
+                {
+                    var part = NextLabel(ref labelCur, ts, color, numFont);
+                    Th.Text(part, text);
+                    part.SetPosition(new Vector2(tx, _title.Position.Y));
+                    tx += part.GetMinimumSize().X;
+                }
+            }
+
+            float plotTop = (Compact ? 20 : 26) * sc + iy;
+            if (snap.PlayerCount > 1 && !Compact)
+            {
+                float lx = 8 * sc + ix;
+                for (int s = 0; s < snap.PlayerCount && s < palette.Length; s++)
+                {
+                    var lbl = NextLabel(ref labelCur, F(11, sc), palette[s], boldFont);
+                    Th.Text(lbl, "■ " + (s < snap.Labels.Length ? snap.Labels[s] : $"P{s + 1}"));
+                    lbl.SetPosition(new Vector2(lx, 20 * sc + iy));
+                    lx += Math.Min(100 * sc, lbl.Text.Length * 6f * sc + 14 * sc);
+                }
+                plotTop = 40 * sc + iy;
+            }
+
+            // Left gutter for Y-axis values (compact has no axis labels, just the frame inset).
+            float plotLeft = (Compact ? 14 : 30) * sc + ix, plotRight = _w - 8 * sc - ix;
+            float plotBottom = _h - (Compact ? 20 : 18) * sc - iy;
+            float plotW = plotRight - plotLeft, plotH = plotBottom - plotTop;
+
+            int total = snap.Rows.Count;
+            if (total == 0)
+            {
+                // Nothing to show yet — hide the whole widget rather than render an empty box.
+                HideRest(_labels, 0); HideRest(_bars, 0); HideRest(_icons, 0); HideRest(_grid, 0);
+                _mount.Visible = false;
+                return;
+            }
+
+            int start = Math.Max(0, total - maxGroups);
+            int groups = total - start;
+
+            int maxVal = 1;
+            for (int i = start; i < total; i++)
+                for (int s = 0; s < snap.PlayerCount; s++)
+                {
+                    if (snap.Rows[i].Dealt[s] > maxVal) maxVal = snap.Rows[i].Dealt[s];
+                    if (snap.Rows[i].Taken[s] > maxVal) maxVal = snap.Rows[i].Taken[s];
+                }
+
+            // Y-axis: faint gridlines at 0 / mid / peak with value labels in the left gutter.
+            var axisColor = new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.55f);
+            for (int g = 0; g <= 2; g++)
+            {
+                float frac = g * 0.5f;
+                float yLine = plotBottom - frac * plotH;
+                var gl = NextGrid(ref gridCur);
+                gl.Color = new Color(1f, 1f, 1f, g == 0 ? 0.22f : 0.10f);
+                gl.SetPosition(new Vector2(plotLeft, yLine));
+                gl.SetSize(new Vector2(plotW, Math.Max(1f, sc)));
+                if (Compact) continue;
+                var vl = NextLabel(ref labelCur, F(13, sc), axisColor, numFont);
+                Th.Text(vl, ((long)Math.Round(frac * maxVal)).ToString());
+                vl.SetPosition(new Vector2(3 * sc + ix, yLine - 7 * sc));
+            }
+
+            // Constant bar width regardless of round count: size each round group to the chart's capacity
+            // (MaxGroups), left-aligned, so a single early round isn't stretched across the whole plot.
+            float groupW = plotW / maxGroups;
+            float cellW = groupW / snap.PlayerCount;
+
+            for (int gi = 0; gi < groups; gi++)
+            {
+                var row = snap.Rows[start + gi];
+                float groupX = plotLeft + gi * groupW;
+
+                for (int s = 0; s < snap.PlayerCount; s++)
+                {
+                    var c = palette[Math.Min(s, palette.Length - 1)];
+                    float cellX = groupX + s * cellW;
+                    float dealtW = cellW * 0.58f;
+                    float takenW = cellW * 0.28f;
+                    float dealtX = cellX + cellW * 0.04f;
+                    float takenX = dealtX + dealtW + cellW * 0.05f;
+
+                    _cellRects.Add((new Rect2(cellX, plotTop, cellW, plotH), row.Round, s));
+
+                    var agg = GroupDetails.AggregateBySource(row.DealtSegs[s]);
+                    float yTop = plotBottom;
+                    foreach (var a in agg)
+                    {
+                        float bh = plotH * a.Sum / maxVal;
+                        if (bh < 0.5f) continue;
+                        var bar = NextBar(ref barCur);
+                        bar.Color = new Color(c.R, c.G, c.B, 0.95f);
+                        bar.SetPosition(new Vector2(dealtX, yTop - bh));
+                        bar.SetSize(new Vector2(dealtW, Math.Max(bh - 1f, 1f)));
+
+                        if (!Compact && a.Icon != null && bh >= 10 * sc && dealtW >= 14 * sc)
+                        {
+                            var tex = _native ? NativeLook.Icon(a.Icon) : LoadTex(a.Icon);
+                            if (tex != null)
+                            {
+                                float isz = Math.Min(Math.Min(dealtW - 2f, bh - 2f), maxIcon);
+                                var ic = NextIcon(ref iconCur);
+                                ic.Texture = tex;
+                                ic.SetSize(new Vector2(isz, isz));
+                                ic.SetPosition(new Vector2(dealtX + (dealtW - isz) * 0.5f, yTop - bh + (bh - isz) * 0.5f));
+                            }
+                        }
+                        if (!Compact && a.Count > 1 && bh >= 13 * sc && dealtW >= 16 * sc)
+                        {
+                            var xn = NextLabel(ref labelCur, F(11, sc), UiTheme.Cream, numFont, onBar: true);
+                            Th.Text(xn, $"x{a.Count}");
+                            xn.SetPosition(new Vector2(dealtX + dealtW - 16 * sc, yTop - bh + 1 * sc));
+                        }
+                        yTop -= bh;
+                    }
+
+                    float th = plotH * row.Taken[s] / maxVal;
+                    if (th > 0.5f)
+                    {
+                        var tb = NextBar(ref barCur);
+                        tb.Color = UiTheme.Red;
+                        tb.SetPosition(new Vector2(takenX, plotBottom - th));
+                        tb.SetSize(new Vector2(takenW, th));
+                    }
+                }
+
+                var rl = NextLabel(ref labelCur, F(Compact ? 11 : 13, sc), new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.6f), numFont);
+                Th.Text(rl, row.Round.ToString());
+                rl.SetPosition(new Vector2(groupX + groupW * 0.5f - 4 * sc, plotBottom + (Compact ? 1 : 3) * sc));
+            }
+
+            HideRest(_labels, labelCur);
+            HideRest(_bars, barCur);
+            HideRest(_icons, iconCur);
+            HideRest(_grid, gridCur);
+        }
+        catch (Exception ex) { ErrorLog.Once("bars render", ex); }
+    }
+
+    private static int F(int baseSize, float sc) => Math.Max(7, (int)Math.Round(baseSize * sc));
+
+    // nativeFont/onBar only matter in native mode: the game's font for this role (null keeps UiTheme's) and
+    // whether the text sits on a coloured bar (keeps a dark outline there; panel text uses the hover-tip shadow).
+    private Label NextLabel(ref int cursor, int fontSize, Color color, Font? nativeFont = null, bool onBar = false)
+    {
+        Label lbl;
+        if (cursor < _labels.Count) lbl = _labels[cursor];
+        else { lbl = UiTheme.MakeLabel(fontSize, color); _container.AddChild(lbl); _labels.Add(lbl); }
+        if (_native) NativeLook.Style(lbl, fontSize, color, nativeFont, onBar ? 4 : 0);
+        else { NativeLook.Reset(lbl); UiTheme.Apply(lbl, fontSize, color); }
+        lbl.Visible = true;
+        cursor++;
+        return lbl;
+    }
+
+    private ColorRect NextBar(ref int cursor)
+    {
+        ColorRect bar;
+        if (cursor < _bars.Count) bar = _bars[cursor];
+        else { bar = new ColorRect { MouseFilter = Control.MouseFilterEnum.Ignore }; _barLayer.AddChild(bar); _bars.Add(bar); }
+        bar.Visible = true;
+        cursor++;
+        return bar;
+    }
+
+    private ColorRect NextGrid(ref int cursor)
+    {
+        ColorRect g;
+        if (cursor < _grid.Count) g = _grid[cursor];
+        else { g = new ColorRect { MouseFilter = Control.MouseFilterEnum.Ignore }; _gridLayer.AddChild(g); _grid.Add(g); }
+        g.Visible = true;
+        cursor++;
+        return g;
+    }
+
+    private TextureRect NextIcon(ref int cursor)
+    {
+        TextureRect ic;
+        if (cursor < _icons.Count) ic = _icons[cursor];
+        else
+        {
+            ic = new TextureRect
+            {
+                MouseFilter = Control.MouseFilterEnum.Ignore,
+                ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+                StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
+            };
+            _iconLayer.AddChild(ic);
+            _icons.Add(ic);
+        }
+        ic.Visible = true;
+        cursor++;
+        return ic;
+    }
+
+    private Texture2D? LoadTex(string path)
+    {
+        if (_texCache.TryGetValue(path, out var cached)) return cached;
+        Texture2D? tex = null;
+        try { if (ResourceLoader.Exists(path)) tex = ResourceLoader.Load<Texture2D>(path, null, ResourceLoader.CacheMode.Reuse); }
+        catch { tex = null; }
+        _texCache[path] = tex;
+        return tex;
+    }
+
+    private static void HideRest<T>(List<T> nodes, int from) where T : CanvasItem
+    {
+        for (int i = from; i < nodes.Count; i++) nodes[i].Visible = false;
+    }
+}
+
+// The game's hover-tip look (scenes/ui/hover_tip.tscn), shared by the chart and its hover popup. Used only
+// while GameAssets.Enabled and the frame art loads; otherwise both views keep their original flat look.
+//
+// Why reproduce instead of instantiating hover_tip.tscn: its labels are the game's MegaLabel /
+// MegaRichTextLabel scripts, whose _Ready asserts theme overrides, applies the locale font substitution
+// and auto-sizes; and the scene is one Title + one Description, while we need icon/name/amount rows that
+// re-layout every frame. Copying its texture, 9-slice, insets, fonts and colours gives the same look with
+// plain Godot nodes and no game code running on our side.
+internal static class NativeLook
+{
+    // images/ui/hover_tip.png is 320x96 but hover_tip.tscn samples a 339x107 region, so the frame's right
+    // 19px / bottom 11px are transparent (room for its +8px shadow). Oversize the frame by that much so the
+    // VISIBLE box lines up with our rect.
+    public const float OverhangX = 19f, OverhangY = 11f;
+    // Text insets from the visible box: hover_tip.tscn's TextContainer (L22 T16 R45 B28) minus the overhang.
+    public const float InsetL = 22f, InsetT = 16f, InsetR = 26f, InsetB = 17f;
+    // hover_tip.tscn Title/Description: font_shadow_color (0,0,0,0.25098), shadow offset (3,2) at size 22.
+    private static readonly Color ShadowColor = new(0f, 0f, 0f, 0.25098f);
+    private const string MetaKey = "sts2dc_native";
+
+    public static Panel MakeFramePanel() => new() { MouseFilter = Control.MouseFilterEnum.Ignore, Visible = false };
+
+    // Styles frame + shadow once their art loads. False => caller keeps its fallback look this frame.
+    public static bool EnsureFrame(Panel frame, Panel shadow, ref bool styled)
+    {
+        if (!GameAssets.Enabled) return false;
+        if (styled) return true;
+        try
+        {
+            var bg = GameAssets.NativePanel();
+            var sh = GameAssets.NativePanelShadow();
+            if (bg == null || sh == null) return false;
+            Th.Stylebox(frame, "panel", bg);
+            Th.Stylebox(shadow, "panel", sh);
+            styled = true;
+        }
+        catch { }
+        return styled;
+    }
+
+    // The 9-slice margins are in texture pixels, so draw the frame at 1080p size and scale the node instead,
+    // keeping the bevel proportional at any resolution.
+    public static void LayoutFrame(Panel frame, Panel shadow, float w, float h, float sc, float alpha)
+    {
+        var size = new Vector2(w / sc + OverhangX, h / sc + OverhangY);
+        Fit(shadow, size, sc, alpha);
+        Fit(frame, size, sc, alpha);
+    }
+
+    private static void Fit(Panel p, Vector2 size, float sc, float alpha)
+    {
+        p.Scale = new Vector2(sc, sc);
+        p.SetPosition(Vector2.Zero);
+        p.SetSize(size);
+        p.SelfModulate = new Color(1f, 1f, 1f, alpha);
+        p.Visible = true;
+    }
+
+    public static void HideFrame(Panel frame, Panel shadow)
+    {
+        frame.Visible = false;
+        shadow.Visible = false;
+    }
+
+    // UiTheme.Apply plus the hover-tip treatment: the game font for this role, a soft drop shadow, and an
+    // outline only where asked (text over bars).
+    public static void Style(Label lbl, int fontSize, Color color, Font? font, int outlineSize)
+    {
+        UiTheme.Apply(lbl, fontSize, color, font, outlineSize: outlineSize);
+        Th.Color(lbl, "font_shadow_color", ShadowColor);
+        Th.Const(lbl, "shadow_offset_x", Math.Max(1, (int)Math.Round(fontSize * 3f / 22f)));
+        Th.Const(lbl, "shadow_offset_y", Math.Max(1, (int)Math.Round(fontSize * 2f / 22f)));
+        lbl.SetMeta(MetaKey, true);
+    }
+
+    // Undo Style (and any alignment/sizing the native layout set) so a pooled label renders exactly as the
+    // fallback look expects. No-op for labels that were never native-styled.
+    public static void Reset(Label lbl)
+    {
+        if (!lbl.HasMeta(MetaKey)) return;
+        lbl.RemoveMeta(MetaKey);
+        Th.RemoveFont(lbl, "font");
+        Th.RemoveColor(lbl, "font_shadow_color");
+        Th.RemoveConst(lbl, "shadow_offset_x");
+        Th.RemoveConst(lbl, "shadow_offset_y");
+        lbl.HorizontalAlignment = HorizontalAlignment.Left;
+        lbl.VerticalAlignment = VerticalAlignment.Top;
+        lbl.TextOverrunBehavior = TextServer.OverrunBehavior.NoTrimming;
+        lbl.Size = Vector2.Zero; // shrink back to the text's minimum size
+    }
+
+    // Source icons are res:// paths captured from the game's own models (PackedIconPath / PortraitPath).
+    public static Texture2D? Icon(string? path) => string.IsNullOrEmpty(path) ? null : GameAssets.Texture(path);
+}
