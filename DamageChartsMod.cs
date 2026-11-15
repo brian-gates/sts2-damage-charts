@@ -57,17 +57,18 @@ public static class DamageChartsMod
     private static readonly Dictionary<Creature, Action<int, int>> _blockSubs = new();
     // What's about to hit each creature, set by the Damage prefix (or Doom), consumed by the HP change.
     // Frame-stamped: a tag whose hit never changed HP (fully blocked, or Osty soaked it) expires.
-    private static readonly Dictionary<Creature, (string Label, Creature? Dealer, string? Icon, long Frame)> _pending = new();
+    private static readonly Dictionary<Creature, (string Label, Creature? Dealer, string? Icon, long Frame, string? Id)> _pending = new();
     private const long PendingTtlFrames = 600; // ~10 s at 60 fps: covers Doom's kill animation
     // Damaging powers that sit on an enemy (Poison, Constrict...) hurt that enemy, often after an await
     // (Accelerant makes Poison tick several times with a pause between), when the 1-frame stamp below has
     // gone stale. So the stamp also tags the enemy itself, by reference, the way Doom kills are pre-tagged.
-    private static readonly Dictionary<Creature, (string Label, Creature? Owner, string? Icon)> _dotTags = new();
+    private static readonly Dictionary<Creature, (string Label, Creature? Owner, string? Icon, string? Id)> _dotTags = new();
     // Set by a power's hook just before it deals damage; consumed by the next non-card hit. Only valid
     // for ~1 frame (a damaging hook stamps-and-deals synchronously) so a stale stamp from a passive
     // relic hook can't mislabel a later unrelated hit (e.g. a potion).
     // The power/relic/orb/potion whose hook is about to change HP, and the player it belongs to.
-    private static (string Label, string? Icon, Player? Owner)? _activeSource;
+    // Id is the source model's id ("POWER.POISON_POWER"), for the run stats file; null when unknown.
+    private static (string Label, string? Icon, Player? Owner, string? Id)? _activeSource;
     private static long _frame;
     private static long _activeFrame;
     private static string? _doomIcon;
@@ -96,6 +97,20 @@ public static class DamageChartsMod
     private static bool _sourceHooks = true;
     private static bool _combatResolved;      // this combat reached a win/loss (not abandoned)
     private static FightMeta _fightMeta = new(); // this combat's floor / name / elite-boss / rounds, for the recap
+    // Per-run damage stats file (multiplayer only; "run_stats_file": false turns it off). See RunStatsFile.cs.
+    private static bool _runStatsFile = true;
+    private static string? _modVersion;          // from the mod manifest next to the DLL; null = unknown
+    // Which run this combat belongs to, read at combat start; the fight is written only if the run is the
+    // same at combat end, and the recap aggregate is keyed to it, so another run's stats never mix in.
+    private sealed record RunIdent(string RunId, string[] SteamIds, string? LocalId);
+    private static RunIdent? _fightRun;
+    private static FieldInfo? _startTimeField;
+    private static bool _startTimeResolved;
+    // Fights written this session on the current floor of the current run: tells a fight replayed after a
+    // reload (same floor, same ordinal, replaces the stored one) from a second fight on that floor.
+    private static string? _statsRunId;
+    private static int _statsFloor;
+    private static int _statsFloorCount;
     private static bool _tipShown;            // the hover tooltip was rendered this tick (else it is hidden)
     private static int _localSlot;            // local player's slot for this combat
 
@@ -118,6 +133,7 @@ public static class DamageChartsMod
         try
         {
             if (!LoadConfig()) { GD.Print("[STS2 Damage] disabled via config"); return; }
+            _modVersion = ReadModVersion();
 
             var tree = (SceneTree)Engine.GetMainLoop();
             _tickCallable = Callable.From(Tick);
@@ -185,6 +201,21 @@ public static class DamageChartsMod
         return dir == null ? null : Path.Combine(dir, ConfigFileName);
     }
 
+    // "version" from the mod manifest installed beside the DLL (mods/STS2_DamageCharts.json).
+    private static string? ReadModVersion()
+    {
+        try
+        {
+            string? dir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+            if (dir == null) return null;
+            string path = Path.Combine(dir, "STS2_DamageCharts.json");
+            if (!File.Exists(path)) return null;
+            using var doc = JsonDocument.Parse(File.ReadAllText(path));
+            return doc.RootElement.TryGetProperty("version", out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        }
+        catch { return null; }
+    }
+
     private static void RememberConfigWriteTime(string path)
     {
         try { _lastConfigWriteTicks = File.GetLastWriteTimeUtc(path).Ticks; } catch { }
@@ -221,6 +252,7 @@ public static class DamageChartsMod
             if (root.TryGetProperty("run_recap", out var rr) && rr.ValueKind == JsonValueKind.False) _recapEnabled = false;
             if (root.TryGetProperty("ui_scale", out var us) && us.ValueKind == JsonValueKind.Number && us.TryGetSingle(out float uss)) _uiScale = Math.Clamp(uss, 0.5f, 4f);
             if (root.TryGetProperty("source_hooks", out var shk) && shk.ValueKind == JsonValueKind.False) _sourceHooks = false;
+            if (root.TryGetProperty("run_stats_file", out var rsf) && rsf.ValueKind == JsonValueKind.False) _runStatsFile = false;
             if (root.TryGetProperty("native_visuals", out var nv) && nv.ValueKind == JsonValueKind.False) GameAssets.Enabled = false;
             if (root.TryGetProperty("vfx_moments", out var vm) && vm.ValueKind == JsonValueKind.True) VfxMoments.Enabled = true;
             if (root.TryGetProperty("hotkey", out var hk) && hk.ValueKind == JsonValueKind.String)
@@ -401,7 +433,7 @@ public static class DamageChartsMod
             if (slot < 0) slot = ActiveSlot();
             string? icon = GameAssets.PotionIconPath(potion);
             if (icon == null) { try { if (potion.ImagePath is string ip && ResourceLoader.Exists(ip)) icon = ip; } catch { } }
-            _tracker.AddPotion(slot, name, icon);
+            _tracker.AddPotion(slot, name, icon, ModelIdOf(potion));
             int round = SafeCombatState()?.RoundNumber ?? 0;
             string onto = target == null ? "" : target.IsPlayer ? (target.Player == potion.Owner ? "" : $" → {MaybeName(target)}")
                 : $" → {TextHelper.SafeGetText(() => target.Monster!.Title) ?? "Enemy"}";
@@ -662,7 +694,7 @@ public static class DamageChartsMod
             if (creatures == null) return;
             // Credit the kill to whoever applied the Doom (in co-op it isn't always the local player).
             foreach (var c in creatures)
-                if (c != null) _pending[c] = ("Doom", DoomApplier(c)?.Creature, _doomIcon, _frame);
+                if (c != null) _pending[c] = ("Doom", DoomApplier(c)?.Creature, _doomIcon, _frame, null);
         }
         catch { }
     }
@@ -681,10 +713,11 @@ public static class DamageChartsMod
                 catch { }
             }
             var owner = SourcePlayer(__instance);
-            _activeSource = (label!, icon, owner);
+            string? id = ModelIdOf(__instance);
+            _activeSource = (label!, icon, owner, id);
             _activeFrame = _frame;
             if (__instance is PowerModel power && power.Owner is { } holder && !holder.IsPlayer && !holder.IsPet)
-                _dotTags[holder] = (label!, owner?.Creature, icon);
+                _dotTags[holder] = (label!, owner?.Creature, icon, id);
             if (ForecastReader.Debug) GD.Print($"[STS2 Damage] STAMP {t.Name} label={label} frame={_frame}");
         }
         catch { }
@@ -718,15 +751,18 @@ public static class DamageChartsMod
             if (targets == null) return;
             string label;
             string? icon = null;
+            string? id = null;
             if (cardSource != null)
             {
                 label = TextHelper.SafeGetText(() => cardSource.Title) ?? "Card";
+                id = ModelIdOf(cardSource);
                 icon = GameAssets.CardPortraitPath(cardSource);
             }
             else if (dealer != null && dealer.IsPet)
             {
                 // Pet/summon attack (e.g. Osty) — credit the pet by name (the commanding card isn't on this call).
                 label = TextHelper.SafeGetText(() => dealer.Monster!.Title) ?? "Pet";
+                id = ModelIdOf(InstanceGet(dealer, "Monster"));
             }
             else if (ActiveFresh())
             {
@@ -734,6 +770,7 @@ public static class DamageChartsMod
                 // when fresh (~same frame) so a stale passive-relic stamp can't mislabel this hit.
                 label = _activeSource!.Value.Label;
                 icon = _activeSource.Value.Icon;
+                id = _activeSource.Value.Id;
                 // No dealer on the hit (Poison ticks, relic/orb procs): credit the source's player.
                 if (dealer == null) dealer = _activeSource.Value.Owner?.Creature!;
                 _activeSource = null; // consume
@@ -745,8 +782,8 @@ public static class DamageChartsMod
             {
                 if (t == null) continue;
                 // A stale stamp: a DoT on this enemy hurting it after an await (later Poison ticks).
-                if (unattributed && _dotTags.TryGetValue(t, out var dot)) _pending[t] = (dot.Label, dot.Owner, dot.Icon, _frame);
-                else _pending[t] = (label, dealer, icon, _frame);
+                if (unattributed && _dotTags.TryGetValue(t, out var dot)) _pending[t] = (dot.Label, dot.Owner, dot.Icon, _frame, dot.Id);
+                else _pending[t] = (label, dealer, icon, _frame, id);
                 // Damage that reaches a pet (Osty) can spill over to its owner without another Damage call,
                 // so tag the owner with the same hit.
                 try { if (t.IsPet && t.PetOwner?.Creature is { } po && !list.Contains(po)) _pending[po] = _pending[t]; } catch { }
@@ -1084,6 +1121,9 @@ public static class DamageChartsMod
                 m.Kind = FightMeta.KindFromRoomType(InstanceGet(InstanceGet(rs, "CurrentMapPoint"), "PointType")?.ToString());
             string? name = enc != null ? TextHelper.SafeGetText(() => InstanceGet(enc, "Title")) : null;
             if (!GroupDetails.LooksLikeLocKey(name)) m.Name = name!.Trim();
+            // An event's fight: the combat room names its parent event, or the base room is the event room.
+            m.FromEvent = InstanceGet(room, "ParentEventId") != null
+                || InstanceGet(InstanceGet(rs, "BaseRoom"), "RoomType")?.ToString() == "Event";
         }
         catch { }
         if (m.Name == null && cs != null)
@@ -1106,7 +1146,10 @@ public static class DamageChartsMod
         _fightMeta = new FightMeta();
         var rs = SafeRunState();
         _players = rs?.Players ?? (IReadOnlyList<Player>)Array.Empty<Player>();
+        _fightRun = null;
         if (_players.Count == 0) return;
+        _fightRun = ReadRunIdentity(rs);
+        if (_run.EnsureRun(_fightRun?.RunId)) GD.Print("[STS2 Damage] another run: run recap reset");
 
         var labels = new string[_players.Count];
         Player? me = rs != null ? LocalContext.GetMe(rs) : null;
@@ -1148,7 +1191,11 @@ public static class DamageChartsMod
         _tooltip?.Hide();
         _forecast?.Hide(); _forecastLedger?.Hide();
         // Fold this combat into the run-wide aggregate before the next combat's Reset() wipes the tracker.
-        if (_tracker.HasData()) _run.Fold(_tracker.SourceSnapshot(), _tracker.Snapshot(), _fightMeta);
+        if (_tracker.HasData())
+        {
+            _run.Fold(_tracker.SourceSnapshot(), _tracker.Snapshot(), _fightMeta);
+            TryWriteRunStats();
+        }
         // Auto-show the breakdown as an end-of-combat summary (until dismissed / map / next fight), but
         // only for a real win/loss — not when the player abandons combat (e.g. quits to the menu).
         _summaryActive = _summaryOnEnd && _combatResolved && _tracker.HasData();
@@ -1156,6 +1203,95 @@ public static class DamageChartsMod
         _rewardsSeen = false;
         if (!_summaryActive) _detail?.SetVisible(false);
         GD.Print($"[STS2 Damage] combat end (summary={_summaryActive})");
+    }
+
+    // ===== Per-run damage stats file =====
+
+    // The save library's run id for the live run (start time, seed, players' SteamID64s), plus each slot's
+    // SteamID64 and the local player's. Null when any part can't be read: then nothing is written.
+    private static RunIdent? ReadRunIdentity(RunState? rs)
+    {
+        if (rs == null) return null;
+        try
+        {
+            if (!_startTimeResolved)
+            {
+                _startTimeResolved = true;
+                // RunManager keeps the save's StartTime in a private field (no public getter).
+                _startTimeField = AccessTools.Field(typeof(RunManager), "_startTime");
+                if (_startTimeField == null) GD.Print("[STS2 Damage] run start time not found (game changed?): no run stats file");
+            }
+            if (_startTimeField?.GetValue(RunManager.Instance) is not long start || start <= 0) return null;
+            if (InstanceGet(InstanceGet(rs, "Rng"), "StringSeed") is not string seed || seed.Length == 0) return null;
+            var players = rs.Players;
+            if (players == null || players.Count == 0) return null;
+            var ids = new string[players.Count];
+            for (int i = 0; i < players.Count; i++)
+            {
+                ulong id = players[i].NetId;
+                if (id == 0) return null;
+                ids[i] = id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
+            string? local = LocalContext.GetMe(rs)?.NetId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            return new RunIdent(RunId.Compute(start.ToString(System.Globalization.CultureInfo.InvariantCulture), seed, ids), ids, local);
+        }
+        catch { return null; }
+    }
+
+    // After a finished multiplayer combat: add it to <user dir>/damage-charts/runs/<run_id>.json (temp file +
+    // rename). Never throws; a failure costs this fight's entry only.
+    private static void TryWriteRunStats()
+    {
+        try
+        {
+            if (!_runStatsFile || !_combatResolved) return; // an abandoned fight is replayed on continue
+            var ident = _fightRun;
+            // recorded_by must be one of the run's players (the server checks it).
+            if (ident == null || ident.SteamIds.Length < 2 || string.IsNullOrEmpty(ident.LocalId)
+                || Array.IndexOf(ident.SteamIds, ident.LocalId) < 0) return;
+            var now = ReadRunIdentity(SafeRunState());
+            if (now == null || now.RunId != ident.RunId)
+            {
+                GD.Print("[STS2 Damage] run stats: run changed during combat, fight not written");
+                return;
+            }
+            if (_run.RunKey != ident.RunId || !_run.TryGetFight(_run.FightCount, out var meta, out var sources)) return;
+            if (sources.Length != ident.SteamIds.Length) return;
+
+            int floor = meta.Floor;
+            if (floor > 0 && ident.RunId == _statsRunId && floor == _statsFloor) _statsFloorCount++;
+            else _statsFloorCount = 1;
+            _statsRunId = ident.RunId;
+            _statsFloor = floor;
+
+            string dir = Path.Combine(OS.GetUserDataDir(), "damage-charts", "runs");
+            Directory.CreateDirectory(dir);
+            string path = Path.Combine(dir, ident.RunId + ".json");
+            var fights = new List<System.Text.Json.Nodes.JsonObject>();
+            if (File.Exists(path))
+            {
+                var parsed = RunStatsFile.ParseFights(File.ReadAllText(path), ident.RunId);
+                if (parsed != null) fights = parsed;
+                else
+                {
+                    // Not a v1 file for this run: keep it aside rather than silently losing it.
+                    try { File.Move(path, path + ".bad", overwrite: true); } catch { }
+                    GD.PrintErr($"[STS2 Damage] run stats: unreadable {path}, moved to .bad and started over");
+                }
+            }
+            string? text = RunStatsFile.AddFight(fights, ident.RunId, ident.LocalId!, _modVersion,
+                DateTimeOffset.UtcNow.ToUnixTimeSeconds(), meta, sources, ident.SteamIds, _statsFloorCount, out var outcome);
+            if (text == null)
+            {
+                GD.Print($"[STS2 Damage] run stats: fight not written ({outcome})");
+                return;
+            }
+            string tmp = path + ".tmp";
+            File.WriteAllText(tmp, text, new System.Text.UTF8Encoding(false));
+            File.Move(tmp, path, overwrite: true);
+            GD.Print($"[STS2 Damage] run stats: {outcome} floor {floor} -> {path}");
+        }
+        catch (Exception ex) { GD.PrintErr($"[STS2 Damage] run stats write failed: {ex.Message}"); }
     }
 
     private static bool _layersDumped;
@@ -1391,11 +1527,16 @@ public static class DamageChartsMod
             {
                 int slot = SlotOf(creature.Player);
                 if (slot < 0) return;
-                string attacker = (pend.Dealer != null && pend.Dealer.IsMonster)
-                    ? (TextHelper.SafeGetText(() => pend.Dealer!.Monster!.Title) ?? "Enemy")
-                    : (pend.Label ?? ConsumeActive().Label ?? "Unknown");
+                string attacker; string? attackerId;
+                if (pend.Dealer != null && pend.Dealer.IsMonster)
+                {
+                    attacker = TextHelper.SafeGetText(() => pend.Dealer!.Monster!.Title) ?? "Enemy";
+                    attackerId = ModelIdOf(InstanceGet(pend.Dealer, "Monster"));
+                }
+                else if (pend.Label != null) { attacker = pend.Label; attackerId = pend.Id; }
+                else { var a = ConsumeActive(); attacker = a.Label ?? "Unknown"; attackerId = a.Id; }
                 string victim = MaybeName(creature);
-                _tracker.AddTaken(round, slot, lost, attacker);
+                _tracker.AddTaken(round, slot, lost, attacker, null, attackerId);
                 if (ForecastReader.Debug) GD.Print($"[STS2 Damage] HIT taken src={attacker} amt={lost} round={round} frame={_frame}");
                 VfxMoments.OnTaken(creature, lost);
                 _tracker.AddLog(round, $"{attacker} → {victim}  {lost}", true);
@@ -1409,13 +1550,13 @@ public static class DamageChartsMod
             else if (dealer != null && dealer.IsPet) dslot = SlotOf(dealer.PetOwner); // pet → its owner
             else if (dealer != null && dealer.IsMonster) return; // genuine enemy-on-enemy, not player damage
             else dslot = -1;                                      // dealer null: the source's player, below
-            string src; string? icon;
+            string src; string? icon; string? srcId;
             Player? owner = null;
-            if (pend.Label != null) { src = pend.Label; icon = pend.Icon; }
-            else { var a = ConsumeActive(); src = a.Label ?? "Status"; icon = a.Icon; owner = a.Owner; } // Doom/Kill & other non-Damage paths
+            if (pend.Label != null) { src = pend.Label; icon = pend.Icon; srcId = pend.Id; }
+            else { var a = ConsumeActive(); src = a.Label ?? "Status"; icon = a.Icon; owner = a.Owner; srcId = a.Id; } // Doom/Kill & other non-Damage paths
             if (dslot < 0) dslot = SlotOf(owner);
             if (dslot < 0) dslot = ActiveSlot();                  // nothing says whose it was: local player
-            _tracker.AddDealt(round, dslot, lost, src, icon);
+            _tracker.AddDealt(round, dslot, lost, src, icon, srcId);
             if (ForecastReader.Debug) GD.Print($"[STS2 Damage] HIT dealt src={src} amt={lost} round={round} frame={_frame}");
             if (dslot == _localSlot) VfxMoments.OnDealt(creature, lost, src, icon);
             _tracker.AddLog(round, $"{src} → {TextHelper.SafeGetText(() => creature.Monster!.Title) ?? "Enemy"}  {lost}", false);
@@ -1437,10 +1578,22 @@ public static class DamageChartsMod
     // Read and clear the active power/relic source (set by a patched hook just before it changed HP).
     private static bool ActiveFresh() => _activeSource.HasValue && _frame - _activeFrame <= 1;
 
-    private static (string? Label, string? Icon, Player? Owner) ConsumeActive()
+    private static (string? Label, string? Icon, Player? Owner, string? Id) ConsumeActive()
     {
-        if (ActiveFresh()) { var v = _activeSource!.Value; _activeSource = null; return (v.Label, v.Icon, v.Owner); }
-        return (null, null, null);
+        if (ActiveFresh()) { var v = _activeSource!.Value; _activeSource = null; return (v.Label, v.Icon, v.Owner, v.Id); }
+        return (null, null, null, null);
+    }
+
+    // A game model's id as the game writes it ("CARD.STRIKE_SILENT"), read by reflection; null when absent.
+    private static string? ModelIdOf(object? model)
+    {
+        try
+        {
+            string? s = InstanceGet(model, "Id")?.ToString();
+            if (string.IsNullOrEmpty(s) || s.IndexOf('.') <= 0 || s == "NONE.NONE") return null;
+            return s;
+        }
+        catch { return null; }
     }
 
     // Which player a damage source belongs to. A power is credited to whoever applied it (the Silent's

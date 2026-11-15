@@ -18,6 +18,8 @@
     <Compile Include="../SelfHarmText.cs" Link="SelfHarmText.cs" />
     <Compile Include="../OverlayTransform.cs" Link="OverlayTransform.cs" />
     <Compile Include="../IntentRules.cs" Link="IntentRules.cs" />
+    <Compile Include="../RunId.cs" Link="RunId.cs" />
+    <Compile Include="../RunStatsFile.cs" Link="RunStatsFile.cs" />
   </ItemGroup>
 
   <ItemGroup>

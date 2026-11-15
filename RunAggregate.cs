@@ -33,8 +33,23 @@ internal sealed class RunAggregate
     private readonly List<FightMeta?> _encMeta = new();          // per encounter: floor / name / elite-boss / rounds
     private readonly List<LogEntry> _log = new();
     private int _encounters;
+    private string? _runKey; // identity of the run these fights belong to (its run id); null = not known yet
 
     public bool HasData() => _encounters > 0;
+    public int FightCount => _encounters;
+    public string? RunKey => _runKey;
+
+    // Bind the aggregate to one run. A different known key (another run was loaded, e.g. a solo run after a
+    // co-op one) drops everything recorded so far, so the recap never mixes runs. Null (identity unreadable)
+    // keeps the current data. Returns true when it cleared.
+    public bool EnsureRun(string? key)
+    {
+        if (key == null || key == _runKey) return false;
+        bool had = _runKey != null || _encounters > 0;
+        Clear();
+        _runKey = key;
+        return had;
+    }
 
     // One finished combat's totals for a given player slot, for the in-combat run-history band.
     public readonly struct EncounterStat
@@ -70,6 +85,7 @@ internal sealed class RunAggregate
         _encMeta.Clear();
         _log.Clear();
         _encounters = 0;
+        _runKey = null;
     }
 
     // Add one finished combat. Reads the per-combat snapshots taken before the tracker is reset. `meta` is
@@ -78,7 +94,15 @@ internal sealed class RunAggregate
     public void Fold(SourceSnapshot src, ChartSnapshot chart, FightMeta? meta = null)
     {
         if (src.PlayerCount <= 0) return;
-        if (_playerCount != src.PlayerCount) Init(src);
+        if (_playerCount != src.PlayerCount)
+        {
+            // A different player count is a different run (or a misread): never fold it into the old fights,
+            // whose per-slot arrays have the old size (that also showed phantom extra players).
+            string? key = _runKey;
+            Clear();
+            _runKey = key;
+            Init(src);
+        }
 
         _encounters++;
         var encD = new int[_playerCount];
@@ -143,6 +167,16 @@ internal sealed class RunAggregate
             into[e.Name] = cur + e.Total;
             if (e.Icon != null && !_sourceIcon.ContainsKey(e.Name)) _sourceIcon[e.Name] = e.Icon;
         }
+    }
+
+    // One finished fight's captured data (1-based), for the run stats file. False when out of range.
+    public bool TryGetFight(int fight, out FightMeta meta, out PlayerSources?[] sources)
+    {
+        int i = fight - 1;
+        if (i < 0 || i >= _encSources.Count) { meta = new FightMeta(); sources = Array.Empty<PlayerSources?>(); return false; }
+        meta = _encMeta[i] ?? new FightMeta();
+        sources = _encSources[i];
+        return true;
     }
 
     // Tooltip detail for one finished fight (1-based, the recap chart's row.Round); null when out of range.

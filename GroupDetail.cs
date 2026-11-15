@@ -17,8 +17,9 @@ internal sealed class FightMeta
     public string? Name;       // encounter title, else the enemies' names; null = unknown
     public FightKind Kind;     // from the encounter's / room's RoomType
     public int Rounds;         // highest round number reached; 0 = unknown
+    public bool FromEvent;     // the combat was started by an event (its room is an event room)
 
-    public FightMeta Clone() => new() { Floor = Floor, Name = Name, Kind = Kind, Rounds = Rounds };
+    public FightMeta Clone() => new() { Floor = Floor, Name = Name, Kind = Kind, Rounds = Rounds, FromEvent = FromEvent };
 
     // RoomType / MapPointType enum names ("Monster", "Elite", "Boss"); anything else is not a fight tag.
     public static FightKind KindFromRoomType(string? roomType)
