@@ -467,6 +467,9 @@ internal static class ForecastReader
 
     // A power's or card's text values (DynamicVars) as (shown, base) pairs, for SelfHarmText.BaseAmount. The set is
     // enumerable as DynamicVars or as name/var pairs, depending on the game version; empty if it can't be read.
+    // Power types whose text values were logged once, to confirm in game that DynamicVars can be read.
+    private static readonly HashSet<string> _varsLogged = new();
+
     private static List<(decimal Shown, decimal Base)> VarValues(object model)
     {
         var list = new List<(decimal, decimal)>();
@@ -477,7 +480,8 @@ internal static class ForecastReader
             {
                 object? v = item == null ? null : GetProp(item, "BaseValue") != null ? item : GetProp(item, "Value");
                 if (v == null) continue;
-                if (GetProp(v, "BaseValue") is not decimal b) continue;
+                // An enchanted card's value is its base plus the enchantment; otherwise the plain base.
+                if ((GetProp(v, "EnchantedValue") ?? GetProp(v, "BaseValue")) is not decimal b) continue;
                 object? shown = GetProp(v, "ShownValue") ?? GetProp(v, "PreviewValue");
                 decimal s = shown switch { decimal d => d, int i => i, _ => b };
                 list.Add((s, b));
@@ -554,7 +558,13 @@ internal static class ForecastReader
                               && Contains(desc, "end of your turn");
                 if (!keyword && !byText) continue;
                 int amount = GetInt(p, "Amount", "Stacks", "Count", "Value");
-                if (byText && textAmount > 0) amount = SelfHarmText.BaseAmount(textAmount, VarValues(p));
+                if (byText && textAmount > 0)
+                {
+                    var vars = VarValues(p);
+                    amount = SelfHarmText.BaseAmount(textAmount, vars);
+                    if (_varsLogged.Add(tn))
+                        Godot.GD.Print($"[STS2 Damage] forecast {tn}: text {textAmount}, values [{string.Join(", ", vars.ConvertAll(x => $"{x.Shown}/{x.Base}"))}] -> {amount}");
+                }
                 if (amount <= 0) continue;
                 string label = TextHelper.SafeGetText(() => GetProp(p, "Title")) ?? Prettify(tn);
                 // Keyword DoTs (poison, bleed, ...) bypass block; text-detected ones follow their wording.

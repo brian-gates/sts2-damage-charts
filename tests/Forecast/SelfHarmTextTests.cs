@@ -88,4 +88,12 @@ public class SelfHarmTextTests
     [Fact]
     public void ShownAmount_UnchangedWithoutModifiers() =>
         Assert.Equal(6, SelfHarmText.BaseAmount(6, new[] { (Shown: 6m, Base: 6m) }));
+
+    [Fact]
+    public void ShownAmount_IgnoresValuesWithNoBase() =>
+        Assert.Equal(4, SelfHarmText.BaseAmount(4, new[] { (Shown: 4m, Base: 0m) }));
+
+    [Fact]
+    public void ShownAmount_MatchesAFractionalPreviewByItsWholePart() =>
+        Assert.Equal(6, SelfHarmText.BaseAmount(4, new[] { (Shown: 4.5m, Base: 6m) }));
 }

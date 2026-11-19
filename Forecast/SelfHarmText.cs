@@ -53,7 +53,8 @@ internal static class SelfHarmText
         int? found = null;
         foreach (var (s, b) in values)
         {
-            if (decimal.Truncate(s) != shown) continue;
+            // A calculated value can carry no base of its own (0): that's no evidence of what the text shows.
+            if (decimal.Truncate(s) != shown || b <= 0) continue;
             int baseAmount = (int)decimal.Round(b, System.MidpointRounding.AwayFromZero);
             if (found is int f && f != baseAmount) return shown;
             found = baseAmount;
