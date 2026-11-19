@@ -10,15 +10,15 @@ public class ShareActionTests
 
     private static string Json(bool signedIn = true) =>
         "{\"v\":1,\"running\":true,\"signed_in\":" + (signedIn ? "true" : "false") +
-        ",\"steam_id\":\"76561198000000001\",\"server\":\"https://sts2.thegates.house/\",\"app_version\":\"0.3.3\",\"updated\":1800000000}";
+        ",\"steam_id\":\"76561198000000001\",\"server\":\"https://spiresync.app/\",\"app_version\":\"0.3.3\",\"updated\":1800000000}";
 
     [Fact]
     public void ReadyOpensTheAppAndCopiesTheWebLink()
     {
-        var a = ShareAction.For(new AppStatus(AppState.Ready, "https://sts2.thegates.house", "76561198000000001"), Run);
+        var a = ShareAction.For(new AppStatus(AppState.Ready, "https://spiresync.app", "76561198000000001"), Run);
         Assert.Equal(ShareKind.Share, a.Kind);
         Assert.Equal("spiresync://share/0123456789abcdef", a.AppLink);
-        Assert.Equal("https://sts2.thegates.house/runs/0123456789abcdef", a.WebLink);
+        Assert.Equal("https://spiresync.app/runs/0123456789abcdef", a.WebLink);
         Assert.Equal("Sharing… link copied", a.Message);
         Assert.False(a.ShowGetApp);
     }
@@ -32,7 +32,7 @@ public class ShareActionTests
         Assert.True(a.ShowGetApp);
         Assert.Null(a.AppLink);
         Assert.Null(a.WebLink);
-        Assert.Equal("https://sts2.thegates.house/", ShareAction.DownloadUrl);
+        Assert.Equal("https://spiresync.app/", ShareAction.DownloadUrl);
     }
 
     [Fact]
@@ -64,7 +64,7 @@ public class ShareActionTests
         {
             var s = ShareAction.ReadStatusFile(p, Now);
             Assert.Equal(AppState.Ready, s.State);
-            Assert.Equal("https://sts2.thegates.house", s.Server);
+            Assert.Equal("https://spiresync.app", s.Server);
         }
         finally { File.Delete(p); }
     }
@@ -151,7 +151,7 @@ public class ShareProgressTests
     private static readonly DateTimeOffset Now = DateTimeOffset.FromUnixTimeSeconds(1_800_000_000);
 
     private static string Json() =>
-        "{\"v\":1,\"running\":true,\"signed_in\":true,\"steam_id\":\"76561198000000001\",\"server\":\"https://sts2.thegates.house/\",\"app_version\":\"0.3.3\",\"updated\":1800000000}";
+        "{\"v\":1,\"running\":true,\"signed_in\":true,\"steam_id\":\"76561198000000001\",\"server\":\"https://spiresync.app/\",\"app_version\":\"0.3.3\",\"updated\":1800000000}";
 
     private const long Pressed = 1_800_000_000;
 

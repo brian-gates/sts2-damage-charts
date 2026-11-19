@@ -26,6 +26,9 @@ internal sealed record ShareEntry(string RunId, ShareState State, string? Reason
 internal sealed partial record AppStatus(AppState State, string? Server, string? SteamId,
     ShareEntry? Share = null, bool ShareReported = false)
 {
+    /// <summary>The site's address before 2026-11-18, and the one it moved to.</summary>
+    public const string FormerServer = "https://sts2.thegates.house", CurrentServer = "https://spiresync.app";
+
     public const string FileName = "spire-sync-status.json";
     public const int StaleSeconds = 150;
     public const int FutureSkewSeconds = 300;
@@ -60,6 +63,8 @@ internal sealed partial record AppStatus(AppState State, string? Server, string?
             if (si.ValueKind == JsonValueKind.False) return new AppStatus(AppState.SignedOut, null, null, share, reported);
             string? server = Str(root, "server")?.Trim().TrimEnd('/').Trim();
             if (string.IsNullOrEmpty(server)) return gone;
+            // Spire Sync 0.3.3 and earlier report the site's former address; copy links with the current one.
+            if (string.Equals(server, FormerServer, StringComparison.OrdinalIgnoreCase)) server = CurrentServer;
             return new AppStatus(AppState.Ready, server, Str(root, "steam_id"), share, reported);
         }
         catch (Exception)

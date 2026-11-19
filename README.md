@@ -24,7 +24,7 @@ A standalone damage analytics and incoming-damage forecast mod for [Slay the Spi
   floor, encounter (Elite/Boss tagged), rounds, and each player's top damage dealt and taken sources,
   healing and block.
 - **Share** (victory and death screens): a Share button that makes the run public on
-  [Spire Sync](https://sts2.thegates.house/) and copies its link. Works with Spire Sync 0.3.3 or later,
+  [Spire Sync](https://spiresync.app/) and copies its link. Works with Spire Sync 0.3.3 or later,
   running and signed in; otherwise the button says what to do (open Spire Sync, or sign in to it). The
   mod itself makes no network calls: it reads the status file Spire Sync keeps in the game's user data
   folder and hands the run to the app.

@@ -11,7 +11,7 @@ internal enum ShareKind { Share, NeedApp, NeedSignIn }
 // Pure (no Godot): the tests compile it directly; ShareButton.cs performs it.
 internal sealed record ShareAction(ShareKind Kind, string Message, string? AppLink = null, string? WebLink = null)
 {
-    public const string DownloadUrl = "https://sts2.thegates.house/";
+    public const string DownloadUrl = "https://spiresync.app/";
     public const string SharedNote = "Sharing… link copied";
     public const string NeedAppText = "Sharing goes through Spire Sync. Open Spire Sync, then press Share again.";
     public const string NeedSignInText = "Sign in to Spire Sync, then press Share again.";
