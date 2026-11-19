@@ -465,6 +465,32 @@ internal static class ForecastReader
     private static bool Contains(string s, string sub) =>
         s.IndexOf(sub, StringComparison.OrdinalIgnoreCase) >= 0;
 
+    // A power's or card's text values (DynamicVars) as (shown, base) pairs, for SelfHarmText.BaseAmount. The set is
+    // enumerable as DynamicVars or as name/var pairs, depending on the game version; empty if it can't be read.
+    // Power types whose text values were logged once, to confirm in game that DynamicVars can be read.
+    private static readonly HashSet<string> _varsLogged = new();
+
+    private static List<(decimal Shown, decimal Base)> VarValues(object model)
+    {
+        var list = new List<(decimal, decimal)>();
+        try
+        {
+            if (GetProp(model, "DynamicVars") is not IEnumerable vars) return list;
+            foreach (var item in vars)
+            {
+                object? v = item == null ? null : GetProp(item, "BaseValue") != null ? item : GetProp(item, "Value");
+                if (v == null) continue;
+                // An enchanted card's value is its base plus the enchantment; otherwise the plain base.
+                if ((GetProp(v, "EnchantedValue") ?? GetProp(v, "BaseValue")) is not decimal b) continue;
+                object? shown = GetProp(v, "ShownValue") ?? GetProp(v, "PreviewValue");
+                decimal s = shown switch { decimal d => d, int i => i, _ => b };
+                list.Add((s, b));
+            }
+        }
+        catch { }
+        return list;
+    }
+
     private static object? GetProp(object obj, string name)
     {
         try
@@ -532,7 +558,13 @@ internal static class ForecastReader
                               && Contains(desc, "end of your turn");
                 if (!keyword && !byText) continue;
                 int amount = GetInt(p, "Amount", "Stacks", "Count", "Value");
-                if (byText && textAmount > 0) amount = textAmount;
+                if (byText && textAmount > 0)
+                {
+                    var vars = VarValues(p);
+                    amount = SelfHarmText.BaseAmount(textAmount, vars);
+                    if (_varsLogged.Add(tn))
+                        Godot.GD.Print($"[STS2 Damage] forecast {tn}: text {textAmount}, values [{string.Join(", ", vars.ConvertAll(x => $"{x.Shown}/{x.Base}"))}] -> {amount}");
+                }
                 if (amount <= 0) continue;
                 string label = TextHelper.SafeGetText(() => GetProp(p, "Title")) ?? Prettify(tn);
                 // Keyword DoTs (poison, bleed, ...) bypass block; text-detected ones follow their wording.
@@ -576,7 +608,9 @@ internal static class ForecastReader
                 if (desc.Length > 0) _selfHarmByType[type] = selfHarm;   // an unresolved text isn't a verdict
                 if (!selfHarm) continue;
 
-                // Amount: the number in the self clause of the resolved text; fall back to fields.
+                // Amount: the number in the self clause of the resolved text, at its base value (the text's preview
+                // can include the player's Weak); fall back to fields.
+                if (amount > 0) amount = SelfHarmText.BaseAmount(amount, VarValues(card));
                 if (amount <= 0) amount = GetNum(card, "CalculatedDamage", "HpLoss", "Damage", "BaseDamage");
                 if (amount <= 0) continue;
 

@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Text.RegularExpressions;
 
 namespace STS2_DamageCharts.Forecast;
@@ -42,4 +43,22 @@ internal static class SelfHarmText
     }
 
     public static bool IsSelfHarm(string? desc) => TryMatch(desc, out _);
+
+    // The game's text shows each value's preview (DynamicVar.ShownValue), which applies modifiers such as the
+    // player's own Weak. Damage the player takes from their own powers and cards isn't an attack, so it lands at the
+    // value's base (DynamicVar.BaseValue). Returns the base of the one value the text is showing as `shown`; `shown`
+    // itself when no value shows it, or when values that show it disagree on their base.
+    public static int BaseAmount(int shown, IEnumerable<(decimal Shown, decimal Base)> values)
+    {
+        int? found = null;
+        foreach (var (s, b) in values)
+        {
+            // A calculated value can carry no base of its own (0): that's no evidence of what the text shows.
+            if (decimal.Truncate(s) != shown || b <= 0) continue;
+            int baseAmount = (int)decimal.Round(b, System.MidpointRounding.AwayFromZero);
+            if (found is int f && f != baseAmount) return shown;
+            found = baseAmount;
+        }
+        return found ?? shown;
+    }
 }
