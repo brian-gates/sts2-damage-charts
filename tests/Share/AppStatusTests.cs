@@ -6,7 +6,7 @@ public class AppStatusTests
 {
     private static readonly DateTimeOffset Now = DateTimeOffset.FromUnixTimeSeconds(1_800_000_000);
 
-    private static string Json(long updated, bool signedIn = true, string server = "https://sts2.thegates.house", int v = 1) =>
+    private static string Json(long updated, bool signedIn = true, string server = "https://spiresync.app", int v = 1) =>
         $"{{\"v\":{v},\"running\":true,\"signed_in\":{(signedIn ? "true" : "false")},\"steam_id\":" +
         $"{(signedIn ? "\"76561198000000001\"" : "null")},\"server\":\"{server}\",\"app_version\":\"0.3.3\",\"updated\":{updated}}}";
 
@@ -37,14 +37,25 @@ public class AppStatusTests
     {
         var s = AppStatus.Read(Json(1_800_000_000), Now);
         Assert.Equal(AppState.Ready, s.State);
-        Assert.Equal("https://sts2.thegates.house", s.Server);
+        Assert.Equal("https://spiresync.app", s.Server);
         Assert.Equal("76561198000000001", s.SteamId);
     }
 
     [Fact]
     public void TrailingSlashesAreTrimmed() =>
-        Assert.Equal("https://sts2.thegates.house",
-            AppStatus.Read(Json(1_800_000_000, server: "https://sts2.thegates.house/"), Now).Server);
+        Assert.Equal("https://spiresync.app",
+            AppStatus.Read(Json(1_800_000_000, server: "https://spiresync.app/"), Now).Server);
+
+    [Theory]
+    [InlineData("https://sts2.thegates.house")]
+    [InlineData("https://sts2.thegates.house/")]
+    [InlineData("HTTPS://STS2.THEGATES.HOUSE")]
+    public void FormerAddressReadsAsTheCurrentOne(string server) =>
+        Assert.Equal("https://spiresync.app", AppStatus.Read(Json(1_800_000_000, server: server), Now).Server);
+
+    [Fact]
+    public void OtherServersAreKept() =>
+        Assert.Equal("http://localhost:3100", AppStatus.Read(Json(1_800_000_000, server: "http://localhost:3100/"), Now).Server);
 
     [Fact]
     public void ExactlyAtBoundaryIsStillFresh() =>
