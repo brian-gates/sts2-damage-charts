@@ -66,4 +66,26 @@ public class SelfHarmTextTests
         Assert.Equal(6, a);
         Assert.True(b);
     }
+
+    // The game's text shows a value's preview, which can include the player's Weak (6 x 0.75 = 4.5, shown as 4).
+    // Damage the player deals themselves (Disintegration) isn't an attack, so it lands at the value's base.
+    [Fact]
+    public void ShownAmount_MapsBackToItsBaseValue() =>
+        Assert.Equal(6, SelfHarmText.BaseAmount(4, new[] { (Shown: 4m, Base: 6m) }));
+
+    [Fact]
+    public void ShownAmount_PicksTheValueTheTextShows() =>
+        Assert.Equal(6, SelfHarmText.BaseAmount(4, new[] { (Shown: 9m, Base: 12m), (Shown: 4m, Base: 6m) }));
+
+    [Fact]
+    public void ShownAmount_KeptWhenNoValueMatches() =>
+        Assert.Equal(4, SelfHarmText.BaseAmount(4, new[] { (Shown: 9m, Base: 12m) }));
+
+    [Fact]
+    public void ShownAmount_KeptWhenMatchesDisagree() =>
+        Assert.Equal(4, SelfHarmText.BaseAmount(4, new[] { (Shown: 4m, Base: 6m), (Shown: 4m, Base: 5m) }));
+
+    [Fact]
+    public void ShownAmount_UnchangedWithoutModifiers() =>
+        Assert.Equal(6, SelfHarmText.BaseAmount(6, new[] { (Shown: 6m, Base: 6m) }));
 }
