@@ -114,6 +114,19 @@ public class GroupDetailTests
     // ----- Per-fight breakdown through the run aggregate -----
 
     [Fact]
+    public void RunTotalsSumAbsorbedAcrossFights()
+    {
+        var run = new RunAggregate();
+        for (int i = 0; i < 2; i++)
+        {
+            var snap = Snap(Player(0, 0, new[] { ("Strike", 10L) }, new[] { ("Jaw Worm", 3L) }));
+            snap.PerPlayer[0].AbsorbedTotal = 5 + i;
+            run.Fold(snap, Chart(1, 1, 2));
+        }
+        Assert.Equal(11L, run.RunSourceSnapshot().PerPlayer[0].AbsorbedTotal);
+    }
+
+    [Fact]
     public void FightDetail_KeepsEachFightsOwnBreakdownAndMeta()
     {
         var run = new RunAggregate();

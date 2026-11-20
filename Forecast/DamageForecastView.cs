@@ -40,6 +40,7 @@ internal sealed class DamageForecastView
     // BBCode hex tags matching the bar segments, so each value reads in its own color.
     private const string BlockHex = "8cb8ff";  // block = sky blue
     private const string OstyHex = "c08cf0";   // Osty = violet
+    private const string WuppyHex = "a8c85a";  // Wuppy = leaf green, like its icon
     private const string LossHex = "ff5555";   // loss = red
     private const string GreenHex = "6bd45c";  // safe
     private const string GoldHex = "efc851";   // hidden flag / caution
@@ -234,7 +235,7 @@ internal sealed class DamageForecastView
             string hidden = r.HasHidden ? $" [color=#{GoldHex}][font_size={F(15, sc)}]+?[/font_size][/color]" : "";
             // Spare block: inline after "Safe" only when the right-hand ledger is hidden (no incoming);
             // otherwise it's a ledger line, so it never overlaps the ledger column.
-            bool mitigated = r.Incoming > 0 && (r.Block > 0 || r.OstyAbsorb > 0);
+            bool mitigated = r.Incoming > 0 && (r.Block > 0 || r.OstyAbsorb > 0 || r.WuppyAbsorb > 0);
             bool showSpare = r.IsSafe && r.Overblock > 0;
             string spare = showSpare && !mitigated
                 ? $" [color=#{CreamHex}][font_size={F(15, sc)}]+{r.Overblock} block[/font_size][/color]"
@@ -257,14 +258,22 @@ internal sealed class DamageForecastView
             // Tucked micro-ledger on the right, only when mitigation changes the result (otherwise In equals
             // the loss already shown): incoming vs the Block / Osty absorbing it.
             // The Osty line carries Osty's projected HP loss in a smaller suffix ("Osty 11 -6", or a red ☠ when
-            // it would die). Spare only shows when block covers everything, i.e. Osty loses nothing, so the
-            // ledger still never exceeds four lines.
+            // it would die); Wuppy's line works the same way. Spare only shows when block covers everything,
+            // i.e. Osty loses nothing, so the ledger stays at four lines unless Wuppy and Osty are both out.
             string led = "", widest = "";
             int ledSize = F(12, sc), sufSize = F(10, sc);
             if (mitigated)
             {
                 led = $"In {r.Incoming}"; widest = led;
                 void Line(string plain, string rich) { led += "\n" + rich; if (plain.Length > widest.Length) widest = plain; }
+                // Wuppy first: it takes the attacks before block does.
+                if (r.WuppyAbsorb > 0)
+                {
+                    string suffix = r.WuppyDies ? " ☠" : r.WuppyHpLoss > 0 ? $" -{r.WuppyHpLoss}" : "";
+                    string sufHex = r.WuppyDies ? LossHex : WuppyHex;
+                    Line($"Wuppy {r.WuppyAbsorb}{suffix}", $"[color=#{WuppyHex}]Wuppy {r.WuppyAbsorb}[/color]"
+                        + (suffix.Length > 0 ? $"[font_size={sufSize}][color=#{sufHex}]{suffix}[/color][/font_size]" : ""));
+                }
                 if (r.Block > 0) Line($"Blk {r.Block}", $"[color=#{BlockHex}]Blk {r.Block}[/color]");
                 if (r.OstyAbsorb > 0)
                 {

@@ -28,7 +28,7 @@ internal static class RunStatsFile
 
     // The only keys the server accepts at each level (any other key is a 400).
     private static readonly string[] FightKeys = { "index", "floor", "encounter", "kind", "rounds", "players" };
-    private static readonly string[] PlayerKeys = { "steam_id", "dealt", "taken", "healed", "block", "potions" };
+    private static readonly string[] PlayerKeys = { "steam_id", "dealt", "taken", "healed", "block", "absorbed", "potions" };
     private static readonly string[] ListKeys = { "total", "sources" };
     private static readonly string[] SourceKeys = { "name", "id", "amount", "hits" };
 
@@ -93,7 +93,7 @@ internal static class RunStatsFile
             var potions = new JsonArray();
             foreach (var p in ps.Potions)
                 for (long i = 0; i < p.Total && potions.Count < MaxSources; i++) potions.Add(JsonValue.Create(Clip(p.Name)));
-            players.Add(new JsonObject
+            var player = new JsonObject
             {
                 ["steam_id"] = sid,
                 ["dealt"] = SourceList(ps.DealtTotal, ps.Dealt, maxSources),
@@ -101,7 +101,10 @@ internal static class RunStatsFile
                 ["healed"] = Amount(ps.HealTotal),
                 ["block"] = Amount(ps.BlockTotal),
                 ["potions"] = potions,
-            });
+            };
+            // Optional in the format (sts2-saves accepts it since Nov 2026); only written when a pet took hits.
+            if (ps.AbsorbedTotal > 0) player["absorbed"] = Amount(ps.AbsorbedTotal);
+            players.Add(player);
         }
         return new JsonObject
         {

@@ -17,6 +17,74 @@ public class DamageForecastTests
     private static ForecastResult RunOsty(int hp, int block, int ostyAbsorb, params ForecastItem[] items) =>
         DamageForecast.Compute(new ForecastInputs(hp, 50, block, ostyAbsorb, false, new List<ForecastItem>(items)));
 
+    private static ForecastResult RunWuppy(int hp, int block, int wuppyHp, int wuppyBlock, params ForecastItem[] items) =>
+        DamageForecast.Compute(new ForecastInputs(hp, 50, block, 0, false, new List<ForecastItem>(items),
+            wuppyHp: wuppyHp, wuppyBlock: wuppyBlock));
+
+    // Wuppy (WuppysLoyaltyPower.ModifyPreBlockDamageTarget) takes the whole attack before block applies.
+    [Fact]
+    public void WuppyTakesTheAttack_PlayerBlockUntouched()
+    {
+        var r = RunWuppy(40, 6, 20, 0, Attack(8));
+        Assert.Equal(0, r.MaxLoss);
+        Assert.True(r.IsSafe);
+        Assert.Equal(6, r.Overblock);   // the player's block is all spare
+        Assert.Equal(8, r.Mitigated);
+        Assert.Equal(20, r.WuppyAbsorb);
+        Assert.Equal(8, r.WuppyHpLoss);
+        Assert.False(r.WuppyDies);
+    }
+
+    [Fact]
+    public void WuppyBlockSoaksBeforeItsHp()
+    {
+        var r = RunWuppy(40, 0, 5, 4, Attack(8));
+        Assert.Equal(0, r.MaxLoss);
+        Assert.Equal(9, r.WuppyAbsorb);
+        Assert.Equal(4, r.WuppyHpLoss);
+        Assert.False(r.WuppyDies);
+    }
+
+    [Fact]
+    public void TheHitThatKillsWuppyIsSpent_LaterHitsReachThePlayer()
+    {
+        // Wuppy 5: hit 1 (8) is aimed at Wuppy and kills it, its overflow goes nowhere; hit 2 (8) meets
+        // the player's 3 block, then 5 HP.
+        var r = RunWuppy(40, 3, 5, 0, Attack(8, hits: 2));
+        Assert.Equal(5, r.MaxLoss);
+        Assert.Equal(16, r.Incoming);
+        Assert.Equal(11, r.Mitigated);  // 8 to Wuppy + 3 block
+        Assert.True(r.WuppyDies);
+        Assert.Equal(0, r.Overblock);
+    }
+
+    [Fact]
+    public void WuppyIgnoresDotsAndSelfDamage()
+    {
+        var r = RunWuppy(40, 0, 20, 0, Dot(3), SelfCard(4));
+        Assert.Equal(3, r.MinLoss);
+        Assert.Equal(7, r.MaxLoss);
+        Assert.Equal(0, r.WuppyHpLoss);
+    }
+
+    [Fact]
+    public void WuppyGoesFirst_OstyAndBufferUntouched()
+    {
+        var r = DamageForecast.Compute(new ForecastInputs(40, 50, 0, 10, false, new List<ForecastItem> { Attack(6), Dot(2) },
+            ostyHp: 10, buffer: 1, wuppyHp: 20));
+        Assert.Equal(0, r.OstyHpLoss);
+        Assert.Equal(6, r.WuppyHpLoss);
+        Assert.Equal(0, r.MaxLoss);     // Buffer is still there for the Dot
+    }
+
+    [Fact]
+    public void NoWuppy_NothingChanges()
+    {
+        var r = RunWuppy(40, 0, 0, 7, Attack(8)); // block on a dead Wuppy is ignored
+        Assert.Equal(8, r.MaxLoss);
+        Assert.Equal(0, r.WuppyAbsorb);
+    }
+
     [Fact]
     public void SingleAttackNoBlock_LossEqualsDamage()
     {
