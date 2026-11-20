@@ -71,6 +71,11 @@ public static class DamageChartsMod
     // (~2 s: the hit lands within its attack animation; much older tags are from earlier, blocked hits).
     private const long PetRedirectFrames = 120;
     private static bool _petLogged;  // one log line per session confirming absorbed hits are seen
+
+    private static bool EnemyTurn()
+    {
+        try { return SafeCombatState()?.CurrentSide == CombatSide.Enemy; } catch { return false; }
+    }
     // Damaging powers that sit on an enemy (Poison, Constrict...) hurt that enemy, often after an await
     // (Accelerant makes Poison tick several times with a pause between), when the 1-frame stamp below has
     // gone stale. So the stamp also tags the enemy itself, by reference, the way Doom kills are pre-tagged.
@@ -1742,18 +1747,18 @@ public static class DamageChartsMod
 
             if (creature.IsPet)
             {
-                // A pet's HP loss is never damage dealt. It counts as absorbed for its owner when an enemy
-                // hit caused it: tagged on the pet itself, or on the owner when the game moved the hit onto
-                // the pet inside the Damage call (Wuppy before block, Osty after it). Anything else, such as
-                // a card spending Osty's HP, isn't counted.
+                // A pet's HP loss is never damage dealt. It counts as absorbed for its owner only when it is
+                // an enemy's hit aimed at the owner that the game moved onto the pet inside the Damage call
+                // (Wuppy before block, Osty after it): a fresh enemy tag on the owner, on the enemies' turn.
+                // A hit aimed at the pet itself (Thorns when Osty attacks, an enemy targeting the pet) and HP a
+                // card spends on the pet don't count. The owner's tag is peeked, not taken: overflow past
+                // the pet still hits the owner with it.
                 Player? petOwner = creature.PetOwner;
                 int pslot = SlotOf(petOwner);
                 if (pslot < 0) return;
-                var hit = pend;
-                if (hit.Dealer == null && petOwner?.Creature is { } oc
-                    && _pending.TryGetValue(oc, out var ownerTag) && _frame - ownerTag.Frame <= PetRedirectFrames)
-                    hit = ownerTag; // peeked, not taken: overflow past the pet still hits the owner with it
-                if (hit.Dealer == null || !hit.Dealer.IsMonster) return;
+                if (!EnemyTurn() || petOwner?.Creature is not { } oc
+                    || !_pending.TryGetValue(oc, out var hit) || _frame - hit.Frame > PetRedirectFrames
+                    || hit.Dealer == null || !hit.Dealer.IsMonster) return;
                 _tracker.AddAbsorbed(pslot, lost);
                 string by = TextHelper.SafeGetText(() => hit.Dealer!.Monster!.Title) ?? "Enemy";
                 string pet = TextHelper.SafeGetText(() => creature.Monster!.Title) ?? "Pet";
