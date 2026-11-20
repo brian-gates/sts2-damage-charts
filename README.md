@@ -6,7 +6,7 @@ A standalone damage analytics and incoming-damage forecast mod for [Slay the Spi
 
 - **Incoming-damage forecast** (always on in combat, docked beside your character): the HP you are
   about to lose this turn and what you'll be left at, as a range when something is uncertain. Counts
-  enemy intents, damage over time, Infection and self-damage cards, Block and Osty, and end-of-turn Block
+  enemy intents, damage over time, Infection and self-damage cards, Block, Osty and Wuppy, and end-of-turn Block
   (Plating, Orichalcum, Cloak Clasp); ignores enemies that will die to Poison before they act. A thin
   HP bar previews the loss. Reads **Safe** when nothing can hurt you and pulses when the turn can kill
   you. Hover it for the per-round HP-lost history and an itemized list of sources.
@@ -20,7 +20,8 @@ A standalone damage analytics and incoming-damage forecast mod for [Slay the Spi
 - **End-of-combat summary**: a compact version beside the rewards list after each fight, with potions
   used. C hides and shows it until you move on.
 - **Run recap**: the same hotkey out of combat (e.g. on the victory/death screen) opens a run-wide recap
-  of dealt / taken / healed / block, by source and per fight. Hover a fight in the recap's chart for its
+  of dealt / taken / healed / block (plus absorbed, when a pet like Wuppy or Osty took hits for you), by
+  source and per fight. Hover a fight in the recap's chart for its
   floor, encounter (Elite/Boss tagged), rounds, and each player's top damage dealt and taken sources,
   healing and block.
 - **Share** (victory and death screens): a Share button that makes the run public on
@@ -55,7 +56,8 @@ row is the Fire Potion's damage, which is now named.
 ## How it works
 
 - **Amounts** come from subscribing to each `Creature.CurrentHpChanged` event (true post-block HP
-  loss). Player-creature drops = taken; enemy drops = dealt; heals and block are totaled separately.
+  loss). Player-creature drops = taken; enemy drops = dealt; a pet's drops from enemy hits = absorbed;
+  heals and block are totaled separately.
 - **Source attribution** comes from a Harmony prefix on the central `CreatureCmd.Damage(...)`: card
   hits use `cardSource.Title`, pet hits credit the pet. A curated list of the game's damage-dealing
   power/relic/orb/potion hooks (found by a static call-graph sweep of `sts2.dll`) stamps the source for
@@ -167,7 +169,7 @@ After the first publish, subscribe in-client and verify the overlay loads in a r
   the hooks off.
 - `run_stats_file`: **default `true`.** After each finished combat (single-player and multiplayer) the
   mod saves that fight's stats (floor, encounter, rounds, and per player: damage dealt and taken by source, healing,
-  Block, potions) to `damage-charts/runs/<run id>.json` in the game's user data folder
+  Block, damage your pet absorbed, potions) to `damage-charts/runs/<run id>.json` in the game's user data folder
   (`~/Library/Application Support/SlayTheSpire2` on macOS, `%APPDATA%\SlayTheSpire2` on Windows), for
   Spire Sync to upload. Set `false` to stop writing the file.
 

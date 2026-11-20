@@ -67,6 +67,10 @@ public static class DamageChartsMod
     // Frame-stamped: a tag whose hit never changed HP (fully blocked, or Osty soaked it) expires.
     private static readonly Dictionary<Creature, (string Label, Creature? Dealer, string? Icon, long Frame, string? Id)> _pending = new();
     private const long PendingTtlFrames = 600; // ~10 s at 60 fps: covers Doom's kill animation
+    // How recent an enemy's tag on a pet's owner must be for the pet's HP loss to count as that hit
+    // (~2 s: the hit lands within its attack animation; much older tags are from earlier, blocked hits).
+    private const long PetRedirectFrames = 120;
+    private static bool _petLogged;  // one log line per session confirming absorbed hits are seen
     // Damaging powers that sit on an enemy (Poison, Constrict...) hurt that enemy, often after an await
     // (Accelerant makes Poison tick several times with a pause between), when the 1-frame stamp below has
     // gone stale. So the stamp also tags the enemy itself, by reference, the way Doom kills are pre-tagged.
@@ -1625,6 +1629,13 @@ public static class DamageChartsMod
         {
             var pc = _players[i].Creature;
             if (pc != null) Subscribe(pc);
+            // Pets (Wuppy, Osty): their HP lost to enemy attacks is damage absorbed for their owner.
+            try
+            {
+                if (InstanceGet(InstanceGet(_players[i], "PlayerCombatState"), "Pets") is System.Collections.IEnumerable pets)
+                    foreach (var pet in pets) if (pet is Creature c) Subscribe(c);
+            }
+            catch { }
         }
         try { foreach (var e in cs.Enemies) if (e != null) Subscribe(e); }
         catch { /* enemy list may mutate; catch stragglers next frame */ }
@@ -1728,6 +1739,28 @@ public static class DamageChartsMod
             // didn't come through Damage (e.g. a Sandpit kill).
             _pending.Remove(creature, out var pend);
             if (pend.Label != null && _frame - pend.Frame > PendingTtlFrames) pend = default;
+
+            if (creature.IsPet)
+            {
+                // A pet's HP loss is never damage dealt. It counts as absorbed for its owner when an enemy
+                // hit caused it: tagged on the pet itself, or on the owner when the game moved the hit onto
+                // the pet inside the Damage call (Wuppy before block, Osty after it). Anything else, such as
+                // a card spending Osty's HP, isn't counted.
+                Player? petOwner = creature.PetOwner;
+                int pslot = SlotOf(petOwner);
+                if (pslot < 0) return;
+                var hit = pend;
+                if (hit.Dealer == null && petOwner?.Creature is { } oc
+                    && _pending.TryGetValue(oc, out var ownerTag) && _frame - ownerTag.Frame <= PetRedirectFrames)
+                    hit = ownerTag; // peeked, not taken: overflow past the pet still hits the owner with it
+                if (hit.Dealer == null || !hit.Dealer.IsMonster) return;
+                _tracker.AddAbsorbed(pslot, lost);
+                string by = TextHelper.SafeGetText(() => hit.Dealer!.Monster!.Title) ?? "Enemy";
+                string pet = TextHelper.SafeGetText(() => creature.Monster!.Title) ?? "Pet";
+                if (!_petLogged) { _petLogged = true; GD.Print($"[STS2 Damage] absorbed: {by} -> {pet} {lost}"); }
+                _tracker.AddLog(round, $"{by} → {pet}  {lost}", true);
+                return;
+            }
 
             if (creature.IsPlayer)
             {

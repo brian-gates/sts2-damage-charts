@@ -42,11 +42,18 @@ internal readonly struct ForecastInputs
     public readonly int OstyHp;       // Osty's HP part of OstyAbsorb (the rest is its block)
     public readonly int Buffer;       // Buffer stacks: each cancels one HP loss (after block and Osty)
     public readonly bool Intangible;  // every hit on the player deals and costs at most 1
+    // Wuppy (the Wuppy relic's pet): while alive, every attack on the player is aimed at it instead, before
+    // block. 0 HP = no Wuppy (its block alone doesn't count).
+    public readonly int WuppyHp;
+    public readonly int WuppyBlock;
 
     // ostyHp < 0: the HP/block split is unknown, so all of OstyAbsorb is treated as HP.
     public ForecastInputs(int currentHp, int maxHp, int block, int ostyAbsorb, bool hasHidden, IReadOnlyList<ForecastItem> items,
-                          int endTurnBlock = 0, int ostyHp = -1, int buffer = 0, bool intangible = false)
+                          int endTurnBlock = 0, int ostyHp = -1, int buffer = 0, bool intangible = false,
+                          int wuppyHp = 0, int wuppyBlock = 0)
     {
+        WuppyHp = Math.Max(0, wuppyHp);
+        WuppyBlock = WuppyHp > 0 ? Math.Max(0, wuppyBlock) : 0;
         CurrentHp = currentHp;
         MaxHp = maxHp;
         Block = block;
@@ -81,11 +88,19 @@ internal readonly struct ForecastResult
     public readonly int OstyHp;
     public readonly int OstyHpLoss;
     public bool OstyDies => OstyHp > 0 && OstyHpLoss >= OstyHp;
+    // Wuppy's pool (block + HP; 0 without a living Wuppy), and its worst-case HP loss this enemy turn.
+    public readonly int WuppyAbsorb;
+    public readonly int WuppyHp;
+    public readonly int WuppyHpLoss;
+    public bool WuppyDies => WuppyHp > 0 && WuppyHpLoss >= WuppyHp;
 
     public ForecastResult(int incoming, int mitigated, int minLoss, int maxLoss,
         int block, int ostyAbsorb, int currentHp, int maxHp, bool hasHidden, IReadOnlyList<ForecastItem> items,
-        int overblock = 0, int ostyHp = 0, int ostyHpLoss = 0)
+        int overblock = 0, int ostyHp = 0, int ostyHpLoss = 0, int wuppyHp = 0, int wuppyBlock = 0, int wuppyHpLoss = 0)
     {
+        WuppyHp = Math.Max(0, wuppyHp);
+        WuppyAbsorb = WuppyHp > 0 ? WuppyHp + Math.Max(0, wuppyBlock) : 0;
+        WuppyHpLoss = Math.Clamp(wuppyHpLoss, 0, WuppyHp);
         Overblock = Math.Max(0, overblock);
         OstyHp = Math.Max(0, ostyHp);
         OstyHpLoss = Math.Clamp(ostyHpLoss, 0, OstyHp);
@@ -114,8 +129,10 @@ internal static class DamageForecast
         //   1. self damage (the player's own powers/cards, e.g. Disintegration, Infection, "lose N HP" DoTs):
         //      during or at the end of the player's turn, before enemies act. "Take N damage" spends the
         //      player's block only, never Osty; "lose N HP" bypasses block.
-        //   2. enemy items, in intent order: attacks (incl. death blows) hit player block, then Osty (block,
-        //      then HP), then the player; unblockable ones go straight to HP.
+        //   2. enemy items, in intent order: while Wuppy lives, each attack is aimed at Wuppy instead (before
+        //      block: Wuppy's block, then its HP; the overflow of the hit that kills it is spent). Otherwise
+        //      attacks (incl. death blows) hit player block, then Osty (block, then HP), then the player;
+        //      unblockable ones go straight to HP.
         // Block and Osty are pools, so the order only matters for Buffer (BufferPower.ModifyHpLostAfterOstyLate):
         // each stack cancels the next hit that would still cost HP after block and Osty.
         // Intangible caps every hit on the player at 1 (IntangiblePower.ModifyDamageCap before block, and
@@ -126,23 +143,27 @@ internal static class DamageForecast
         int osty = Math.Max(0, inp.OstyAbsorb);
         int ostyHp = Math.Min(Math.Max(0, inp.OstyHp), osty);
 
-        var g = Simulate(inp.Items, block, osty, ostyHp, inp.Buffer, inp.Intangible, includeConditional: false);
-        var w = Simulate(inp.Items, block, osty, ostyHp, inp.Buffer, inp.Intangible, includeConditional: true);
+        var wuppy = new Wuppy(inp.WuppyHp, inp.WuppyBlock);
+        var g = Simulate(inp.Items, block, osty, ostyHp, inp.Buffer, inp.Intangible, wuppy, includeConditional: false);
+        var w = Simulate(inp.Items, block, osty, ostyHp, inp.Buffer, inp.Intangible, wuppy, includeConditional: true);
 
         // Spare block in the worst case: the player's own block left after self damage and attacks (spare
         // Osty isn't block).
         return new ForecastResult(g.Incoming, g.Mitigated, g.Loss, w.Loss,
-            block, osty, inp.CurrentHp, inp.MaxHp, inp.HasHidden, inp.Items, w.BlockLeft, ostyHp, w.OstyHpLoss);
+            block, osty, inp.CurrentHp, inp.MaxHp, inp.HasHidden, inp.Items, w.BlockLeft, ostyHp, w.OstyHpLoss,
+            inp.WuppyHp, inp.WuppyBlock, w.WuppyHpLoss);
     }
 
-    private readonly record struct Outcome(int Incoming, int Mitigated, int Loss, int BlockLeft, int OstyHpLoss);
+    private readonly record struct Wuppy(int Hp, int Block);
+    private readonly record struct Outcome(int Incoming, int Mitigated, int Loss, int BlockLeft, int OstyHpLoss, int WuppyHpLoss);
 
     private static bool IsSelf(ForecastItem it) => it.Kind == ForecastKind.Dot || it.Kind == ForecastKind.SelfCard;
 
     private static Outcome Simulate(IReadOnlyList<ForecastItem> items, int block, int osty, int ostyHp, int buffer,
-        bool intangible, bool includeConditional)
+        bool intangible, Wuppy wuppy, bool includeConditional)
     {
         int ostyBlock = osty - ostyHp, ostyHpLeft = ostyHp;
+        int wuppyBlock = wuppy.Block, wuppyHpLeft = wuppy.Hp;
         int incoming = 0, mitigated = 0, loss = 0;
         for (int phase = 0; phase < 2; phase++)
         {
@@ -158,6 +179,14 @@ internal static class DamageForecast
                     int dmg = intangible ? Math.Min(1, it.DamagePerHit) : it.DamagePerHit;
                     if (dmg <= 0) continue;
                     if (!it.Conditional) incoming += dmg;
+                    if (attack && wuppyHpLeft > 0)
+                    {
+                        // The whole hit lands on Wuppy; past its block and HP the rest is spent.
+                        int wb = Math.Min(wuppyBlock, dmg); wuppyBlock -= wb;
+                        wuppyHpLeft -= Math.Min(wuppyHpLeft, dmg - wb);
+                        mitigated += dmg;
+                        continue;
+                    }
                     int rest = dmg;
                     if (it.Blockable)
                     {
@@ -173,6 +202,6 @@ internal static class DamageForecast
                 }
             }
         }
-        return new Outcome(incoming, mitigated, loss, block, ostyHp - ostyHpLeft);
+        return new Outcome(incoming, mitigated, loss, block, ostyHp - ostyHpLeft, wuppy.Hp - wuppyHpLeft);
     }
 }

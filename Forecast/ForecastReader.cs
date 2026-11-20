@@ -21,7 +21,7 @@ internal static class ForecastReader
     public static ForecastInputs Build(CombatState cs, IReadOnlyList<Player> players, int localSlot)
     {
         var items = new List<ForecastItem>();
-        int hp = 0, maxHp = 0, block = 0, ostyAbsorb = 0, ostyHp = 0, endTurnBlock = 0, buffer = 0;
+        int hp = 0, maxHp = 0, block = 0, ostyAbsorb = 0, ostyHp = 0, endTurnBlock = 0, buffer = 0, wuppyHp = 0, wuppyBlock = 0;
         bool intangible = false;
         bool hasHidden = false;
 
@@ -35,6 +35,7 @@ internal static class ForecastReader
                 maxHp = GetInt(me, "MaxHp", "MaxHealth");
                 block = GetInt(me, "Block", "CurrentBlock");
                 ostyAbsorb = ReadOstyAbsorb(mePlayer!, out ostyHp);
+                ReadWuppy(mePlayer!, out wuppyHp, out wuppyBlock);
                 endTurnBlock = ReadEndTurnBlock(cs, mePlayer!, me, block);
                 buffer = ReadPowerAmount(me, "BufferPower");
                 intangible = ReadPowerAmount(me, "IntangiblePower") > 0;
@@ -62,7 +63,8 @@ internal static class ForecastReader
         }
         catch { }
 
-        return new ForecastInputs(hp, maxHp, block, ostyAbsorb, hasHidden, items, endTurnBlock, ostyHp, buffer, intangible);
+        return new ForecastInputs(hp, maxHp, block, ostyAbsorb, hasHidden, items, endTurnBlock, ostyHp, buffer, intangible,
+            wuppyHp, wuppyBlock);
     }
 
     // A power's stack count on the creature (0 if absent or unreadable).
@@ -268,6 +270,44 @@ internal static class ForecastReader
             return Math.Max(0, ohp) + Math.Max(0, oblock);
         }
         catch { return 0; }
+    }
+
+    // Wuppy (the Wuppy relic's pet) takes every attack aimed at its owner while it lives: its
+    // WuppysLoyaltyPower retargets the hit before block (ModifyPreBlockDamageTarget). Found among the
+    // player's pets by that power, so it's the redirect itself that is detected, not a name. 0 / 0 if none.
+    private static bool _wuppyLogged;  // once per session, to confirm the pet is found in a live game
+    private static void ReadWuppy(Player player, out int hp, out int block)
+    {
+        hp = 0; block = 0;
+        try
+        {
+            object? pcs = GetProp(player, "PlayerCombatState");
+            if (pcs == null || GetProp(pcs, "Pets") is not IEnumerable pets) return;
+            foreach (var pet in pets)
+            {
+                if (pet is not Creature c) continue;
+                bool alive = true;
+                try { alive = c.IsAlive; } catch { }
+                if (!alive || !HasPower(c, "WuppysLoyaltyPower")) continue;
+                hp = Math.Max(0, GetInt(c, "CurrentHp", "Hp", "Health"));
+                block = Math.Max(0, GetInt(c, "Block", "CurrentBlock"));
+                if (!_wuppyLogged) { _wuppyLogged = true; Godot.GD.Print($"[STS2 Damage] forecast Wuppy found: hp {hp}, block {block}"); }
+                return;
+            }
+        }
+        catch { hp = 0; block = 0; }
+    }
+
+    private static bool HasPower(Creature c, string powerType)
+    {
+        try
+        {
+            if (GetProp(c, "Powers") is IEnumerable powers)
+                foreach (var p in powers)
+                    if (p != null && p.GetType().Name == powerType) return true;
+        }
+        catch { }
+        return false;
     }
 
     // Returns true if this enemy's intent was concretely readable (attack or a known non-attack move);

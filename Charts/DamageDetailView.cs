@@ -608,7 +608,7 @@ internal sealed class DamageDetailView
         catch (Exception ex) { ErrorLog.Once("detail render", ex); }
     }
 
-    // Run-recap totals strip: four big stats (Dealt / Taken / Healed / Block) spread across the width.
+    // Run-recap totals strip: big stats (Dealt / Taken / Healed / Block, plus Absorbed when a pet took hits) across the width.
     private void RenderTotalsBand(ref int cur, float x, float top, float width, PlayerSources ps, Color dealtColor)
     {
         var heal = new Color(0.45f, 0.85f, 0.45f);
@@ -620,6 +620,8 @@ internal sealed class DamageDetailView
             ("HEALED", ps.HealTotal, heal),
             ("BLOCK", ps.BlockTotal, block),
         };
+        // A fifth stat only for runs where a pet (Wuppy, Osty) took hits for this player.
+        if (ps.AbsorbedTotal > 0) stats = [.. stats, ("ABSORBED", ps.AbsorbedTotal, new Color(0.66f, 0.78f, 0.35f))];
         float cellW = width / stats.Length;
         for (int i = 0; i < stats.Length; i++)
         {

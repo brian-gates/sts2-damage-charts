@@ -43,7 +43,7 @@ public class RunStatsFileTests
         {
             ["root"] = new[] { "v", "run_id", "recorded_by", "mod_version", "updated", "fights" },
             ["fight"] = new[] { "index", "floor", "encounter", "kind", "rounds", "players" },
-            ["player"] = new[] { "steam_id", "dealt", "taken", "healed", "block", "potions" },
+            ["player"] = new[] { "steam_id", "dealt", "taken", "healed", "block", "absorbed", "potions" },
             ["list"] = new[] { "total", "sources" },
             ["source"] = new[] { "name", "id", "amount", "hits" },
         };
@@ -102,6 +102,16 @@ public class RunStatsFileTests
         Assert.Equal(new[] { "Weak Potion" }, p["potions"]!.AsArray().Select(n => (string)n!).ToArray());
         Assert.Equal(B, (string)f["players"]![1]!["steam_id"]!);
         AssertOnlySpecKeys(root);
+    }
+
+    [Fact]
+    public void AbsorbedIsWrittenOnlyWhenAPetTookHits()
+    {
+        var players = TwoPlayers();
+        players[0].AbsorbedTotal = 14;
+        var f = RunStatsFile.BuildFight(Meta(), players, new[] { A, B });
+        Assert.Equal(14L, (long)f["players"]![0]!["absorbed"]!);
+        Assert.False(f["players"]![1]!.AsObject().ContainsKey("absorbed"));  // omitted, not 0
     }
 
     [Fact]

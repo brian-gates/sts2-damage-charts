@@ -42,6 +42,7 @@ internal sealed class PlayerSources
     public long TakenTotal;
     public long HealTotal;   // total HP healed this scope (no by-source breakdown)
     public long BlockTotal;  // total block gained this scope (no by-source breakdown)
+    public long AbsorbedTotal; // attack damage the player's pet (Wuppy, Osty) lost in their place
     public List<SourceEntry> Potions = new();  // potions used this scope: name, times used, icon
 }
 
@@ -97,6 +98,7 @@ internal sealed class DamageTracker
     private readonly Dictionary<(int Round, int Slot), List<DealtSeg>> _dealtSegs = new();
     private readonly Dictionary<int, long> _healByPlayer = new();   // slot -> total healed
     private readonly Dictionary<int, long> _blockByPlayer = new();  // slot -> total block gained
+    private readonly Dictionary<int, long> _absorbedByPlayer = new(); // slot -> damage their pet took for them
     private readonly Dictionary<int, Dictionary<string, long>> _potionsByPlayer = new(); // slot -> potion -> uses
     private readonly List<LogEntry> _log = new();
     private const int LogCap = 500;
@@ -119,6 +121,7 @@ internal sealed class DamageTracker
             _dealtSegs.Clear();
             _healByPlayer.Clear();
             _blockByPlayer.Clear();
+            _absorbedByPlayer.Clear();
             _potionsByPlayer.Clear();
             _log.Clear();
             _maxRound = 0;
@@ -151,6 +154,8 @@ internal sealed class DamageTracker
     public void AddHealed(int slot, int amount) => AddTotal(_healByPlayer, slot, amount);
 
     public void AddBlock(int slot, int amount) => AddTotal(_blockByPlayer, slot, amount);
+
+    public void AddAbsorbed(int slot, int amount) => AddTotal(_absorbedByPlayer, slot, amount);
 
     // A potion drunk/thrown this combat. Counted per player (not damage, so it stays out of the bars)
     // and shares the source-icon map so the summary can show its art.
@@ -252,6 +257,7 @@ internal sealed class DamageTracker
                 ps.Taken = SortedList(_takenBySource, s, out ps.TakenTotal, field: 1);
                 _healByPlayer.TryGetValue(s, out ps.HealTotal);
                 _blockByPlayer.TryGetValue(s, out ps.BlockTotal);
+                _absorbedByPlayer.TryGetValue(s, out ps.AbsorbedTotal);
                 ps.Potions = SortedList(_potionsByPlayer, s, out _, field: 2);
                 perPlayer[s] = ps;
             }
