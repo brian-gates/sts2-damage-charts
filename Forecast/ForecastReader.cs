@@ -36,7 +36,7 @@ internal static class ForecastReader
                 block = GetInt(me, "Block", "CurrentBlock");
                 ostyAbsorb = ReadOstyAbsorb(mePlayer!, out ostyHp);
                 ReadWuppy(mePlayer!, out wuppyHp, out wuppyBlock);
-                endTurnBlock = ReadEndTurnBlock(cs, mePlayer!, me, block);
+                endTurnBlock = ReadEndTurnBlock(cs, mePlayer!, me, block) + AllyHibernateBlock(cs, players, mePlayer!);
                 buffer = ReadPowerAmount(me, "BufferPower");
                 intangible = ReadPowerAmount(me, "IntangiblePower") > 0;
                 if (Debug && !_dumped) { _dumped = true; DumpDiagnostics(cs, players, localSlot, me); }
@@ -148,6 +148,30 @@ internal static class ForecastReader
         }
         catch { }
         try { total += FrostOrbBlock(cs, mePlayer); } catch { }
+        return total;
+    }
+
+    // An ally's Hibernate (HibernatePower, removed at the start of their next turn) makes their Frost orbs'
+    // end-of-turn Block go to ALL allies, so it lands on the local player too, before enemies act. The local
+    // player's own Frost is already counted in ReadEndTurnBlock, Hibernate or not.
+    private static bool _hibernateLogged;
+    private static int AllyHibernateBlock(CombatState cs, IReadOnlyList<Player> players, Player mePlayer)
+    {
+        int total = 0;
+        foreach (var ally in players)
+        {
+            try
+            {
+                if (ally == null || ReferenceEquals(ally, mePlayer) || ally.Creature is not { } c) continue;
+                bool alive = true;
+                try { alive = c.IsAlive; } catch { }
+                if (!alive || !HasPower(c, "HibernatePower")) continue;
+                int frost = FrostOrbBlock(cs, ally);
+                total += frost;
+                if (!_hibernateLogged) { _hibernateLogged = true; Godot.GD.Print($"[STS2 Damage] forecast ally Hibernate: +{frost} Block from their Frost"); }
+            }
+            catch { }
+        }
         return total;
     }
 

@@ -7,7 +7,7 @@ A standalone damage analytics and incoming-damage forecast mod for [Slay the Spi
 - **Incoming-damage forecast** (always on in combat, docked beside your character): the HP you are
   about to lose this turn and what you'll be left at, as a range when something is uncertain. Counts
   enemy intents, damage over time, Infection and self-damage cards, Block, Osty and Wuppy, and end-of-turn Block
-  (Plating, Orichalcum, Cloak Clasp); ignores enemies that will die to Poison before they act. A thin
+  (Plating, Orichalcum, Cloak Clasp, Frost orbs, and an ally's Frost while their Hibernate is up); ignores enemies that will die to Poison before they act. A thin
   HP bar previews the loss. Reads **Safe** when nothing can hurt you and pulses when the turn can kill
   you. Hover it for the per-round HP-lost history and an itemized list of sources.
 - **Damage Out | In / Round**: a small always-on chart stacked above the forecast, damage dealt vs taken
