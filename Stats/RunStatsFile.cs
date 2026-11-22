@@ -123,10 +123,10 @@ internal static class RunStatsFile
             ["rounds"] = meta != null && meta.Rounds > 0 ? meta.Rounds : null,
             ["players"] = players,
         };
-        if (hits != null && hits.Count > 0)
+        if (hits != null)
         {
             if (!withLog) fight["log_dropped"] = true;
-            else if (BuildLog(hits, hitsTruncated, logSlot, logPlayers) is { } log) fight["log"] = log;
+            else fight["log"] = BuildLog(hits, hitsTruncated, logSlot, logPlayers);
         }
         return fight;
     }
@@ -135,8 +135,9 @@ internal static class RunStatsFile
     // log naming a player the fight lacks), and a player side that isn't written becomes -1. A player side is a
     // ref when it is a player other than the hit's own player; otherwise the side is the named thing that did
     // or received it (a card, power or monster), as for a dealt hit's source. A healed hit has no target: the
-    // healed player is already the hit's player. Null when no hit is left.
-    private static JsonObject? BuildLog(IReadOnlyList<Hit> hits, bool truncated,
+    // healed player is already the hit's player. With no hit left the log is empty (no players or names), so a fight that
+    // simply had no hits still reads as logged.
+    private static JsonObject BuildLog(IReadOnlyList<Hit> hits, bool truncated,
         Dictionary<int, int> logSlot, List<string> logPlayers)
     {
         var names = new List<string>();
@@ -170,13 +171,12 @@ internal static class RunStatsFile
             long amount = h.Kind == HitKind.Potion || h.Amount < 0 ? -1 : Amount(h.Amount);
             rows.Add(new JsonArray((int)Math.Clamp(h.Round, 0, MaxRound), (int)h.Kind, player, source, target, amount));
         }
-        if (rows.Count == 0) return null;
         var namesArr = new JsonArray();
         foreach (var n in names) namesArr.Add(n);
         var idsArr = new JsonArray();
         foreach (var id in ids) idsArr.Add(id);
         var players = new JsonArray();
-        foreach (var sid in logPlayers) players.Add(sid);
+        if (rows.Count > 0) foreach (var sid in logPlayers) players.Add(sid);
         return new JsonObject
         {
             ["players"] = players,

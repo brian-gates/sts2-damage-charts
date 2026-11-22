@@ -386,12 +386,23 @@ public class RunStatsFileTests
     }
 
     [Fact]
-    public void NoHitsMeansNoLog()
+    public void NullHitsMeansNoLog()
     {
-        Assert.Null(RunStatsFile.BuildFight(Meta(), TwoPlayers(), new[] { A, B }, null, false)["log"]);
-        var empty = RunStatsFile.BuildFight(Meta(), TwoPlayers(), new[] { A, B }, Array.Empty<Hit>(), false);
-        Assert.Null(empty["log"]);
-        Assert.Null(empty["log_dropped"]);
+        var f = RunStatsFile.BuildFight(Meta(), TwoPlayers(), new[] { A, B }, null, false);
+        Assert.Null(f["log"]);
+        Assert.Null(f["log_dropped"]);
+    }
+
+    [Fact]
+    public void BuildFight_WritesEmptyLogWhenNoHits()
+    {
+        const string empty = "{\"players\":[],\"names\":[],\"ids\":[],\"hits\":[],\"truncated\":false}";
+        Assert.Equal(empty, RunStatsFile.BuildFight(Meta(), TwoPlayers(), new[] { A, B }, Array.Empty<Hit>(), false)["log"]!.ToJsonString());
+        // Every hit filtered out (its player has no sources): still a log.
+        var hits = new[] { H(HitKind.Dealt, 1, "Bash", null, 1, "Cultist", -1, 8) };
+        var f = RunStatsFile.BuildFight(Meta(), new PlayerSources?[] { TwoPlayers()[0], null }, new[] { A, B }, hits, false);
+        Assert.Equal(empty, f["log"]!.ToJsonString());
+        Assert.Null(f["log_dropped"]);
     }
 
     [Fact]
