@@ -117,7 +117,8 @@ public static class DamageChartsMod
     // deadlock the CLR's reflection/JIT (hard hang, "Bad IL range"); soak-tested with scripts/soak_source_hooks.py.
     // "source_hooks": false turns it off, and DoT/relic damage is then labeled "Status"/"Other". See docs/KNOWN_ISSUES.md.
     private static bool _sourceHooks = true;
-    private static bool _combatResolved;      // this combat reached a win/loss (not abandoned)
+    private static bool _combatResolved;      // this combat reached a win/loss (not abandoned); final at OnCombatEnd
+    private static readonly HashSet<Creature> _escaped = new();   // enemies that fled this fight (CombatState.EscapedCreatures)
     private static FightMeta _fightMeta = new(); // this combat's floor / name / elite-boss / rounds, for the recap
     // Per-run damage stats file (single-player and co-op; "run_stats_file": false turns it off). See RunStatsFile.cs.
     private static bool _runStatsFile = true;
@@ -1192,6 +1193,7 @@ public static class DamageChartsMod
                     // dead)? If the player abandons the fight instead, this stays false and we suppress the
                     // end-of-combat summary.
                     if (!_combatResolved && IsCombatResolved(cs)) _combatResolved = true;
+                    NoteEscaped(cs);
                     try { if (cs.RoundNumber > _fightMeta.Rounds) _fightMeta.Rounds = cs.RoundNumber; } catch { }
                     bool blocking = IsBlockingUiOpen();
                     VfxMoments.Tick(cs.RoundNumber, blocking || _detailVisible);
@@ -1542,6 +1544,7 @@ public static class DamageChartsMod
         RunStatsFile.LastWritten = null;   // Share fight never offers an earlier fight while this one is unwritten
         _recapVisible = false;   // the recap is an out-of-combat view
         _combatResolved = false; // until enemies/player actually die, this combat hasn't ended naturally
+        _escaped.Clear();
         _allEnemiesDeadFrames = 0;
         _frozenForecast = null;
         _frozenInputs = null;
@@ -1562,6 +1565,7 @@ public static class DamageChartsMod
 
     private static void OnCombatEnd()
     {
+        DecideCombatResolved();   // before UnsubscribeAll: it reads the creatures this fight subscribed to
         UnsubscribeAll();
         CheckBufferSaves();   // a save whose stack was spent by now still belongs to this fight
         _pending.Clear();
@@ -1586,7 +1590,7 @@ public static class DamageChartsMod
         _summaryAvailable = _summaryActive;
         _rewardsSeen = false;
         if (!_summaryActive) _detail?.SetVisible(false);
-        GD.Print($"[STS2 Damage] combat end (summary={_summaryActive})");
+        GD.Print($"[STS2 Damage] combat end (resolved={_combatResolved}, summary={_summaryActive})");
     }
 
     // ===== Per-run damage stats file =====
@@ -1939,6 +1943,42 @@ public static class DamageChartsMod
         return false;
     }
     private static int _allEnemiesDeadFrames;
+
+    // Enemies that fled (CombatState.EscapedCreatures) leave the fight alive; they count as gone for the outcome.
+    private static void NoteEscaped(CombatState cs)
+    {
+        try
+        {
+            if (InstanceGet(cs, "EscapedCreatures") is System.Collections.IEnumerable fled)
+                foreach (var c in fled) if (c is Creature cr) _escaped.Add(cr);
+        }
+        catch { }
+    }
+
+    // Final say on whether the combat that is ending was won or lost rather than abandoned (CombatOutcome). The
+    // tick's sample alone missed fights that end within one frame of the last kill (an orb's end-of-turn passive,
+    // a console kill): CombatManager.IsInProgress went false before any tick saw IsEnding. So at the end
+    // transition, also check every enemy this fight subscribed to (dead or escaped) and the local player (dead).
+    private static void DecideCombatResolved()
+    {
+        try
+        {
+            int enemies = 0, gone = 0;
+            foreach (var c in _subs.Keys)
+            {
+                if (c == null || !c.IsMonster || c.IsPet) continue;
+                enemies++;
+                if (c.IsDead || _escaped.Contains(c)) gone++;
+            }
+            bool localDead = _localSlot >= 0 && _localSlot < _players.Count && _players[_localSlot]?.Creature?.IsDead == true;
+            bool sampled = _combatResolved;
+            _combatResolved = CombatOutcome.Resolved(sampled, localDead, enemies, gone);
+            if (_combatResolved && !sampled)
+                GD.Print($"[STS2 Damage] combat resolved at its end ({gone}/{enemies} enemies gone, player dead={localDead})");
+        }
+        catch { }
+        _escaped.Clear();
+    }
 
     private static void OnBlockChanged(Creature creature, int oldBlock, int newBlock)
     {

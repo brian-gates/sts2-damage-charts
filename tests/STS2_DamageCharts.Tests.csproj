@@ -15,6 +15,7 @@
     <Compile Include="../Forecast/ForecastCheck.cs" Link="ForecastCheck.cs" />
     <Compile Include="../Tracking/DamageTracker.cs" Link="DamageTracker.cs" />
     <Compile Include="../Tracking/Hit.cs" Link="Hit.cs" />
+    <Compile Include="../Tracking/CombatOutcome.cs" Link="CombatOutcome.cs" />
     <Compile Include="../Tracking/LogText.cs" Link="LogText.cs" />
     <Compile Include="../Tracking/BufferCandidates.cs" Link="BufferCandidates.cs" />
     <Compile Include="../Tracking/RunAggregate.cs" Link="RunAggregate.cs" />
