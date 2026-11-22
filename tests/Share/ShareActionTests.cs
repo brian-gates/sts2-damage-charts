@@ -109,6 +109,42 @@ public class ShareActionTests
         try { Assert.Equal(AppState.Ready, ShareAction.ReadStatusFile(p, Now).State); }
         finally { File.Delete(p); }
     }
+
+    private static readonly AppStatus ReadyFights = new(AppState.Ready, "https://spiresync.app", "76561198000000001", CanShareFight: true);
+
+    [Fact]
+    public void ForFight_OpensLinkWithFloor()
+    {
+        var a = ShareAction.ForFight(ReadyFights, Run, 4, 7);
+        Assert.Equal(ShareKind.Share, a.Kind);
+        Assert.Equal("spiresync://share/0123456789abcdef?fight=4&floor=7", a.AppLink);
+        Assert.Equal("https://spiresync.app/runs/0123456789abcdef/fights/4", a.WebLink);
+        Assert.Equal("Sharing… the link is copied as soon as it's ready", a.Message);
+        Assert.False(a.ShowGetApp);
+        // An unknown floor is left out.
+        Assert.Equal("spiresync://share/0123456789abcdef?fight=4", ShareAction.ForFight(ReadyFights, Run, 4, null).AppLink);
+    }
+
+    [Fact]
+    public void ForFight_OldApp_SaysUpdate()
+    {
+        var a = ShareAction.ForFight(new AppStatus(AppState.Ready, "https://spiresync.app", "76561198000000001"), Run, 4, 7);
+        Assert.NotEqual(ShareKind.Share, a.Kind);
+        Assert.Equal("Update Spire Sync to share fights", a.Message);
+        Assert.Null(a.AppLink);
+        Assert.Null(a.WebLink);
+    }
+
+    [Fact]
+    public void ForFight_OtherwiseSaysWhatShareSays()
+    {
+        Assert.Equal(ShareAction.For(AppStatus.NotRunning, Run), ShareAction.ForFight(AppStatus.NotRunning, Run, 4, 7));
+        var signedOut = new AppStatus(AppState.SignedOut, null, null, CanShareFight: true);
+        Assert.Equal(ShareAction.For(signedOut, Run), ShareAction.ForFight(signedOut, Run, 4, 7));
+        var noServer = new AppStatus(AppState.Ready, null, null, CanShareFight: true);
+        Assert.Equal(ShareAction.For(noServer, Run), ShareAction.ForFight(noServer, Run, 4, 7));
+    }
+
 }
 
 public class ShareRunTests
@@ -316,5 +352,95 @@ public class ShareProgressTests
         Assert.True(r.Length <= AppStatus.MaxReasonChars);
         Assert.False(char.IsHighSurrogate(r[^2]));
         Assert.EndsWith("\u2026", r);
+    }
+
+    // ----- Share fight: confirmation -----
+
+    private static readonly DateTimeOffset PressedAt = DateTimeOffset.FromUnixTimeMilliseconds(Pressed * 1000 + 700);
+
+    private static AppStatus WithEntry(ShareEntry? e) => new(AppState.Ready, "https://spiresync.app", null, e, e != null, true);
+
+    [Fact]
+    public void FightConfirmed_RequiresSameRunFightAndFreshShared()
+    {
+        Assert.True(ShareAction.FightConfirmed(WithEntry(new ShareEntry(Run, ShareState.Shared, null, Pressed, 4)), Run, 4, PressedAt));
+        Assert.False(ShareAction.FightConfirmed(WithEntry(new ShareEntry("fedcba9876543210", ShareState.Shared, null, Pressed, 4)), Run, 4, PressedAt));
+        Assert.False(ShareAction.FightConfirmed(WithEntry(new ShareEntry(Run, ShareState.Shared, null, Pressed, 5)), Run, 4, PressedAt));
+        Assert.False(ShareAction.FightConfirmed(WithEntry(new ShareEntry(Run, ShareState.Shared, null, Pressed)), Run, 4, PressedAt));   // a run share
+        Assert.False(ShareAction.FightConfirmed(WithEntry(new ShareEntry(Run, ShareState.Shared, null, Pressed - 1, 4)), Run, 4, PressedAt));
+        Assert.False(ShareAction.FightConfirmed(WithEntry(new ShareEntry(Run, ShareState.Pending, null, Pressed, 4)), Run, 4, PressedAt));
+        Assert.False(ShareAction.FightConfirmed(WithEntry(new ShareEntry(Run, ShareState.Failed, "x", Pressed, 4)), Run, 4, PressedAt));
+        Assert.False(ShareAction.FightConfirmed(WithEntry(null), Run, 4, PressedAt));
+        // Seconds, rounded down: a stamp in the press's own second counts, as does a later one.
+        Assert.True(ShareAction.FightConfirmed(WithEntry(new ShareEntry(Run, ShareState.Shared, null, Pressed + 3, 4)), Run, 4, PressedAt));
+    }
+
+    private static ShareAction.Progress FF(ShareEntry? e, double elapsed = 2) =>
+        ShareAction.FollowFight(WithEntry(e), Run, 4, PressedAt, elapsed);
+
+    [Fact]
+    public void FollowFight_CopiesOnlyOnConfirmation()
+    {
+        Assert.Equal(new ShareAction.Progress("Sharing… the link is copied as soon as it's ready", false, false), FF(null));
+        Assert.Equal(new ShareAction.Progress("Sharing… the link is copied as soon as it's ready", false, false), FF(new ShareEntry(Run, ShareState.Pending, null, Pressed, 4)));
+        // Another fight's share, or the run's, is not this one.
+        Assert.False(FF(new ShareEntry(Run, ShareState.Shared, null, Pressed, 3)).Done);
+        Assert.False(FF(new ShareEntry(Run, ShareState.Shared, null, Pressed)).Done);
+        Assert.Equal(new ShareAction.Progress("Link copied", true, true, Copy: true), FF(new ShareEntry(Run, ShareState.Shared, null, Pressed, 4)));
+    }
+
+    [Fact]
+    public void FollowFight_FailureShowsTheReason()
+    {
+        Assert.Equal(new ShareAction.Progress("Steam is offline", true, false), FF(new ShareEntry(Run, ShareState.Failed, "Steam is offline", Pressed, 4)));
+        Assert.Equal(new ShareAction.Progress(ShareAction.FailedText, true, false), FF(new ShareEntry(Run, ShareState.Failed, null, Pressed, 4)));
+        // A failure from before the press, or for another fight, is not this one.
+        Assert.False(FF(new ShareEntry(Run, ShareState.Failed, "old", Pressed - 5, 4)).Done);
+        Assert.False(FF(new ShareEntry(Run, ShareState.Failed, "other", Pressed, 9)).Done);
+    }
+
+    [Fact]
+    public void FollowFight_GivesUpAfterFiveMinutes()
+    {
+        Assert.False(FF(new ShareEntry(Run, ShareState.Waiting, null, Pressed, 4), elapsed: 299).Done);
+        Assert.Equal(new ShareAction.Progress("Spire Sync didn't confirm; try again", true, false), FF(new ShareEntry(Run, ShareState.Waiting, null, Pressed, 4), elapsed: 300));
+        Assert.Equal(ShareAction.FightTimedOutText, FF(null, elapsed: 400).Message);
+        // A confirmation still wins at the deadline.
+        Assert.True(FF(new ShareEntry(Run, ShareState.Shared, null, Pressed, 4), elapsed: 400).Copy);
+    }
+
+    [Fact]
+    public void RunFollowIgnoresAFightShare()
+    {
+        var fight = new ShareEntry(Run, ShareState.Shared, null, Pressed, 4);
+        Assert.False(F(fight).Done);
+        Assert.Equal(ShareAction.SharedNote, F(fight).Message);
+    }
+}
+
+// One follow at a time across every Share button: only the latest press may copy.
+public class ShareFollowTests
+{
+    [Fact]
+    public void OnlyTheLatestPressIsCurrent()
+    {
+        long first = ShareFollow.Begin();
+        Assert.True(ShareFollow.IsCurrent(first));
+        long second = ShareFollow.Begin();   // a press on either button, run or fight
+        Assert.False(ShareFollow.IsCurrent(first));
+        Assert.True(ShareFollow.IsCurrent(second));
+        Assert.False(ShareFollow.IsCurrent(0));   // never started
+    }
+
+    [Fact]
+    public void CancelEndsTheCurrentFollow()
+    {
+        long t = ShareFollow.Begin();
+        ShareFollow.Cancel(t);
+        Assert.False(ShareFollow.IsCurrent(t));
+        // Cancelling a follow that is no longer current leaves the newer one alone.
+        long newer = ShareFollow.Begin();
+        ShareFollow.Cancel(t);
+        Assert.True(ShareFollow.IsCurrent(newer));
     }
 }

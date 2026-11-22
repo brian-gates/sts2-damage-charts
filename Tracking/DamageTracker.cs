@@ -25,13 +25,46 @@ internal readonly struct SourceEntry
     { Name = name; Total = total; Icon = icon; Hits = hits; Id = id; }
 }
 
-// One line in the combat log.
+// One line in the combat log. Kind is null for a non-hit line. Fight > 0 marks the run recap's separator before
+// fight N (Round is unused there; its Text is "Fight N"). Amount, Slot
+// (whose line it is), Icon (the source's art path) and Name (the source's name, for an icon by name) come from
+// the hit, for the line's icon and amount bar.
 internal readonly struct LogEntry
 {
     public readonly int Round;
     public readonly string Text;
-    public readonly bool Taken;
-    public LogEntry(int round, string text, bool taken) { Round = round; Text = text; Taken = taken; }
+    public readonly LogTone Tone;
+    public readonly HitKind? Kind;
+    public readonly long Amount;
+    public readonly int Slot;
+    public readonly string? Icon;
+    public readonly string? Name;
+    public readonly int Fight;
+    // The line as drawn (LogText): Lead, then AmountText ("8", "11 saved", "+6"; null = Lead only). ShortLead is
+    // Lead without the target, used for dealt lines when the log has a single enemy. Target: the hit's target name.
+    public readonly string Lead;
+    public readonly string ShortLead;
+    public readonly string? AmountText;
+    public readonly string? Target;
+    public LogEntry(int round, string text, LogTone tone, HitKind? kind = null, long amount = 0, int slot = -1,
+        string? icon = null, string? name = null, int fight = 0, string? lead = null, string? amountText = null,
+        string? shortLead = null, string? target = null)
+    {
+        Round = round; Text = text; Tone = tone; Kind = kind; Amount = amount; Slot = slot; Icon = icon; Name = name;
+        Fight = fight; Lead = lead ?? text; ShortLead = shortLead ?? Lead; AmountText = amountText; Target = target;
+    }
+
+    public bool IsFightSeparator => Fight > 0;
+
+    public static LogEntry FightSeparator(int fight) => new(0, $"Fight {fight}", LogTone.Plain, fight: Math.Max(1, fight));
+
+    public static LogEntry Of(Hit h, Func<int, string> playerName, bool coop)
+    {
+        var (lead, amount) = LogText.Format(h, playerName, coop, showTarget: true);
+        string shortLead = h.Kind == HitKind.Dealt ? LogText.Format(h, playerName, coop, showTarget: false).Lead : lead;
+        return new(h.Round, h.Text(playerName), h.Tone, h.Kind, h.Amount, h.Slot, h.Icon, h.Source,
+            lead: lead, amountText: amount, shortLead: shortLead, target: h.Target);
+    }
 }
 
 internal sealed class PlayerSources
@@ -43,6 +76,7 @@ internal sealed class PlayerSources
     public long HealTotal;   // total HP healed this scope (no by-source breakdown)
     public long BlockTotal;  // total block gained this scope (no by-source breakdown)
     public long AbsorbedTotal; // attack damage the player's pet (Wuppy, Osty) lost in their place
+    public long BufferedTotal; // HP the player's Buffer saved (the cancelled hits' intended HP loss); not HP lost
     public List<SourceEntry> Potions = new();  // potions used this scope: name, times used, icon
 }
 
@@ -76,9 +110,13 @@ internal sealed class SourceSnapshot
     public readonly int PlayerCount;
     public readonly int LocalSlot;
     public readonly LogEntry[] Log; // most recent lines, oldest-first
-    public SourceSnapshot(PlayerSources[] perPlayer, string[] labels, int playerCount, int localSlot, LogEntry[] log)
+    public readonly IReadOnlyList<Hit> FightHits;  // every hit of the fight, first DamageTracker.HitCap kept
+    public readonly bool HitsTruncated;
+    public SourceSnapshot(PlayerSources[] perPlayer, string[] labels, int playerCount, int localSlot, LogEntry[] log,
+        IReadOnlyList<Hit>? fightHits = null, bool hitsTruncated = false)
     {
         PerPlayer = perPlayer; Labels = labels; PlayerCount = playerCount; LocalSlot = localSlot; Log = log;
+        FightHits = fightHits ?? Array.Empty<Hit>(); HitsTruncated = hitsTruncated;
     }
 }
 
@@ -99,14 +137,25 @@ internal sealed class DamageTracker
     private readonly Dictionary<int, long> _healByPlayer = new();   // slot -> total healed
     private readonly Dictionary<int, long> _blockByPlayer = new();  // slot -> total block gained
     private readonly Dictionary<int, long> _absorbedByPlayer = new(); // slot -> damage their pet took for them
+    private readonly Dictionary<int, long> _bufferedByPlayer = new(); // slot -> HP their Buffer saved
     private readonly Dictionary<int, Dictionary<string, long>> _potionsByPlayer = new(); // slot -> potion -> uses
     private readonly List<LogEntry> _log = new();
     private const int LogCap = 500;
+    public const int HitCap = 600;   // hits kept per fight for the shared log
+    private readonly List<Hit> _fightHits = new();
+    private bool _hitsTruncated;
     private const int LogShow = 300; // detail panel scrolls through this much history
     private int _maxRound;
     private int _playerCount = 1;
     private int _localSlot;
     private string[] _labels = { "You" };
+    // Snapshots are rebuilt only when something changed (every mutation bumps _version): views read them every
+    // frame, and rebuilding copies the log and hit list each time.
+    private int _version;
+    private SourceSnapshot? _sourceSnap;
+    private int _sourceSnapVersion = -1;
+    private ChartSnapshot? _chartSnap;
+    private int _chartSnapVersion = -1;
 
     public void Reset(int playerCount, string[] labels, int localSlot)
     {
@@ -122,12 +171,16 @@ internal sealed class DamageTracker
             _healByPlayer.Clear();
             _blockByPlayer.Clear();
             _absorbedByPlayer.Clear();
+            _bufferedByPlayer.Clear();
             _potionsByPlayer.Clear();
             _log.Clear();
+            _fightHits.Clear();
+            _hitsTruncated = false;
             _maxRound = 0;
             _playerCount = Math.Max(1, playerCount);
             _labels = labels;
             _localSlot = Math.Max(0, localSlot);
+            _version++;
         }
     }
 
@@ -136,14 +189,19 @@ internal sealed class DamageTracker
         lock (_lock) { return _dealtBySource.Count > 0 || _takenBySource.Count > 0; }
     }
 
-    public void AddLog(int round, string text, bool taken)
+    // Records a hit: the in-game log line is drawn from it, and the first HitCap are kept as data.
+    public void AddHit(Hit h)
     {
         lock (_lock)
         {
-            _log.Add(new LogEntry(round, text, taken));
+            _log.Add(LogEntry.Of(h, PlayerLabel, _playerCount > 1));
             if (_log.Count > LogCap) _log.RemoveRange(0, _log.Count - LogCap);
+            if (_fightHits.Count < HitCap) _fightHits.Add(h); else _hitsTruncated = true;
+            _version++;
         }
     }
+
+    private string PlayerLabel(int slot) => slot >= 0 && slot < _labels.Length ? _labels[slot] : "?";
 
     public void AddDealt(int round, int slot, int amount, string source, string? icon = null, string? id = null)
         => Add(round, slot, 0, amount, source, _dealtBySource, icon, id);
@@ -157,6 +215,19 @@ internal sealed class DamageTracker
 
     public void AddAbsorbed(int slot, int amount) => AddTotal(_absorbedByPlayer, slot, amount);
 
+    public void AddBuffered(int slot, int amount) => AddTotal(_bufferedByPlayer, slot, amount);
+
+    // HP this player has lost so far this fight (the sum of their taken sources). For the forecast check.
+    public long TakenTotal(int slot)
+    {
+        lock (_lock)
+        {
+            long total = 0;
+            if (_takenBySource.TryGetValue(slot, out var map)) foreach (var v in map.Values) total += v;
+            return total;
+        }
+    }
+
     // A potion drunk/thrown this combat. Counted per player (not damage, so it stays out of the bars)
     // and shares the source-icon map so the summary can show its art.
     public void AddPotion(int slot, string name, string? icon, string? id = null)
@@ -169,6 +240,7 @@ internal sealed class DamageTracker
             map.TryGetValue(name, out long cur);
             map[name] = cur + 1;
             if (icon != null && !_sourceIcon.ContainsKey(name)) _sourceIcon[name] = icon;
+            _version++;
         }
     }
 
@@ -187,6 +259,7 @@ internal sealed class DamageTracker
         {
             byPlayer.TryGetValue(slot, out long cur);
             byPlayer[slot] = cur + amount;
+            _version++;
         }
     }
 
@@ -196,6 +269,7 @@ internal sealed class DamageTracker
         if (amount <= 0 || slot < 0) return;
         lock (_lock)
         {
+            _version++;
             var key = (round, slot);
             if (!_rounds.TryGetValue(key, out var vals)) { vals = new int[2]; _rounds[key] = vals; }
             vals[field] += amount;
@@ -220,9 +294,19 @@ internal sealed class DamageTracker
         }
     }
 
+    // Per-round chart data; cached until the next change. Callers only read it.
     public ChartSnapshot Snapshot()
     {
         lock (_lock)
+        {
+            if (_chartSnap != null && _chartSnapVersion == _version) return _chartSnap;
+            _chartSnapVersion = _version;
+            return _chartSnap = BuildChartLocked();
+        }
+    }
+
+    private ChartSnapshot BuildChartLocked()
+    {
         {
             var rows = new List<ChartRow>();
             if (_rounds.Count == 0) return new ChartSnapshot(rows, (string[])_labels.Clone(), _playerCount);
@@ -245,9 +329,19 @@ internal sealed class DamageTracker
         }
     }
 
+    // By-source totals, the log and the fight's hits; cached until the next change. Callers only read it.
     public SourceSnapshot SourceSnapshot()
     {
         lock (_lock)
+        {
+            if (_sourceSnap != null && _sourceSnapVersion == _version) return _sourceSnap;
+            _sourceSnapVersion = _version;
+            return _sourceSnap = BuildSourceLocked();
+        }
+    }
+
+    private SourceSnapshot BuildSourceLocked()
+    {
         {
             var perPlayer = new PlayerSources[_playerCount];
             for (int s = 0; s < _playerCount; s++)
@@ -258,12 +352,13 @@ internal sealed class DamageTracker
                 _healByPlayer.TryGetValue(s, out ps.HealTotal);
                 _blockByPlayer.TryGetValue(s, out ps.BlockTotal);
                 _absorbedByPlayer.TryGetValue(s, out ps.AbsorbedTotal);
+                _bufferedByPlayer.TryGetValue(s, out ps.BufferedTotal);
                 ps.Potions = SortedList(_potionsByPlayer, s, out _, field: 2);
                 perPlayer[s] = ps;
             }
             int from = Math.Max(0, _log.Count - LogShow);
             var log = _log.GetRange(from, _log.Count - from).ToArray();
-            return new SourceSnapshot(perPlayer, (string[])_labels.Clone(), _playerCount, _localSlot, log);
+            return new SourceSnapshot(perPlayer, (string[])_labels.Clone(), _playerCount, _localSlot, log, _fightHits.ToArray(), _hitsTruncated);
         }
     }
 

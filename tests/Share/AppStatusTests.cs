@@ -134,4 +134,29 @@ public class AppStatusTests
     public void ReadyNeedsUsableServer(string serverPart) =>
         Assert.Equal(AppState.NotRunning,
             Safe($"{{\"v\":1,\"signed_in\":true,\"updated\":{U}{serverPart}}}").State);
+
+    [Fact]
+    public void AppStatus_ReadsCapabilitiesAndShareFight()
+    {
+        string withCaps = Json(1_800_000_000).TrimEnd('}') +
+            ",\"capabilities\":[\"other\",\"share_fight\"],\"share\":{\"run_id\":\"0123456789abcdef\",\"state\":\"shared\",\"reason\":null,\"at\":1800000000,\"fight\":7}}";
+        var s = AppStatus.Read(withCaps, Now);
+        Assert.Equal(AppState.Ready, s.State);
+        Assert.True(s.CanShareFight);
+        Assert.Equal(7, s.Share?.Fight);
+
+        // No capabilities (an older app), or ones without share_fight: can't share fights. A run share has no fight.
+        var old = AppStatus.Read(Json(1_800_000_000).TrimEnd('}') +
+            ",\"share\":{\"run_id\":\"0123456789abcdef\",\"state\":\"shared\",\"reason\":null,\"at\":1800000000}}", Now);
+        Assert.False(old.CanShareFight);
+        Assert.NotNull(old.Share);
+        Assert.Null(old.Share!.Fight);
+        Assert.False(AppStatus.Read(Json(1_800_000_000).TrimEnd('}') + ",\"capabilities\":[\"share_run\"]}", Now).CanShareFight);
+        Assert.False(AppStatus.Read(Json(1_800_000_000).TrimEnd('}') + ",\"capabilities\":\"share_fight\"}", Now).CanShareFight);
+        Assert.False(AppStatus.Read(Json(1_800_000_000).TrimEnd('}') + ",\"capabilities\":[7,null]}", Now).CanShareFight);
+        // A fight that isn't an integer is no fight.
+        var bad = AppStatus.Read(Json(1_800_000_000).TrimEnd('}') +
+            ",\"share\":{\"run_id\":\"0123456789abcdef\",\"state\":\"shared\",\"reason\":null,\"at\":1800000000,\"fight\":\"7\"}}", Now);
+        Assert.Null(bad.Share?.Fight);
+    }
 }

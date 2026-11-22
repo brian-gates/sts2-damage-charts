@@ -50,6 +50,7 @@ public static class DamageChartsMod
     private static bool _showBars = true;
     private static bool _barsCompact = true;
     private static bool _barsDocked = true;
+    private static float _barsScale = ChartScale.Default;   // config bars_scale: the chart's own size, set by its corner grip
     private static bool _showForecast = true;
     private static float? _fcPosXFrac;
     private static float? _fcPosYFrac;
@@ -99,6 +100,10 @@ public static class DamageChartsMod
     private static DamageForecastView? _forecast;
     private static ForecastLedgerView? _forecastLedger;
     private static ForecastResult? _frozenForecast;  // last planning-phase value, held during the enemy turn
+    private static ForecastInputs? _frozenInputs;    // the inputs _frozenForecast was computed from
+    private static long _fcPlanningFrame = -1;       // the frame UpdateForecast last computed a planning-phase value
+    // Checks each frozen forecast against the HP really lost by the next round, for the run stats file.
+    private static readonly ForecastCheck _forecastCheck = new();
     private static bool _detailVisible;
     private static bool _summaryActive;       // auto end-of-combat summary showing
     private static bool _summaryAvailable;    // post-combat moment (until the map opens): the hotkey toggles the summary
@@ -159,6 +164,7 @@ public static class DamageChartsMod
 
             TryApplyDamageHook();
             TryApplyPotionHook();
+            TryApplyBufferHook();
             TryApplySuppressHook();
             if (_sourceHooks) TryApplyPowerSourceHooks();
             else GD.Print("[STS2 Damage] power-source hooks DISABLED via config");
@@ -274,6 +280,7 @@ public static class DamageChartsMod
             if (root.TryGetProperty("show_bars", out var sb) && sb.ValueKind == JsonValueKind.False) _showBars = false;
             _barsCompact = !(root.TryGetProperty("bars_style", out var bst) && bst.ValueKind == JsonValueKind.String && bst.GetString() == "full");
             _barsDocked = !(root.TryGetProperty("bars_anchor", out var ban) && ban.ValueKind == JsonValueKind.String && ban.GetString() == "free");
+            _barsScale = ChartScale.Read(root);
             if (root.TryGetProperty("forecast", out var fc) && fc.ValueKind == JsonValueKind.False) _showForecast = false;
             if (root.TryGetProperty("forecast_pos_x_frac", out var fpx) && fpx.TryGetSingle(out var ffx)) _fcPosXFrac = ffx;
             if (root.TryGetProperty("forecast_pos_y_frac", out var fpy) && fpy.TryGetSingle(out var ffy)) _fcPosYFrac = ffy;
@@ -298,7 +305,7 @@ public static class DamageChartsMod
         return true;
     }
 
-    // Persist position (and current settings) when the chart is dragged to a new spot.
+    // Persist position, size (and current settings) when the chart is dragged to a new spot or resized.
     private static void SaveConfig()
     {
         try
@@ -334,9 +341,10 @@ public static class DamageChartsMod
             }
             catch { /* unreadable file: rewrite from our keys */ }
             foreach (var kv in dict) merged[kv.Key] = JsonSerializer.SerializeToNode(kv.Value);
+            ChartScale.Write(merged, _bars.ScaleMul);
             File.WriteAllText(path, merged.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
             RememberConfigWriteTime(path);
-            _posXFrac = pos.X; _posYFrac = pos.Y;
+            _posXFrac = pos.X; _posYFrac = pos.Y; _barsScale = _bars.ScaleMul;
         }
         catch (Exception ex) { GD.PrintErr($"[STS2 Damage] save config failed: {ex.Message}"); }
     }
@@ -466,9 +474,10 @@ public static class DamageChartsMod
             if (icon == null) { try { if (potion.ImagePath is string ip && ResourceLoader.Exists(ip)) icon = ip; } catch { } }
             _tracker.AddPotion(slot, name, icon, ModelIdOf(potion));
             int round = SafeCombatState()?.RoundNumber ?? 0;
-            string onto = target == null ? "" : target.IsPlayer ? (target.Player == potion.Owner ? "" : $" → {MaybeName(target)}")
-                : $" → {TextHelper.SafeGetText(() => target.Monster!.Title) ?? "Enemy"}";
-            _tracker.AddLog(round, $"{name} used{onto}", false);
+            string? onto = target == null ? null : target.IsPlayer ? (target.Player == potion.Owner ? null : MaybeName(target))
+                : TextHelper.SafeGetText(() => target.Monster!.Title) ?? "Enemy";
+            int ontoSlot = target != null && target.IsPlayer && onto != null ? SlotOf(target.Player) : -1;
+            _tracker.AddHit(new Hit(round, HitKind.Potion, slot, name, ModelIdOf(potion), -1, onto, ontoSlot, -1, icon));
         }
         catch { /* never disrupt the game's potion flow */ }
     }
@@ -730,6 +739,16 @@ public static class DamageChartsMod
         catch { }
     }
 
+    // res://images/orbs/<entry>.png for an orb's model id ("ORB.LIGHTNING_ORB"), when the game ships it; else null.
+    private static string? OrbIconPath(string? id)
+    {
+        if (string.IsNullOrEmpty(id)) return null;
+        string entry = id![(id.LastIndexOf('.') + 1)..].ToLowerInvariant();
+        if (entry.Length == 0) return null;
+        string p = $"res://images/orbs/{entry}.png";
+        try { return ResourceLoader.Exists(p) ? p : null; } catch { return null; }
+    }
+
     private static void PowerSourcePrefix(object __instance)
     {
         try
@@ -738,13 +757,15 @@ public static class DamageChartsMod
             string? label = TextHelper.SafeGetText(() => t.GetProperty("Title")?.GetValue(__instance));
             if (string.IsNullOrEmpty(label)) return;
             string? icon = null;
-            foreach (var prop in new[] { "PackedIconPath", "ImagePath" }) // powers/relics/orbs use PackedIconPath; potions use ImagePath
+            foreach (var prop in new[] { "PackedIconPath", "ImagePath", "IconPath" }) // powers/relics use PackedIconPath; potions use ImagePath
             {
                 try { if (t.GetProperty(prop)?.GetValue(__instance) is string p && ResourceLoader.Exists(p)) { icon = p; break; } }
                 catch { }
             }
             var owner = SourcePlayer(__instance);
             string? id = ModelIdOf(__instance);
+            // Orbs (Lightning, Dark, Glass...) have no icon property we read: their art is images/orbs/<entry>.png.
+            if (icon == null && t.Namespace?.EndsWith(".Orbs") == true) icon = OrbIconPath(id);
             _activeSource = (label!, icon, owner, id);
             _activeFrame = _frame;
             if (__instance is PowerModel power && power.Owner is { } holder && !holder.IsPlayer && !holder.IsPet)
@@ -819,10 +840,127 @@ public static class DamageChartsMod
                 // Damage that reaches a pet (Osty) can spill over to its owner without another Damage call,
                 // so tag the owner with the same hit.
                 try { if (t.IsPet && t.PetOwner?.Creature is { } po && !list.Contains(po)) _pending[po] = _pending[t]; } catch { }
+                NoteBufferBefore(t);
                 VfxMoments.NoteAttack(t, dealer);
             }
         }
         catch { /* never disrupt damage resolution */ }
+    }
+
+    // ===== Buffer saves =====
+    //
+    // BufferPower.ModifyHpLostAfterOstyLate turns a hit's HP loss to 0, but Hook.ModifyHpLost (and so that method)
+    // also runs for damage previews, so neither is proof that a stack was used. A save is counted only when all
+    // of this holds for one real damage resolution on a player:
+    //   1. CreatureCmd.Damage (our DamagePrefix, real damage only) records the target's Buffer stacks and HP;
+    //   2. Hook.AfterDamageReceived (real damage only: it carries the DamageResult) names that player as the
+    //      Receiver with IntendedHpLoss > 0 ("after block, before ModifyHpLost") and the player's HP did not drop;
+    //   3. the player's Buffer stacks are then below the recorded count. The stack is spent by
+    //      BufferPower.AfterModifyingHpLostAfterOsty (an async hook); if it has not landed by step 2 the check is
+    //      retried for a few frames, until the player's next hit starts.
+    // One stack lost confirms at most one hit (BufferCandidates), since other effects can zero a hit before
+    // Buffer and then Buffer doesn't decrement. HP saved = IntendedHpLoss; the attacker comes from the same
+    // pending tag the taken path uses.
+    private const long BufferRetryFrames = 30;
+    private static readonly Dictionary<Creature, (int Stacks, int Hp, long Frame)> _bufferBefore = new();
+    private readonly record struct BufferSave(Creature Who, int Slot, long Intended, int Round,
+        string? Attacker, string? AttackerId, int AttackerSlot);
+    private static readonly BufferCandidates<Creature, BufferSave> _bufferSaves = new();
+    private static bool _bufferLogged;  // one log line per session confirming saves are seen
+
+    private static void TryApplyBufferHook()
+    {
+        try
+        {
+            var hook = AccessTools.TypeByName("MegaCrit.Sts2.Core.Hooks.Hook");
+            var method = hook != null ? AccessTools.Method(hook, "AfterDamageReceived") : null;
+            if (method == null) { GD.Print("[STS2 Damage] Buffer hook not resolved; Buffer saves won't be listed"); return; }
+            var prefix = new HarmonyMethod(typeof(DamageChartsMod).GetMethod(nameof(AfterDamageReceivedPrefix), BindingFlags.NonPublic | BindingFlags.Static));
+            new Harmony("com.sts2damagecharts").Patch(method, prefix: prefix);
+            GD.Print("[STS2 Damage] Buffer hook applied");
+        }
+        catch (Exception ex) { GD.PrintErr($"[STS2 Damage] Buffer hook skipped: {ex.GetType().Name}: {ex.Message}"); }
+    }
+
+    private static int BufferStacks(Creature c) => ForecastReader.ReadPowerAmount(c, "BufferPower");
+
+    private static int HpOf(Creature c) { try { return c.CurrentHp; } catch { return -1; } }
+
+    // Called from DamagePrefix for each target: a player with Buffer gets its stacks and HP recorded.
+    private static void NoteBufferBefore(Creature t)
+    {
+        try
+        {
+            if (!t.IsPlayer) return;
+            _bufferSaves.HitStarted(t);   // an earlier unconfirmed save on this player can no longer be proven
+            int stacks = BufferStacks(t);
+            if (stacks > 0) _bufferBefore[t] = (stacks, HpOf(t), _frame);
+            else _bufferBefore.Remove(t);
+        }
+        catch { }
+    }
+
+    // Prefix on Hook.AfterDamageReceived(ctx, runState, combatState, target, DamageResult, props, dealer, cardSource).
+    // Args are matched by type: the DamageResult, and the last Creature is the dealer.
+    private static void AfterDamageReceivedPrefix(object[] __args)
+    {
+        if (_disabled || _bufferBefore.Count == 0) return;   // no player hit with Buffer is in flight
+        try
+        {
+            object? result = null;
+            Creature? dealerArg = null;
+            foreach (var a in __args)
+            {
+                if (a != null && a.GetType().Name == "DamageResult") result = a;
+                else if (a is Creature c && result != null) dealerArg = c;   // after the result: the dealer
+            }
+            if (result == null || InstanceGet(result, "Receiver") is not Creature who || !who.IsPlayer) return;
+            if (!_bufferBefore.Remove(who, out var before) || _frame - before.Frame > PendingTtlFrames) return;
+            long intended = Convert.ToInt64(InstanceGet(result, "IntendedHpLoss") ?? 0);
+            int hp = HpOf(who);
+            if (intended <= 0 || hp < 0 || before.Hp < 0 || hp < before.Hp) return;   // HP was lost: not saved
+            int slot = SlotOf(who.Player);
+            if (slot < 0) return;
+
+            // The hit's attacker, as the taken path reads it. The tag is taken: this hit changes no HP, so
+            // OnHpChanged would not consume it and it could mislabel a later HP change.
+            _pending.Remove(who, out var pend);
+            if (pend.Label != null && _frame - pend.Frame > PendingTtlFrames) pend = default;
+            var dealer = pend.Dealer ?? dealerArg;
+            string? attacker; string? attackerId; int attackerSlot = -1;
+            if (dealer != null && dealer.IsMonster)
+            {
+                attacker = TextHelper.SafeGetText(() => dealer.Monster!.Title) ?? "Enemy";
+                attackerId = ModelIdOf(InstanceGet(dealer, "Monster"));
+            }
+            else
+            {
+                attacker = pend.Label; attackerId = pend.Id;   // a card or power, or null: unknown
+                if (dealer != null && dealer.IsPlayer) attackerSlot = SlotOf(dealer.Player);
+            }
+            int round = SafeCombatState()?.RoundNumber ?? 0;
+            _bufferSaves.Add(who, before.Stacks, _frame, new BufferSave(who, slot, intended, round, attacker, attackerId, attackerSlot));
+            CheckBufferSaves();
+        }
+        catch { /* never disrupt damage resolution */ }
+    }
+
+    // Records the candidates a lost Buffer stack proves (at most one per stack); see BufferCandidates.
+    private static void CheckBufferSaves()
+    {
+        if (_bufferSaves.Count == 0) return;
+        try
+        {
+            foreach (var s in _bufferSaves.Check(BufferStacks, _frame, BufferRetryFrames))
+            {
+                int amount = (int)Math.Min(int.MaxValue, s.Intended);
+                string victim = MaybeName(s.Who);
+                _tracker.AddBuffered(s.Slot, amount);
+                _tracker.AddHit(new Hit(s.Round, HitKind.Buffered, s.Slot, s.Attacker, s.AttackerId, s.AttackerSlot, victim, s.Slot, amount));
+                if (!_bufferLogged) { _bufferLogged = true; GD.Print($"[STS2 Damage] buffered: {s.Attacker ?? "?"} -> {victim} {amount}"); }
+            }
+        }
+        catch { _bufferSaves.Clear(); }
     }
 
     // ===== Share button (victory and death screens) =====
@@ -837,6 +975,11 @@ public static class DamageChartsMod
     private static bool _shareRunIdNew;          // a new screen: reset the button before showing it
     private static bool _shareIdMissLogged;
     private static Type? _clickableType;
+    // Share fight under the end-of-combat summary, for the fight just written (RunStatsFile.LastWritten).
+    private static ShareButton? _shareFight;
+    private static string? _shareFightRun;      // the fight it was last reset for
+    private static int _shareFightIndex;
+    private static bool _summaryOnScreen;       // the summary was drawn this tick
 
     private static void TryApplyGameOverHook()
     {
@@ -884,7 +1027,11 @@ public static class DamageChartsMod
 
     private static bool ShareCoversMouse()
     {
-        try { return _share != null && _share.IsValid() && _share.Covers(RootMouse()); }
+        try
+        {
+            return (_share != null && _share.IsValid() && _share.Covers(RootMouse()))
+                || (_shareFight != null && _shareFight.IsValid() && _shareFight.Covers(RootMouse()));
+        }
         catch { return false; }
     }
 
@@ -961,9 +1108,42 @@ public static class DamageChartsMod
                 _shareRunIdNew = true;
             }
             if (_shareRunIdNew) { _share.Reset(_shareRunId!, screen); _shareRunIdNew = false; }
+            // Share fight beside it for the run's last fight, once that fight is in the run stats file (the
+            // combat may end after the screen appears). A last fight that wasn't written offers none.
+            var last = RunStatsFile.LastWritten;
+            if (last is { } lw && lw.RunId == _shareRunId) _share.SetFight(lw.Index, lw.Floor);
+            else _share.SetFight(null, null);
             _share.Update(Input.IsMouseButtonPressed(MouseButton.Left));
         }
         catch (Exception ex) { try { _share?.Hide(); } catch { } ErrorLog.Once("share", ex); }
+    }
+
+    // Each frame: Share fight under the end-of-combat summary while the summary is drawn and the fight it
+    // shows was written to the run stats file. A new fight resets it. Never counts toward the tick's error limit.
+    private static void UpdateShareFight()
+    {
+        try
+        {
+            var last = RunStatsFile.LastWritten;
+            bool shown = _summaryOnScreen && last != null && _detail != null && !IsMenuOpen();
+            if (!shown) { _shareFight?.Hide(); return; }
+            var lw = last!.Value;
+            if (_shareFight == null || !_shareFight.IsValid())
+            {
+                _shareFight?.Dispose();
+                _shareFight = new ShareButton(((SceneTree)Engine.GetMainLoop()).Root, ShareSpot.Summary);
+                _shareFightRun = null;
+            }
+            if (lw.RunId != _shareFightRun || lw.Index != _shareFightIndex)
+            {
+                _shareFight.Reset(lw.RunId, null);
+                _shareFightRun = lw.RunId; _shareFightIndex = lw.Index;
+            }
+            _shareFight.SetFight(lw.Index, lw.Floor);
+            var f = _detail!.SummaryFrame;
+            _shareFight.Update(Input.IsMouseButtonPressed(MouseButton.Left), new Box(f.Position.X, f.Position.Y, f.Size.X, f.Size.Y));
+        }
+        catch (Exception ex) { try { _shareFight?.Hide(); } catch { } ErrorLog.Once("share fight", ex); }
     }
 
     // ===== Per-frame tick =====
@@ -976,6 +1156,7 @@ public static class DamageChartsMod
         {
             _frame++;
             _tipShown = false;
+            _summaryOnScreen = false;
             if (_frame % 30 == 0) ReloadConfigIfChangedOnDisk();
             if (_frame > 120 && _frame % 30 == 0)
             {
@@ -1005,6 +1186,8 @@ public static class DamageChartsMod
                 if (cs != null)
                 {
                     SubscribeNewCreatures(cs); // keep tracking even while hidden
+                    CheckBufferSaves();
+                    ObserveForecastCheck(cs);
                     // Sticky: did this combat reach a real conclusion (all enemies dead, or local player
                     // dead)? If the player abandons the fight instead, this stays false and we suppress the
                     // end-of-combat summary.
@@ -1019,18 +1202,14 @@ public static class DamageChartsMod
                     }
                     else if (_detailVisible && _detail != null)
                     {
-                        // Full-screen breakdown is up: it takes over; hide the compact bars. The tooltip now
-                        // belongs to the takeover's per-round chart.
+                        // Full-screen breakdown is up: it takes over; hide the compact bars.
                         _bars?.Hide(); _forecast?.Hide(); _forecastLedger?.Hide();
                         _detail.SummaryMode = false; _detail.RecapMode = false; _detail.UiScaleMul = _uiScale;
-                        _detail.ShowRunHistory = true;
-                        _detail.RunFights = _run.HasData() ? _run.EncounterStats(_localSlot) : null;
                         _detail.SetVisible(true);
-                        _detail.Render(_tracker.SourceSnapshot(), _tracker.Snapshot(), _playerColors);
+                        _detail.Render(_tracker.SourceSnapshot(), _playerColors);
                         _detail.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left));
                         if (_detail.TakeCloseRequest()) { _detailVisible = false; _detail.SetVisible(false); } // ✕ clicked
-                        else ShowDetailChartTip(static (chart, row) =>
-                            GroupDetails.ForRound(row, chart.Labels, chart.PlayerCount, null, showPct: true, maxRows: 5));
+                        else ShowDetailCloseTip();
 
                     }
                     else if (IsFightEndingNow())
@@ -1080,18 +1259,18 @@ public static class DamageChartsMod
                 // victory/death screen). Unlike the in-combat takeover this is NOT gated by blocking UI,
                 // so it can appear on top of the game's end screen.
                 _bars?.Hide(); _forecast?.Hide(); _forecastLedger?.Hide(); _summaryActive = false;
-                _detail.SummaryMode = false; _detail.RecapMode = true; _detail.ShowRunHistory = false; _detail.UiScaleMul = _uiScale; _detail.SetVisible(true);
-                _detail.Render(_run.RunSourceSnapshot(), _run.RunChartSnapshot(), _playerColors);
+                _detail.SummaryMode = false; _detail.RecapMode = true; _detail.UiScaleMul = _uiScale; _detail.SetVisible(true);
+                _detail.Render(_run.RunSourceSnapshot(), _playerColors);
                 _detail.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left));
                 if (_detail.TakeCloseRequest()) { _recapVisible = false; _detail.RecapMode = false; _detail.SetVisible(false); }
-                else ShowDetailChartTip(static (_, row) => _run.FightDetail(row.Round)); // recap rows: Round = fight number
+                else ShowDetailCloseTip();
             }
             else if (_summaryActive && _detail != null)
             {
                 // End-of-combat summary: shown beside the rewards list (click-through), hidden while a
                 // menu is up, dismissed once the player moves on to the map (or via Cmd+D / next fight).
                 _bars?.Hide(); _tooltip?.Hide(); _forecast?.Hide(); _forecastLedger?.Hide();
-                _detail.RecapMode = false; _detail.ShowRunHistory = false;
+                _detail.RecapMode = false;
                 string? top = TopOverlayName();
                 if (IsMapOpen()) { _summaryActive = false; _summaryAvailable = false; _detail.SetVisible(false); }
                 else if (IsMenuOpen() || top != "NRewardsScreen")
@@ -1106,15 +1285,16 @@ public static class DamageChartsMod
                 {
                     _rewardsSeen = true;
                     _detail.SummaryMode = true; _detail.SetVisible(true);
-                    _detail.Render(_tracker.SourceSnapshot(), _tracker.Snapshot(), _playerColors);
+                    _detail.Render(_tracker.SourceSnapshot(), _playerColors);
                     _detail.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left));
                     if (_detail.TakeCloseRequest()) { _summaryActive = false; _detail.SetVisible(false); } // ✕ clicked
-                    else ShowDetailChartTip(static (_, _) => null);   // summary has no chart: just the ✕ tip
+                    else { ShowDetailCloseTip(); _summaryOnScreen = true; }
                 }
             }
 
             if (!_tipShown) _tooltip?.Hide();
             UpdateShare();
+            UpdateShareFight();
             _errCount = 0;
         }
         catch (Exception ex)
@@ -1196,7 +1376,9 @@ public static class DamageChartsMod
             // Only recompute while the player side is acting (see IsPlanningPhase). During the enemy turn the
             // prediction is being realized — block/Osty get eaten hit by hit — so freeze the last planning
             // value instead of letting the shown loss climb as the animation resolves.
-            if (ForecastReader.IsPlanningPhase(cs, _players, _localSlot) || _frozenForecast == null) _frozenForecast = r;
+            bool planning = ForecastReader.IsPlanningPhase(cs, _players, _localSlot);
+            if (planning || _frozenForecast == null) { _frozenForecast = r; _frozenInputs = inputs; }
+            if (planning) _fcPlanningFrame = _frame;   // fresh for the forecast check's freeze (ObserveForecastCheck)
             r = _frozenForecast.Value;
             _forecast.UiScaleMul = _uiScale;
             if (_forecastLedger != null) _forecastLedger.UiScaleMul = _uiScale;
@@ -1217,11 +1399,27 @@ public static class DamageChartsMod
                 string detail = "";
                 foreach (var it in r.Items) detail += $" [{it.Kind} {it.Label} {it.Hits}x{it.DamagePerHit}]";
                 string line = $"in={r.Incoming} block={r.Block} loss={r.MinLoss}-{r.MaxLoss} " +
-                              $"hidden={r.HasHidden} hp={r.CurrentHp}/{r.MaxHp} frozen={!ForecastReader.IsPlanningPhase(cs, _players, _localSlot)} items={r.Items.Count}{detail}";
+                              $"hidden={r.HasHidden} hp={r.CurrentHp}/{r.MaxHp} frozen={!planning} items={r.Items.Count}{detail}";
                 if (line != _lastForecastLog) { _lastForecastLog = line; GD.Print($"[STS2 Damage] forecast {line}"); }
             }
         }
         catch (Exception ex) { ErrorLog.Once("forecast", ex); }
+    }
+
+    // Every combat tick, shown or not: the forecast check freezes when planning ends (only with a forecast computed
+    // up to the previous tick; else that round is skipped) and evaluates when the local player's next Play phase starts.
+    private static void ObserveForecastCheck(CombatState cs)
+    {
+        try
+        {
+            bool planning = ForecastReader.IsPlanningPhase(cs, _players, _localSlot);
+            bool localPlay = _localSlot >= 0 && _localSlot < _players.Count && ForecastReader.InPlayPhase(_players[_localSlot]);
+            (ForecastResult, ForecastInputs)? fresh =
+                _frame - _fcPlanningFrame <= 2 && _frozenForecast is { } fr && _frozenInputs is { } fi ? (fr, fi) : null;
+            if (_forecastCheck.Observe(cs.RoundNumber, planning, localPlay, () => _tracker.TakenTotal(_localSlot), fresh) is { } m)
+                GD.Print($"[STS2 Damage] forecast miss round {m.Round}: lost {m.Actual}, forecast {m.Min}-{m.Max}{(m.Hidden ? " (hidden intent)" : "")}");
+        }
+        catch (Exception ex) { ErrorLog.Once("forecast check", ex); }
     }
 
     private static void HandleHotkey()
@@ -1260,15 +1458,13 @@ public static class DamageChartsMod
         return _closeTip;
     }
 
-    // Hover tooltip for the close/back button, else for the full-screen view's chart (per round in combat, per fight in the recap). The
-    // detail is built only when the hovered group changes; a failure just leaves the tooltip hidden.
-    private static void ShowDetailChartTip(Func<ChartSnapshot, ChartRow, GroupDetail?> build)
+    // Hover tooltip for the breakdown's close/back button ("Close (C)"); a failure just leaves it hidden.
+    private static void ShowDetailCloseTip()
     {
-        if (_detail == null || _tooltip == null || !_detail.Visible) return;
+        if (_detail == null || _tooltip == null || !_detail.Visible || !_detail.CloseHovered) return;
         try
         {
-            var gd = _detail.CloseHovered ? CloseTip(_detail.HotkeyHint) : _detail.HoveredDetail(build);
-            if (gd == null) return;
+            var gd = CloseTip(_detail.HotkeyHint);
             _tooltip.UiScaleMul = _uiScale;
             _tooltip.Render(gd, _playerColors, RootMouse());
             _tipShown = true;
@@ -1343,16 +1539,22 @@ public static class DamageChartsMod
 
         _summaryActive = false; // a new fight clears any lingering end-of-combat summary
         _summaryAvailable = false;
+        RunStatsFile.LastWritten = null;   // Share fight never offers an earlier fight while this one is unwritten
         _recapVisible = false;   // the recap is an out-of-combat view
         _combatResolved = false; // until enemies/player actually die, this combat hasn't ended naturally
         _allEnemiesDeadFrames = 0;
         _frozenForecast = null;
+        _frozenInputs = null;
+        _fcPlanningFrame = -1;
+        _forecastCheck.BeginFight();
         _localSlot = localSlot;
         _fightMeta = CaptureFightMeta(rs, SafeCombatState());
         _tracker.Reset(_players.Count, labels, localSlot);
         VfxMoments.Reset(me);
         _pending.Clear();
         _dotTags.Clear();
+        _bufferBefore.Clear();
+        _bufferSaves.Clear();
         UnsubscribeAll();
         EnsureViews();
         GD.Print($"[STS2 Damage] combat start ({_players.Count} player(s))");
@@ -1361,12 +1563,18 @@ public static class DamageChartsMod
     private static void OnCombatEnd()
     {
         UnsubscribeAll();
+        CheckBufferSaves();   // a save whose stack was spent by now still belongs to this fight
         _pending.Clear();
         _dotTags.Clear();
+        _bufferBefore.Clear();
+        _bufferSaves.Clear();
+        _forecastCheck.CombatEnded();   // the fight ended before the next round: that round isn't checked
         _bars?.Hide();
         _tooltip?.Hide();
         _forecast?.Hide(); _forecastLedger?.Hide();
         // Fold this combat into the run-wide aggregate before the next combat's Reset() wipes the tracker.
+        // Share fight offers only this combat's fight, and only once it is written (TryWriteRunStats).
+        RunStatsFile.LastWritten = null;
         if (_tracker.HasData())
         {
             _run.Fold(_tracker.SourceSnapshot(), _tracker.Snapshot(), _fightMeta);
@@ -1444,6 +1652,25 @@ public static class DamageChartsMod
         catch { return null; }
     }
 
+    // The game build ("game_version"), from MegaCrit.Sts2.Core.Debug.ReleaseInfoManager.Instance.ReleaseInfo.Version
+    // (documented in sts2.xml), else its SemVer. Read by name so a rename just omits the field. Cached once found.
+    private static string? _gameVersion;
+    private static string? GameVersion()
+    {
+        if (_gameVersion != null) return _gameVersion;
+        try
+        {
+            var t = AccessTools.TypeByName("MegaCrit.Sts2.Core.Debug.ReleaseInfoManager");
+            object? mgr = t?.GetProperty("Instance", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)?.GetValue(null);
+            string? v = InstanceGet(InstanceGet(mgr, "ReleaseInfo"), "Version") as string;
+            if (string.IsNullOrWhiteSpace(v)) v = InstanceGet(mgr, "SemVer")?.ToString();
+            if (!string.IsNullOrWhiteSpace(v)) _gameVersion = v!.Trim();
+        }
+        catch { }
+        if (_gameVersion == null) ErrorLog.NoteOnce("run stats: game version not readable, game_version omitted");
+        return _gameVersion;
+    }
+
     // After a finished combat: add it to <user dir>/damage-charts/runs/<run_id>.json (temp file +
     // rename). Never throws; a failure costs this fight's entry only.
     private static void TryWriteRunStats()
@@ -1494,8 +1721,12 @@ public static class DamageChartsMod
                     GD.PrintErr($"[STS2 Damage] run stats: unreadable {path}, moved to .bad and started over");
                 }
             }
+            // The hits come from this fight's tracker (the run aggregate keeps none); it is reset only at the next combat.
+            var fightSnap = _tracker.SourceSnapshot();
             string? text = RunStatsFile.AddFight(fights, ident.RunId, ident.LocalId!, _modVersion,
-                DateTimeOffset.UtcNow.ToUnixTimeSeconds(), meta, sources, ident.SteamIds, _statsFloorCount, out var outcome);
+                DateTimeOffset.UtcNow.ToUnixTimeSeconds(), meta, sources, ident.SteamIds,
+                fightSnap.FightHits, fightSnap.HitsTruncated, _statsFloorCount, out var outcome,
+                _forecastCheck.Misses, GameVersion());
             if (text == null)
             {
                 GD.Print($"[STS2 Damage] run stats: fight not written ({outcome})");
@@ -1506,7 +1737,11 @@ public static class DamageChartsMod
             File.Move(tmp, path, overwrite: true);
             GD.Print($"[STS2 Damage] run stats: {outcome} floor {floor} -> {path}");
         }
-        catch (Exception ex) { GD.PrintErr($"[STS2 Damage] run stats write failed: {ex.Message}"); }
+        catch (Exception ex)
+        {
+            RunStatsFile.LastWritten = null;   // AddFight's fight never reached the file: nothing to share
+            GD.PrintErr($"[STS2 Damage] run stats write failed: {ex.Message}");
+        }
     }
 
     private static bool _layersDumped;
@@ -1609,7 +1844,7 @@ public static class DamageChartsMod
             Vector2? savedPos = (_posXFrac.HasValue && _posYFrac.HasValue) ? new Vector2(_posXFrac.Value, _posYFrac.Value) : null;
             // A view whose content the game freed (mounted beneath its hover tips) still owns its layer.
             if (_bars != null && !_bars.IsValid()) { _bars.Dispose(); _bars = null; }
-            if (_bars == null) _bars = new DamageChartView(root, savedPos);
+            if (_bars == null) _bars = new DamageChartView(root, savedPos) { ScaleMul = _barsScale };
             Vector2? fcPos = (_fcPosXFrac.HasValue && _fcPosYFrac.HasValue) ? new Vector2(_fcPosXFrac.Value, _fcPosYFrac.Value) : (Vector2?)null;
             if (_forecast != null && !_forecast.IsValid()) { _forecast.Dispose(); _forecast = null; }
             if (_forecast == null) _forecast = new DamageForecastView(root, fcPos);
@@ -1736,7 +1971,7 @@ public static class DamageChartsMod
                 if (hslot < 0) return;
                 int healed = -lost;
                 _tracker.AddHealed(hslot, healed);
-                _tracker.AddLog(round, $"{MaybeName(creature)} healed  {healed}", false);
+                _tracker.AddHit(new Hit(round, HitKind.Healed, hslot, null, null, -1, MaybeName(creature), hslot, healed));
                 return;
             }
 
@@ -1763,7 +1998,7 @@ public static class DamageChartsMod
                 string by = TextHelper.SafeGetText(() => hit.Dealer!.Monster!.Title) ?? "Enemy";
                 string pet = TextHelper.SafeGetText(() => creature.Monster!.Title) ?? "Pet";
                 if (!_petLogged) { _petLogged = true; GD.Print($"[STS2 Damage] absorbed: {by} -> {pet} {lost}"); }
-                _tracker.AddLog(round, $"{by} → {pet}  {lost}", true);
+                _tracker.AddHit(new Hit(round, HitKind.Absorbed, pslot, by, ModelIdOf(InstanceGet(hit.Dealer, "Monster")), -1, pet, -1, lost));
                 return;
             }
 
@@ -1783,7 +2018,7 @@ public static class DamageChartsMod
                 _tracker.AddTaken(round, slot, lost, attacker, null, attackerId);
                 if (ForecastReader.Debug) GD.Print($"[STS2 Damage] HIT taken src={attacker} amt={lost} round={round} frame={_frame}");
                 VfxMoments.OnTaken(creature, lost);
-                _tracker.AddLog(round, $"{attacker} → {victim}  {lost}", true);
+                _tracker.AddHit(new Hit(round, HitKind.Taken, slot, attacker, attackerId, -1, victim, slot, lost));
                 return;
             }
 
@@ -1803,7 +2038,7 @@ public static class DamageChartsMod
             _tracker.AddDealt(round, dslot, lost, src, icon, srcId);
             if (ForecastReader.Debug) GD.Print($"[STS2 Damage] HIT dealt src={src} amt={lost} round={round} frame={_frame}");
             if (dslot == _localSlot) VfxMoments.OnDealt(creature, lost, src, icon);
-            _tracker.AddLog(round, $"{src} → {TextHelper.SafeGetText(() => creature.Monster!.Title) ?? "Enemy"}  {lost}", false);
+            _tracker.AddHit(new Hit(round, HitKind.Dealt, dslot, src, srcId, dslot, TextHelper.SafeGetText(() => creature.Monster!.Title) ?? "Enemy", -1, lost, icon));
         }
         catch { /* overlay must never break combat */ }
     }
@@ -2033,6 +2268,7 @@ public static class DamageChartsMod
         try { _tooltip?.Dispose(); } catch { }
         try { _forecast?.Dispose(); } catch { }
         try { _share?.Dispose(); } catch { }
-        _bars = null; _detail = null; _tooltip = null; _forecast = null; _share = null; _gameOverScreen = null;
+        try { _shareFight?.Dispose(); } catch { }
+        _bars = null; _detail = null; _tooltip = null; _forecast = null; _share = null; _shareFight = null; _gameOverScreen = null;
     }
 }

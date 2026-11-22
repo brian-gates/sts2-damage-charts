@@ -11,8 +11,9 @@ internal enum ShareState { Pending, Waiting, Shared, Failed }
 
 // The app's latest share request (0.3.3+, after the first one this session):
 // "share":{"run_id":"<16 hex>","state":"pending"|"waiting"|"shared"|"failed","reason":string|null,"at":<unix s>}
-// Reason is a short user-facing message, set only when failed.
-internal sealed record ShareEntry(string RunId, ShareState State, string? Reason, long At)
+// Reason is a short user-facing message, set only when failed. A fight share (1.6.0's apps) also carries
+// "fight":<index>; Fight is null for a run share (or a fight that isn't an integer).
+internal sealed record ShareEntry(string RunId, ShareState State, string? Reason, long At, int? Fight = null)
 {
     public bool Terminal => State is ShareState.Shared or ShareState.Failed;
 }
@@ -22,9 +23,10 @@ internal sealed record ShareEntry(string RunId, ShareState State, string? Reason
 // The app rewrites it periodically; a file whose `updated` is older than StaleSeconds means the app is gone.
 // `ShareReported`: a v1 file carries a `share` key (an app that reports share progress); `Share` is its entry
 // when well-formed. Both are read from any v1 file, fresh or not, since they describe a request in flight.
+// `CanShareFight`: a ready app whose top-level "capabilities" array lists "share_fight".
 // Pure (no Godot): the tests compile it directly. FilePath() lives in AppStatusPath.cs.
 internal sealed partial record AppStatus(AppState State, string? Server, string? SteamId,
-    ShareEntry? Share = null, bool ShareReported = false)
+    ShareEntry? Share = null, bool ShareReported = false, bool CanShareFight = false)
 {
     /// <summary>The site's address before 2026-11-18, and the one it moved to.</summary>
     public const string FormerServer = "https://sts2.thegates.house", CurrentServer = "https://spiresync.app";
@@ -65,7 +67,7 @@ internal sealed partial record AppStatus(AppState State, string? Server, string?
             if (string.IsNullOrEmpty(server)) return gone;
             // Spire Sync 0.3.3 and earlier report the site's former address; copy links with the current one.
             if (string.Equals(server, FormerServer, StringComparison.OrdinalIgnoreCase)) server = CurrentServer;
-            return new AppStatus(AppState.Ready, server, Str(root, "steam_id"), share, reported);
+            return new AppStatus(AppState.Ready, server, Str(root, "steam_id"), share, reported, HasCapability(root, "share_fight"));
         }
         catch (Exception)
         {
@@ -91,7 +93,16 @@ internal sealed partial record AppStatus(AppState State, string? Server, string?
         if (state == null) return null;
         if (!el.TryGetProperty("at", out var at) || at.ValueKind != JsonValueKind.Number || !at.TryGetInt64(out long atS))
             return null;
-        return new ShareEntry(runId, state.Value, CleanReason(Str(el, "reason")), atS);
+        int? fight = el.TryGetProperty("fight", out var f) && f.ValueKind == JsonValueKind.Number && f.TryGetInt32(out int fi) ? fi : null;
+        return new ShareEntry(runId, state.Value, CleanReason(Str(el, "reason")), atS, fight);
+    }
+
+    private static bool HasCapability(JsonElement root, string name)
+    {
+        if (!root.TryGetProperty("capabilities", out var caps) || caps.ValueKind != JsonValueKind.Array) return false;
+        foreach (var c in caps.EnumerateArray())
+            if (c.ValueKind == JsonValueKind.String && c.GetString() == name) return true;
+        return false;
     }
 
     public const int MaxReasonChars = 120;

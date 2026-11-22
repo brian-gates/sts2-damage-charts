@@ -15,6 +15,7 @@ internal static class UiTheme
     public static readonly Color Gold = Html("EFC851");    // headers / highlights
     public static readonly Color BrandGold = Html("F2B632"); // the mod's brand gold (the Share button's face)
     public static readonly Color Red = Html("FF5555");     // taken / incoming
+    public static readonly Color Saved = Html("87CEEB");   // HP a Buffer saved (StsColors blue), set apart from taken red
     public static readonly Color Gray = new(0.75f, 0.75f, 0.75f);
     public static readonly Color Border = new(0.55f, 0.60f, 0.72f, 0.30f);
     public static readonly Color Outline = new(0f, 0f, 0f, 0.85f);

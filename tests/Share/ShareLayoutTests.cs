@@ -289,4 +289,56 @@ public class ShareLayoutTests
         Assert.True(f.Step(false, 0, 0, 1, 1, RowFreeze.MaxWaitMs));
         Assert.True(new RowFreeze().Step(false, 0, 0, 1, 1, double.NaN));   // a bad clock never waits forever
     }
+
+    // ----- Share fight beside Share run, and under the end-of-combat summary -----
+
+    [Fact]
+    public void SecondButtonSitsUnderTheFirst()
+    {
+        var run = new Box(1102, 909, 220, 60);
+        Assert.Equal(new Box(1102, 909 + 60 + 12, 220, 60), ShareLayout.PlaceSecond(run, MainMenu, None, None, 1920, 1080, 1f));
+    }
+
+    [Fact]
+    public void SecondButtonGoesAboveWhenBelowDoesNotFit()
+    {
+        var run = new Box(1102, 980, 220, 60);   // too low for another button under it
+        var b = ShareLayout.PlaceSecond(run, MainMenu, None, None, 1920, 1080, 1f);
+        Assert.Equal(new Box(1102, 980 - 12 - 60, 220, 60), b);
+        Assert.False(b.Intersects(run));
+        Assert.False(b.Intersects(MainMenu));
+    }
+
+    [Fact]
+    public void SecondButtonNeverCoversTheRowOrContent()
+    {
+        // Below the row (the Below spot): under it runs off the screen, above it is the row, so beside it.
+        var run = new Box(838, 980, 220, 60);
+        var summary = new Box(0, 0, 1920, 500);
+        var b = ShareLayout.PlaceSecond(run, MainMenu, summary, None, 1920, 1080, 1f);
+        Assert.False(b.Intersects(run));
+        Assert.False(b.Intersects(MainMenu));
+        Assert.False(b.Intersects(summary));
+        Assert.Equal(run.Y, b.Y);
+    }
+
+    [Fact]
+    public void NearSitsBelowTheAnchorLeftAligned()
+    {
+        var summary = new Box(28, 262, 527, 566);
+        Assert.Equal(new Box(28, 838, 165, 45), ShareLayout.PlaceNear(summary, summary, 165, 45, 1920, 1080, 1f));
+    }
+
+    [Fact]
+    public void NearAvoidsTheAnchorAndWhatItMustNotCover()
+    {
+        // A short screen: below the summary doesn't fit, so beside it, bottom-aligned.
+        var summary = new Box(28, 100, 527, 566);
+        var b = ShareLayout.PlaceNear(summary, summary, 165, 45, 1280, 700, 1f);
+        Assert.Equal(new Box(28 + 527 + 10, 100 + 566 - 45, 165, 45), b);
+        // A message by that button: never over the summary or the button.
+        var avoid = summary.Union(b);
+        var m = ShareLayout.PlaceNear(b, avoid, 420, 80, 1280, 700, 1f);
+        Assert.Equal(0f, ShareLayout.Overlap(m, avoid));
+    }
 }
