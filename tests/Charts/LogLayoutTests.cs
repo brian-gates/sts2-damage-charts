@@ -39,6 +39,18 @@ public class LogLayoutTests
     }
 
     [Fact]
+    public void FitSizeShrinksToTheColumnAndNeverReturnsFullSizeForATinyOne()
+    {
+        float W(int size) => size * 10f;                  // the text is 10 px per font px
+        Assert.Equal(20, LogLayout.FitSize(W, 20, 300f));  // fits as is
+        Assert.Equal(15, LogLayout.FitSize(W, 20, 150f));  // shrinks to fit
+        Assert.Equal(9, LogLayout.FitSize(W, 20, 50f));    // floor; the label trims the rest
+        Assert.Equal(9, LogLayout.FitSize(W, 20, 0f));     // a collapsed column gets the floor, not 20
+        Assert.Equal(9, LogLayout.FitSize(W, 20, -5f));
+        Assert.Equal(8, LogLayout.FitSize(W, 8, 10f));     // already below the floor: unchanged
+    }
+
+    [Fact]
     public void PotionAndTextLinesHaveNoBar()
     {
         Assert.False(LogLayout.HasBar(HitKind.Potion));

@@ -86,7 +86,7 @@ public class RoundCardsTests
     public void ColumnsMatchTheMockupGrid()
     {
         // A 1280x720 card content box ~ 830 px wide: 30 | text | 90 | 240, gaps 14.
-        var c = RoundCards.Columns(100f, 830f, 1f);
+        var c = RoundCards.Columns(100f, 830f, 1f, 240f);
         Assert.Equal(240f, c.BarW);
         Assert.Equal(100f + 830f - 240f, c.BarX);
         Assert.Equal(c.BarX - 14f - 90f, c.AmountX);
@@ -97,12 +97,78 @@ public class RoundCardsTests
     }
 
     [Fact]
-    public void ColumnsNarrowTheBarOnSmallCards()
+    public void ColumnsGiveTheBarWayBeforeTheTextGoesNegative()
     {
-        var c = RoundCards.Columns(0f, 400f, 1f);
-        Assert.Equal(120f, c.BarW, 3);             // 30% of the width
-        var tiny = RoundCards.Columns(0f, 100f, 1f);
+        var c = RoundCards.Columns(0f, 400f, 1f, 120f);
+        Assert.Equal(120f, c.BarW);                // the frame's bar width when it fits
+        var tiny = RoundCards.Columns(0f, 200f, 1f, 240f);
         Assert.Equal(0f, tiny.TextW);              // never negative
+        Assert.True(tiny.BarX >= tiny.AmountX + tiny.AmountW);
+    }
+
+    // ===== The full view's frame at real viewports (review I1) =====
+
+    // The view's own scale: UiTheme.Scale (viewport height / 1080, clamped 0.75..2) x ui_scale, x 1.5 per mockup px.
+    private static float U(float vh, float uiScale) => 1.5f * System.Math.Clamp(vh / 1080f, 0.75f, 2.0f) * uiScale;
+
+    public static IEnumerable<object[]> Viewports()
+    {
+        foreach (var (w, h) in new[] { (1280f, 720f), (1440f, 900f), (1024f, 768f), (1920f, 1080f), (1920f, 1200f),
+                                       (1920f, 1440f), (2560f, 1440f), (3440f, 1440f) })
+            foreach (var ui in new[] { 1.0f, 1.25f, 1.5f })
+                yield return new object[] { w, h, ui };
+    }
+
+    [Theory]
+    [MemberData(nameof(Viewports))]
+    public void FullFrameNeverOverlapsAndKeepsTheTextColumn(float vw, float vh, float ui)
+    {
+        float u0 = U(vh, ui);
+        var f = RoundCards.Frame(vw, u0);
+        float u = f.U;
+        Assert.True(u <= u0 + 1e-3f);
+        // Left to right: pad | sidebar | gap | log | pad, exactly filling the width.
+        Assert.Equal(f.Pad + f.SideW + f.Gap, f.LogX, 2);
+        Assert.Equal(vw, f.LogX + f.LogW + f.Pad, 1);
+        Assert.True(f.SideW >= RoundCards.SideMin * u - 0.01f && f.SideW <= RoundCards.SideMax * u + 0.01f);
+        Assert.True(f.Pad >= RoundCards.PadMin * u - 0.01f);
+        // The card row: icon | text | amount | bar, in order, inside the card, text at least its minimum.
+        float left = f.LogX + RoundCards.CardPadX * u, width = f.LogW - 2f * RoundCards.CardPadX * u;
+        var c = RoundCards.Columns(left, width, u, f.BarW);
+        Assert.True(c.TextW >= RoundCards.TextMin * u - 0.5f, $"text {c.TextW} < {RoundCards.TextMin * u}");
+        Assert.True(c.IconX >= left - 0.01f);
+        Assert.True(c.TextX + c.TextW <= c.AmountX + 0.01f);
+        Assert.True(c.AmountX + c.AmountW <= c.BarX + 0.01f);
+        Assert.True(c.BarX + c.BarW <= left + width + 0.01f);
+        Assert.True(c.BarW >= RoundCards.BarMin * u - 0.01f);
+    }
+
+    [Fact]
+    public void FullFrameIsTheMockupAt1080p()
+    {
+        var f = RoundCards.Frame(1920f, 1.5f);
+        Assert.Equal(1.5f, f.U);
+        Assert.Equal(60f, f.Pad, 3);
+        Assert.Equal(495f, f.SideW, 3);
+        Assert.Equal(48f, f.Gap, 3);
+        Assert.Equal(360f, f.BarW, 3);
+    }
+
+    [Fact]
+    public void NarrowViewportsShrinkBarThenSidebarThenScale()
+    {
+        // 1920x1440 (4:3) at ui_scale 1.5: the review's collapsing case.
+        float u0 = U(1440f, 1.5f);                        // 3.0
+        var f = RoundCards.Frame(1920f, u0);
+        Assert.True(f.U < u0);                            // even the minimums don't fit at the requested scale
+        Assert.Equal(RoundCards.BarMin * f.U, f.BarW, 2);
+        Assert.Equal(RoundCards.SideMin * f.U, f.SideW, 2);
+        // Narrower than 1080p's 16:9: the text's extra room goes first (1920 leaves it 300 px over its minimum),
+        // then the bar track; the sidebar and scale stay.
+        var g = RoundCards.Frame(1920f - 300f - 60f, 1.5f);
+        Assert.Equal(1.5f, g.U);
+        Assert.Equal(495f, g.SideW, 3);
+        Assert.Equal(300f, g.BarW, 2);
     }
 
     [Fact]
@@ -138,46 +204,52 @@ public class RoundCardsTests
     }
 }
 
-public class SidebarSourcesTests
+public class SidebarPlanTests
 {
     // Mockup px: a row is 29 tall, rows 44 apart at most, 33 at least.
-    private static (int, int, float) S(float avail, int d, int t) => RoundCards.SidebarSources(avail, d, t, 29f, 44f, 33f);
+    private static (int D, int T, int More, float Pitch) S(float avail, int d, int t) => RoundCards.SidebarPlan(avail, d, t, 29f, 44f, 33f);
 
     [Fact]
     public void EverySourceShowsWhenItFitsAtTheMinimumPitch()
     {
         // The real-game case: 2 dealt + 3 taken in 170 px (29 + 4 x 35.25): all five, spread to fill.
-        var (d, t, p) = S(170f, 2, 3);
-        Assert.Equal((2, 3), (d, t));
-        Assert.Equal(35.25f, p, 3);
+        var p = S(170f, 2, 3);
+        Assert.Equal((2, 3, 0), (p.D, p.T, p.More));
+        Assert.Equal(35.25f, p.Pitch, 3);
     }
 
     [Fact]
     public void RowsSpreadNoFurtherThanTheMaximumPitch()
     {
-        var (d, t, p) = S(1000f, 2, 3);
-        Assert.Equal((2, 3), (d, t));
-        Assert.Equal(44f, p);
+        var p = S(1000f, 2, 3);
+        Assert.Equal((2, 3, 0, 44f), (p.D, p.T, p.More, p.Pitch));
     }
 
     [Fact]
-    public void CapsOnlyWhenOutOfRoom()
+    public void WhenOutOfRoomTheLastSlotSaysHowManyMore()
     {
-        // 29 + 3 x 33 = 128: four rows fit, of five.
-        var (d, t, p) = S(130f, 2, 3);
-        Assert.Equal(33f, p);
-        Assert.Equal(4, d + t);
-        Assert.Equal((2, 2), (d, t));
-        // A lone side takes every slot.
-        Assert.Equal((0, 3), (S(130f, 0, 3).Item1, S(130f, 0, 3).Item2));
-        Assert.Equal((10, 0), (S(29f + 9 * 33f, 12, 0).Item1, 0));
+        // 29 + 3 x 33 = 128: four slots of five sources: three rows and "+ 2 more".
+        var p = S(130f, 2, 3);
+        Assert.Equal(33f, p.Pitch);
+        Assert.Equal(3, p.D + p.T);
+        Assert.Equal(2, p.More);
+        Assert.Equal((2, 1), (p.D, p.T));          // dealt keeps its half (rounded up), taken the rest
+        // A lone side takes every shown slot.
+        var lone = S(130f, 0, 9);
+        Assert.Equal((0, 3, 6), (lone.D, lone.T, lone.More));
     }
 
     [Fact]
-    public void NoRoomOrNoSourcesShowsNothing()
+    public void FewerThanTwoSlotsShowNothing()
     {
-        Assert.Equal((0, 0), (S(20f, 2, 3).Item1, S(20f, 2, 3).Item2));
-        Assert.Equal((0, 0), (S(500f, 0, 0).Item1, S(500f, 0, 0).Item2));
-        Assert.Equal((1, 0), (S(29f, 1, 0).Item1, S(29f, 1, 0).Item2));
+        // One slot can't hold a row and its "+ N more": nothing (and no heading) rather than a bare count.
+        var one = S(40f, 2, 3);
+        Assert.Equal((0, 0, 5), (one.D, one.T, one.More));
+        var none = S(20f, 2, 3);
+        Assert.Equal((0, 0, 5), (none.D, none.T, none.More));
+        var single = S(29f, 1, 0);                 // one source in one slot fits outright
+        Assert.Equal((1, 0, 0), (single.D, single.T, single.More));
+        var empty = S(500f, 0, 0);
+        Assert.Equal((0, 0, 0), (empty.D, empty.T, empty.More));
     }
 }

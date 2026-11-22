@@ -51,7 +51,17 @@ internal sealed class DamageDetailView
     private StyleBoxTexture? _eFrameStyle, _eShadowStyle;
     private readonly Control _boxLayer;   // rounded panels (full view's sidebar, cards, pill bars), behind bars and text
     private readonly Control _barLayer;   // behind text
-    private readonly List<(Panel Panel, StyleBoxFlat Style)> _boxes = new();
+    private readonly List<PooledBox> _boxes = new();
+
+    // A pooled rounded panel and the style values last written to it: StyleBoxFlat setters each emit "changed"
+    // (theme invalidation and a redraw), so a box only writes what differs from last frame.
+    private sealed class PooledBox
+    {
+        public readonly Panel Panel;
+        public readonly StyleBoxFlat Style;
+        public (Color Bg, Color Border, int BorderW, int R, bool Left, bool Right)? Last;
+        public PooledBox(Panel panel, StyleBoxFlat style) { Panel = panel; Style = style; }
+    }
     private readonly List<Label> _labels = new();
     private readonly List<ColorRect> _bars = new();
     private readonly List<TextureRect> _icons = new();
@@ -105,7 +115,6 @@ internal sealed class DamageDetailView
     private int _grabStartOffset;
     private float _trackY, _trackH, _grabberY, _grabberH, _sbX;   // render-state for hit-testing
     private int _maxOffset, _visible;
-    private int _lastLogCount = -1;
 
     // When true, render as an end-of-combat summary (compact, click-through over rewards).
     public bool SummaryMode;
@@ -390,6 +399,12 @@ internal sealed class DamageDetailView
             // full-bleed. When mounted beneath NTopBar the bar also draws over the padded strip.
             float top = full ? TopBarInset(vp) : 0f;
             _fontScale = (full ? UiTheme.Scale(vp) : 1f) * Math.Clamp(UiScaleMul, 0.5f, 4f);
+            // Full view: fit layout E to the width (RoundCards.Frame); on narrow aspect ratios or a high ui_scale
+            // the whole view scales down so the log's text column keeps its minimum.
+            _fullFrame = full ? RoundCards.Frame(vp.X, 1.5f * _fontScale) : default;
+            if (full) _fontScale = _fullFrame.U / 1.5f;
+            // The summary and the full view scroll in different units: start each at the newest lines.
+            if (full != _lastFull) { _logOffset = 0; _logAtBottom = true; _lastFull = full; }
             _opaque = full;
             _bottomReserve = 0f;
 
@@ -430,7 +445,7 @@ internal sealed class DamageDetailView
             _boxLayer.SetSize(new Vector2(_w, _h));
 
             // Full view: layout E's 40 px side padding (mockup px x 1.5 at 1080p, times the UI scale).
-            float pad = full ? 40f * 1.5f * _fontScale : 14f;
+            float pad = full ? _fullFrame.Pad : 14f;
             float gap = full ? pad : 12f;
             float headerY = full ? top + pad * 0.6f : 8f;
             bool recap = full && RecapMode;
@@ -558,14 +573,27 @@ internal sealed class DamageDetailView
     private static readonly Color ETextShadow = new(0f, 0f, 0f, 0.25098f);       // hover_tip.tscn title shadow
     private static readonly Color EHpTrack = new(0f, 0f, 0f, 0.55f);             // health bar track (as the forecast's)
     private bool _eNative;
+    private FullFrame _fullFrame;
+    private bool _lastFull;
     private readonly List<CardItem> _cards = new();
+    private static readonly Color EMuted = new Color("9fb6bf");
+    private readonly long[] _tileValues = new long[4];
+    private (long, long, string)? _blockText;
+
+    private string BlockText(long block, long absorbed)
+    {
+        if (_blockText is { } b && b.Item1 == block && b.Item2 == absorbed) return b.Item3;
+        string t = absorbed > 0 ? $"Block {block}  ·  Absorbed {absorbed}" : $"Block {block}";
+        _blockText = (block, absorbed, t);
+        return t;
+    }
     private readonly Dictionary<(long, int), string> _countTexts = new();   // "12 dealt" / "4 taken" / tile values
 
     private string CountText(long n, int kind)
     {
         if (_countTexts.TryGetValue((n, kind), out var t)) return t;
         if (_countTexts.Count > 4000) _countTexts.Clear();
-        t = kind switch { 0 => $"{n} dealt", 1 => $"{n} taken", _ => n.ToString() };
+        t = kind switch { 0 => $"{n} dealt", 1 => $"{n} taken", 3 => $"+ {n} more", _ => n.ToString() };
         _countTexts[(n, kind)] = t;
         return t;
     }
@@ -573,22 +601,23 @@ internal sealed class DamageDetailView
     private void RenderFull(ref int cur, ref int barCur, ref int iconCur, ref int boxCur, SourceSnapshot snap,
                             PlayerSources ps, Color[] palette, float top, float pad, string title)
     {
-        float u = 1.5f * _fontScale;               // one mockup px (1280x720) at this viewport and UI scale
+        var f = _fullFrame;
+        float u = f.U;                             // one mockup px (1280x720) at this viewport and UI scale
         _eNative = EnsureFrameStyles();
-        float sideX = pad, sideY = top + 14f * u, sideW = 330f * u;
+        float sideX = pad, sideY = top + 14f * u, sideW = f.SideW;
         float sideBottom = Math.Max(sideY + 120f * u, _h - _bottomReserve);
         RenderSidebar(ref cur, ref barCur, ref iconCur, ref boxCur, snap, ps, sideX, sideY, sideW, sideBottom - sideY, u, title);
 
         // Right: the "Combat Log" heading, then the round cards, scrolling as one list.
-        float logX = sideX + sideW + 32f * u;
-        float logRight = _w - pad;
+        float logX = f.LogX;
+        float logRight = f.LogX + f.LogW;
         var head = Next(ref cur, 33, UiTheme.Gold, FontRole.Bold, shadow: _eNative);
         head.Text = "Combat Log";
         head.SetPosition(new Vector2(logX, sideY));
         float viewTop = sideY + 30f * u + 14f * u;
         float viewH = Math.Max(40f * u, _h - 28f * u - viewTop);
         RenderCards(ref cur, ref barCur, ref iconCur, ref boxCur, snap.Log, palette, snap.PlayerCount > 1,
-            logX, logRight - logX, viewTop, viewH, u);
+            logX, logRight - logX, viewTop, viewH, u, f.BarW);
         RenderScrollbar(true, viewTop, viewH, logRight + pad * 0.4f, 8f, _visible + _maxOffset);
     }
 
@@ -612,7 +641,9 @@ internal sealed class DamageDetailView
     private void PanelBg(ref int boxCur, float x, float y, float w, float h, float u)
     {
         if (w <= 0f || h <= 0f) return;
-        if (!_eNative) { Box(ref boxCur, x, y, w, h, EPanel, EBorder, 1f, 6f * u); return; }
+        // The hover-tip 9-slice needs ~75 texture px of height (its top and bottom margins); a card sliver cut by the
+        // scroll edge would squish it, so short panels stay plain boxes.
+        if (!_eNative || h < 75f * _fontScale) { Box(ref boxCur, x, y, w, h, EPanel, EBorder, 1f, 6f * u); return; }
         (Panel Shadow, Panel Frame) f;
         if (_frameCur < _frames.Count) f = _frames[_frameCur];
         else
@@ -665,7 +696,7 @@ internal sealed class DamageDetailView
         bool compact = th < 74f * u;
 
         // 2x2 totals: Dealt, Taken, Saved (Buffer), Healed; always all four (0 when none) so the grid is stable.
-        long[] values = { ps.DealtTotal, ps.TakenTotal, ps.BufferedTotal, ps.HealTotal };
+        _tileValues[0] = ps.DealtTotal; _tileValues[1] = ps.TakenTotal; _tileValues[2] = ps.BufferedTotal; _tileValues[3] = ps.HealTotal;
         for (int i = 0; i < 4; i++)
         {
             float tx = ix + (i % 2) * (tw + tg), ty = cy + (i / 2) * (th + tg);
@@ -689,9 +720,8 @@ internal sealed class DamageDetailView
             cap.HorizontalAlignment = HorizontalAlignment.Center;
             cap.SetPosition(new Vector2(textX, ty + (compact ? 4f : 8f) * u)); cap.SetSize(new Vector2(textW, 0f));
             // Numbers in the game's numeric Kreon with a heavy dark outline and soft shadow, like the top bar's.
-            var val = Next(ref cur, compact ? 36 : 45, tile.Value, FontRole.Numeric,
+            var val = Next(ref cur, compact ? 36 : 45, tile.Value, FontRole.Numeric, CountText(_tileValues[i], 2), textW,
                 outline: _eNative ? Math.Max(2, (int)Math.Round(10f * _fontScale)) : null, shadow: _eNative);
-            val.Text = CountText(values[i], 2);
             val.HorizontalAlignment = HorizontalAlignment.Center;
             val.SetPosition(new Vector2(textX, ty + (compact ? 20f : 26f) * u)); val.SetSize(new Vector2(textW, 0f));
         }
@@ -700,21 +730,29 @@ internal sealed class DamageDetailView
         // Block (and Absorbed, when a pet took hits) as one quiet line under the tiles.
         if (blockLine)
         {
-            var extra = Next(ref cur, 19, new Color("9fb6bf"));   // muted: the full view forces text opaque
-            extra.Text = ps.AbsorbedTotal > 0 ? $"Block {ps.BlockTotal}  ·  Absorbed {ps.AbsorbedTotal}" : $"Block {ps.BlockTotal}";
+            var extra = Next(ref cur, 19, EMuted);   // muted: the full view forces text opaque
+            extra.Text = BlockText(ps.BlockTotal, ps.AbsorbedTotal);
             extra.SetPosition(new Vector2(ix, cy));
             cy += 22f * u + gap;
         }
 
-        // Potions used, at the sidebar's foot when any.
+        // Top sources: dealt then taken, name + amount over a 6 px bar, sharing the room left (RoundCards.SidebarPlan:
+        // a "+ N more" row when they don't all fit). Potions at the foot give way first; with no room for a row the
+        // heading is left out too.
+        float headH = 22f * u + gap * 0.75f;
+        var plan = RoundCards.SidebarPlan(bottom - potH - cy - headH, ps.Dealt.Count, ps.Taken.Count, rowH, maxPitch, minPitch);
+        if (plan.More > 0 && potH > 0f)
+        {
+            potH = 0f;
+            plan = RoundCards.SidebarPlan(bottom - cy - headH, ps.Dealt.Count, ps.Taken.Count, rowH, maxPitch, minPitch);
+        }
         if (potH > 0f) RenderPotions(ref cur, ref iconCur, ix, bottom - potH + 4f * u, iw, ps.Potions, true);
-
-        // Top sources: dealt then taken, name + amount over a 6 px bar, sharing the room left.
+        var (nd, nt, more, pitch) = plan;
+        if (nd + nt == 0) return;
         var sh = Next(ref cur, 22, UiTheme.Gold, FontRole.Bold);
         sh.Text = "Top sources";
         sh.SetPosition(new Vector2(ix, cy));
-        cy += 22f * u + gap * 0.75f;
-        var (nd, nt, pitch) = RoundCards.SidebarSources(bottom - potH - cy, ps.Dealt.Count, ps.Taken.Count, rowH, maxPitch, minPitch);
+        cy += headH;
         long max = 1;
         for (int i = 0; i < nd; i++) max = Math.Max(max, ps.Dealt[i].Total);
         for (int i = 0; i < nt; i++) max = Math.Max(max, ps.Taken[i].Total);
@@ -746,6 +784,12 @@ internal sealed class DamageDetailView
             if (bw > 0f) Box(ref boxCur, ix, by, bw, 6f * u, c, default, 0f, 3f * u);
             cy += pitch;
         }
+        if (more > 0)
+        {
+            var m = Next(ref cur, 21, EMuted);
+            m.Text = CountText(more, 3);
+            m.SetPosition(new Vector2(ix, cy));
+        }
     }
 
     // The tiles' game icons: Dealt the attack intent (sword), Taken the top bar's heart, Saved the Buffer power,
@@ -768,7 +812,7 @@ internal sealed class DamageDetailView
     // The log as round cards (RoundCards), scrolled by _logOffset steps; only what lies inside the view is drawn
     // (a card cut by the edge keeps the visible part of its panel and whole rows only).
     private void RenderCards(ref int cur, ref int barCur, ref int iconCur, ref int boxCur, LogEntry[] log, Color[] palette,
-                             bool coop, float x, float w, float viewTop, float viewH, float u)
+                             bool coop, float x, float w, float viewTop, float viewH, float u, float barW)
     {
         var m = CardMetrics.Scaled(u);
         // On the game's frame the content sits at the hover tips' text insets instead of the mockup's padding.
@@ -779,14 +823,21 @@ internal sealed class DamageDetailView
         float contentH = RoundCards.Build(log, m, _cards);
         _visible = RoundCards.VisibleSteps(viewH, m);
         _maxOffset = RoundCards.MaxOffset(contentH, viewH, m);
-        if (log.Length != _lastLogCount) { if (_logAtBottom) _logOffset = _maxOffset; _lastLogCount = log.Length; } // follow newest
+        if (_logAtBottom) _logOffset = _maxOffset;   // follow newest, also once the log window is full and slides
         _logOffset = Math.Clamp(_logOffset, 0, _maxOffset);
         _logAtBottom = _logOffset >= _maxOffset;
         float scroll = RoundCards.ScrollY(_logOffset, contentH, viewH, m);
+        if (log.Length == 0)
+        {
+            var none = Next(ref cur, 22, EMuted);
+            none.Text = "No hits yet";
+            none.SetPosition(new Vector2(x + m.PadX, viewTop));
+            return;
+        }
         float viewBottom = viewTop + viewH;
         long maxAmount = LogLayout.MaxAmount(log);
         bool oneEnemy = LogText.SingleDealtTarget(log);
-        var cols = RoundCards.Columns(x + m.PadX, w - 2f * m.PadX, u);
+        var cols = RoundCards.Columns(x + m.PadX, w - 2f * m.PadX, u, barW);
         float iconSz = 26f * u;
 
         foreach (var item in _cards)
@@ -895,7 +946,7 @@ internal sealed class DamageDetailView
                      bool left = true, bool right = true)
     {
         if (w <= 0f || h <= 0f) return;
-        (Panel Panel, StyleBoxFlat Style) b;
+        PooledBox b;
         if (cursor < _boxes.Count) b = _boxes[cursor];
         else
         {
@@ -903,18 +954,23 @@ internal sealed class DamageDetailView
             var panel = new Panel { MouseFilter = Control.MouseFilterEnum.Ignore };
             Th.Stylebox(panel, "panel", style);
             _boxLayer.AddChild(panel);
-            b = (panel, style);
+            b = new PooledBox(panel, style);
             _boxes.Add(b);
         }
         cursor++;
-        var s = b.Style;
-        s.BgColor = bg;
-        s.BorderColor = border;
         int bw = borderW > 0f ? Math.Max(1, (int)Math.Round(borderW)) : 0;
-        s.BorderWidthLeft = bw; s.BorderWidthTop = bw; s.BorderWidthRight = bw; s.BorderWidthBottom = bw;
         int r = (int)Math.Round(Math.Min(radius, Math.Min(w, h) * 0.5f));
-        s.CornerRadiusTopLeft = left ? r : 0; s.CornerRadiusBottomLeft = left ? r : 0;
-        s.CornerRadiusTopRight = right ? r : 0; s.CornerRadiusBottomRight = right ? r : 0;
+        var want = (bg, border, bw, r, left, right);
+        if (b.Last != want)
+        {
+            var s = b.Style;
+            s.BgColor = bg;
+            s.BorderColor = border;
+            s.BorderWidthLeft = bw; s.BorderWidthTop = bw; s.BorderWidthRight = bw; s.BorderWidthBottom = bw;
+            s.CornerRadiusTopLeft = left ? r : 0; s.CornerRadiusBottomLeft = left ? r : 0;
+            s.CornerRadiusTopRight = right ? r : 0; s.CornerRadiusBottomRight = right ? r : 0;
+            b.Last = want;
+        }
         b.Panel.Visible = true;
         b.Panel.SetPosition(new Vector2(x, y));
         b.Panel.SetSize(new Vector2(w, h));
@@ -1024,7 +1080,7 @@ internal sealed class DamageDetailView
         LogLayout.Rows(log, _logRows);
 
         _maxOffset = Math.Max(0, _logRows.Count - _visible);
-        if (log.Length != _lastLogCount) { if (_logAtBottom) _logOffset = _maxOffset; _lastLogCount = log.Length; } // follow newest
+        if (_logAtBottom) _logOffset = _maxOffset;   // follow newest, also once the log window is full and slides
         _logOffset = Math.Clamp(_logOffset, 0, _maxOffset);
         _logAtBottom = _logOffset >= _maxOffset;
 
@@ -1433,20 +1489,20 @@ internal sealed class DamageDetailView
     }
 
     // Largest size <= px (down to a readable floor) at which `text` fits `maxW`, allowing for the outline.
-    private static int FitFontSize(Font? font, string text, int px, float maxW)
+    // Cached by (text, size, width): fitted labels repeat every frame and measuring goes through Godot interop.
+    // A column too narrow even at the floor gets the floor size (the label then trims with an ellipsis).
+    private readonly Dictionary<(string, int, int), int> _fitCache = new();
+    private int FitFontSize(Font? font, string text, int px, float maxW)
     {
-        if (font == null || maxW <= 0f || text.Length == 0) return px;
-        const int MinPx = 9;
-        try
-        {
-            int size = px;
-            float w = font.GetStringSize(text, HorizontalAlignment.Left, -1, size).X + 8f;
-            if (w <= maxW) return size;
-            size = Math.Max(MinPx, Math.Min(px - 1, (int)Math.Floor(px * maxW / w)));
-            while (size > MinPx && font.GetStringSize(text, HorizontalAlignment.Left, -1, size).X + 8f > maxW) size--;
-            return size;
-        }
-        catch { return px; }
+        if (font == null || text.Length == 0) return px;
+        var key = (text, px, (int)maxW);
+        if (_fitCache.TryGetValue(key, out int cached)) return cached;
+        if (_fitCache.Count > 4000) _fitCache.Clear();
+        int size;
+        try { size = LogLayout.FitSize(sz => font.GetStringSize(text, HorizontalAlignment.Left, -1, sz).X + 8f, px, maxW); }
+        catch { size = px; }
+        _fitCache[key] = size;
+        return size;
     }
 
     private static string Truncate(string s, int n) => s.Length <= n ? s : s[..(n - 1)] + "…";
@@ -1475,11 +1531,14 @@ internal sealed class DamageDetailView
             fs = FitFontSize(measure, fitText, fs, fitWidth);
             if (lbl.Text != fitText) lbl.Text = fitText;
         }
-        // Pooled labels may have been a right-aligned, centered or sized label last frame.
+        // Pooled labels may have been a right-aligned, centered, sized or trimming label last frame. A fitted
+        // label is as wide as its column and trims with an ellipsis if even the floor size doesn't fit.
         if (GameAssets.Enabled && roleFont == null && UiTheme.DefaultFont == null) Th.RemoveFont(lbl, "font");
         lbl.HorizontalAlignment = HorizontalAlignment.Left;
         lbl.VerticalAlignment = VerticalAlignment.Top;
-        lbl.SetSize(Vector2.Zero);
+        var overrun = fitText != null ? TextServer.OverrunBehavior.TrimEllipsis : TextServer.OverrunBehavior.NoTrimming;
+        if (lbl.TextOverrunBehavior != overrun) lbl.TextOverrunBehavior = overrun;
+        lbl.SetSize(fitText != null ? new Vector2(Math.Max(0f, fitWidth), 0f) : Vector2.Zero);
         UiTheme.Apply(lbl, fs, color, roleFont, outlineSize: outline);
         if (shadow)
         {

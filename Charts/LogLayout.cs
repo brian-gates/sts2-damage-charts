@@ -58,6 +58,19 @@ internal static class LogLayout
         return Math.Min(maxWidth, Math.Max(minWidth, w));
     }
 
+    // The largest font size <= px (down to minPx) whose measured width fits maxW. measure(size) is the text's width
+    // at that size. Never returns px for a column that can't hold the text: a zero or negative width gets minPx.
+    public static int FitSize(Func<int, float> measure, int px, float maxW, int minPx = 9)
+    {
+        if (px <= minPx) return px;
+        if (maxW <= 0f) return minPx;
+        float w = measure(px);
+        if (w <= maxW) return px;
+        int size = Math.Max(minPx, Math.Min(px - 1, (int)Math.Floor(px * maxW / Math.Max(1f, w))));
+        while (size > minPx && measure(size) > maxW) size--;
+        return size;
+    }
+
     // A round divider: the label centered in [left, right] with a line on each side, `gap` px from the label.
     // Lines shorter than 4 px are dropped (width 0).
     public static (float LabelX, float LeftLineX, float LeftLineW, float RightLineX, float RightLineW) Divider(

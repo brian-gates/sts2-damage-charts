@@ -28,6 +28,10 @@ internal readonly record struct CardMetrics(float PadY, float PadX, float Header
 // The four table columns of a card row: icon | text | amount (right-aligned) | bar track.
 internal readonly record struct CardColumns(float IconX, float TextX, float TextW, float AmountX, float AmountW, float BarX, float BarW);
 
+// The full view's horizontal frame at one viewport width: the scale unit actually used (U, at most the requested
+// one), side padding, sidebar width, the sidebar-to-log gap, the log column and the card rows' bar track width.
+internal readonly record struct FullFrame(float U, float Pad, float SideW, float Gap, float LogX, float LogW, float BarW);
+
 internal static class RoundCards
 {
     public static float CardHeight(int rows, CardMetrics m) =>
@@ -70,12 +74,41 @@ internal static class RoundCards
         return y;
     }
 
-    // Columns inside a card whose content box starts at `left` and is `width` wide (mockup: 30 | 1fr | 90 | 240,
-    // gaps 14). The bar track narrows to 30% of the width on narrow cards; the text gets what is left.
-    public static CardColumns Columns(float left, float width, float u)
+    // Mockup widths (px at 1280x720) and the minimums they give way to, in this order, when the viewport is narrow
+    // (16:10, 4:3, high ui_scale): the bar track, then the sidebar, then padding and gap; past that, the scale
+    // unit itself shrinks so the text column keeps TextMin.
+    public const float PadMax = 40f, PadMin = 20f, GapMax = 32f, GapMin = 16f, SideMax = 330f, SideMin = 230f;
+    public const float BarMax = 240f, BarMin = 80f, AmountCol = 90f, IconCol = 30f, ColGap = 14f, TextMin = 200f;
+    public const float CardPadX = 18f;
+    // A card row without its text and bar: the card's side padding, icon column, three column gaps, amount column.
+    public const float RowFixed = 2f * CardPadX + IconCol + 3f * ColGap + AmountCol;
+
+    public static FullFrame Frame(float width, float u)
     {
-        float gap = 14f * u, iconCol = 30f * u, amountW = 90f * u;
-        float barW = Math.Min(240f * u, Math.Max(0f, width) * 0.30f);
+        width = Math.Max(1f, width);
+        float minPerU = 2f * PadMin + SideMin + GapMin + RowFixed + BarMin + TextMin;
+        u = Math.Max(0.01f, Math.Min(u, width / minPerU));
+        // Start at the minimums and hand the slack back in reverse order: padding and gap, sidebar, bar track;
+        // whatever is left widens the text column.
+        float slack = width / u - minPerU;
+        float Give(float range) { float g = Math.Clamp(slack, 0f, range); slack -= g; return g; }
+        float spacing = 2f * (PadMax - PadMin) + (GapMax - GapMin);
+        float t = Give(spacing) / spacing;
+        float pad = PadMin + t * (PadMax - PadMin), gap = GapMin + t * (GapMax - GapMin);
+        float side = SideMin + Give(SideMax - SideMin);
+        float bar = BarMin + Give(BarMax - BarMin);
+        float logX = (pad + side + gap) * u;
+        float logW = width - logX - pad * u;
+        return new FullFrame(u, pad * u, side * u, gap * u, logX, logW, bar * u);
+    }
+
+    // Columns inside a card whose content box starts at `left` and is `width` wide (mockup: 30 | 1fr | 90 | 240,
+    // gaps 14). `barW` is the track width (FullFrame.BarW); it narrows further only if the text would go below
+    // zero. The text gets what is left.
+    public static CardColumns Columns(float left, float width, float u, float barW)
+    {
+        float gap = ColGap * u, iconCol = IconCol * u, amountW = AmountCol * u;
+        barW = Math.Max(0f, Math.Min(barW, width - iconCol - 3f * gap - amountW));
         float barX = left + width - barW;
         float amountX = barX - gap - amountW;
         float textX = left + iconCol + gap;
@@ -101,19 +134,28 @@ internal static class RoundCards
     public static float ScrollY(int offset, float contentH, float viewH, CardMetrics m) =>
         Math.Clamp(offset * m.Step, 0f, Math.Max(0f, contentH - viewH));
 
-    // The sidebar's top sources in `avail` px: every source when they fit at a pitch of at least minPitch (rows
-    // spread up to maxPitch), else as many minPitch rows as fit, shared by SplitSources. Pitch includes the gap
-    // after a row; the last row needs only rowH of it, so that much more height is allowed.
-    public static (int Dealt, int Taken, float Pitch) SidebarSources(float avail, int dealtCount, int takenCount,
+    // The sidebar's top sources in `avail` px. Every source shows when they fit at a pitch of at least minPitch
+    // (rows spread up to maxPitch). Otherwise rows are minPitch apart and the last slot becomes a "+ N more" row
+    // (More = the sources not shown, dealt and taken combined); with room for fewer than two slots nothing is
+    // shown (D = T = 0, More = all), and the caller leaves out the heading too. Pitch includes the gap after a
+    // row; the last row needs only rowH of it.
+    public static (int Dealt, int Taken, int More, float Pitch) SidebarPlan(float avail, int dealtCount, int takenCount,
         float rowH, float maxPitch, float minPitch)
     {
-        int n = Math.Max(0, dealtCount) + Math.Max(0, takenCount);
-        if (n == 0 || avail < rowH) return (0, 0, maxPitch);
+        dealtCount = Math.Max(0, dealtCount); takenCount = Math.Max(0, takenCount);
+        int n = dealtCount + takenCount;
+        if (n == 0) return (0, 0, 0, maxPitch);
+        if (avail < rowH) return (0, 0, n, minPitch);
         float room = avail - rowH;                       // the first row; every further row costs a pitch
-        float pitch = n > 1 ? Math.Clamp(room / (n - 1), minPitch, maxPitch) : maxPitch;
-        int slots = 1 + (int)Math.Floor(room / pitch + 1e-4f);
-        var (d, t) = SplitSources(Math.Min(slots, n), dealtCount, takenCount);
-        return (d, t, pitch);
+        if (room + 1e-3f >= (n - 1) * minPitch)
+        {
+            float pitch = n > 1 ? Math.Min(maxPitch, room / (n - 1)) : maxPitch;
+            return (dealtCount, takenCount, 0, pitch);
+        }
+        int slots = 1 + (int)Math.Floor(room / minPitch + 1e-4f);
+        if (slots < 2) return (0, 0, n, minPitch);
+        var (d, t) = SplitSources(slots - 1, dealtCount, takenCount);
+        return (d, t, n - d - t, minPitch);
     }
 
     // The sidebar's top source rows: `slots` rows shared by the dealt and taken lists, half each, a side's unused
