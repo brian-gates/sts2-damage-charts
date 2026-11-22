@@ -11,10 +11,16 @@ internal readonly record struct ForecastMissItem(string Kind, string Label, int 
 internal sealed record ForecastMiss(int Round, int Min, int Max, int Actual, bool Hidden, int Block, int Buffer,
     bool Intangible, int Osty, int Wuppy, IReadOnlyList<ForecastMissItem> Items);
 
-// Checks the frozen forecast against what really happened, for the run stats file. Pure: the mod calls
-// Freeze when the planning phase ends (with the local player's HP taken so far this fight), RoundStarted when
-// the next round begins, and CombatEnded when the fight ends first (death, victory, escape), which drops the
-// pending check. Only the local player's forecast is checked. Game thread only.
+// Checks the frozen forecast against what really happened, for the run stats file. Pure. The mod calls Observe
+// every combat tick:
+//   - planning ends (the player side has all ended their turn): the forecast freezes with the local player's HP
+//     taken so far, but only when the mod computed it right up to that moment; a stale or missing forecast (the
+//     forecast panel was hidden, the breakdown was open) skips the round rather than check the wrong numbers;
+//   - the local player's Play phase starts in a later round: actual = HP taken since the freeze. That is after the
+//     player side's turn start (PlayerTurnPhase.Start covers Hook.AfterSideTurnStart, where Poison ticks), so
+//     start-of-turn Poison, which the forecast includes, counts in the round it was forecast for.
+// CombatEnded (death, victory, escape) drops the pending check. Only the local player's forecast is checked.
+// Game thread only.
 internal sealed class ForecastCheck
 {
     public const int MaxMisses = 20;   // the run file holds at most 20 over all fights; a fight never needs more
@@ -22,20 +28,41 @@ internal sealed class ForecastCheck
 
     private (int Round, ForecastResult Result, ForecastInputs Inputs, long Taken)? _frozen;
     private readonly List<ForecastMiss> _misses = new();
+    private bool _planningLast, _localPlayLast;   // what Observe saw last tick
 
     // This fight's misses, oldest first (at most MaxMisses).
     public IReadOnlyList<ForecastMiss> Misses => _misses;
     public bool HasPending => _frozen != null;
 
-    public void BeginFight() { _frozen = null; _misses.Clear(); }
+    public void BeginFight() { _frozen = null; _misses.Clear(); _planningLast = false; _localPlayLast = false; }
+
+    // One combat tick. `planning`: the player side is still planning (ForecastReader.IsPlanningPhase). `localPlay`:
+    // the local player is in their Play phase. `fresh`: the forecast computed during this planning phase, only when
+    // it was computed up to now (null otherwise). `taken` reads the local player's HP lost this fight; it is only
+    // called on an edge. Returns the miss recorded this tick, if any.
+    public ForecastMiss? Observe(int round, bool planning, bool localPlay, Func<long> taken,
+        (ForecastResult Result, ForecastInputs Inputs)? fresh)
+    {
+        ForecastMiss? miss = null;
+        if (localPlay && !_localPlayLast && _frozen != null) miss = PlayStarted(round, taken());
+        if (!planning && _planningLast)
+        {
+            if (fresh is { } f) Freeze(round, f.Result, f.Inputs, taken());
+            else _frozen = null;   // not seen on time: skip this round
+        }
+        _planningLast = planning;
+        _localPlayLast = localPlay;
+        return miss;
+    }
 
     // The forecast froze in `round`. A later freeze in the same round (an extra turn) replaces this one.
     public void Freeze(int round, ForecastResult result, ForecastInputs inputs, long takenSoFar) =>
         _frozen = (round, result, inputs, takenSoFar);
 
-    // Round `round` started: the pending check (from an earlier round) is evaluated with actual = HP taken
-    // since the freeze. Returns the miss, if it was one. A round number that isn't later keeps it pending.
-    public ForecastMiss? RoundStarted(int round, long takenNow)
+    // The local player's Play phase started in `round`: the pending check (from an earlier round) is evaluated
+    // with actual = HP taken since the freeze. Returns the miss, if it was one. A round number that isn't later
+    // (an extra turn) keeps it pending.
+    public ForecastMiss? PlayStarted(int round, long takenNow)
     {
         if (_frozen is not { } f || round <= f.Round) return null;
         _frozen = null;
@@ -47,9 +74,14 @@ internal sealed class ForecastCheck
     public void CombatEnded() => _frozen = null;
 
     // A miss: less HP lost than the guaranteed minimum, or more than the maximum when no intent was hidden
-    // (a hidden intent may legitimately add damage the forecast could not show).
-    public static bool IsMiss(ForecastResult r, long actual) =>
-        actual < r.MinLoss || (actual > r.MaxLoss && !r.HasHidden);
+    // (a hidden intent may legitimately add damage the forecast could not show). The player can't lose more HP
+    // than they had, so the minimum is capped at the HP at the freeze; a lethal forecast is never "over" (a
+    // revive, or a co-op partner fighting on, lets more HP be lost after the killing blow).
+    public static bool IsMiss(ForecastResult r, long actual)
+    {
+        long min = Math.Min(r.MinLoss, Math.Max(0, r.CurrentHp));
+        return actual < min || (actual > r.MaxLoss && !r.HasHidden && !r.IsLethal);
+    }
 
     public static ForecastMiss? Evaluate(int round, ForecastResult r, ForecastInputs inputs, long actual)
     {

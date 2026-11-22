@@ -265,7 +265,7 @@ internal static class ForecastReader
         return localSlot >= 0 && localSlot < players.Count && InPlayPhase(players[localSlot]);
     }
 
-    private static bool InPlayPhase(Player player)
+    internal static bool InPlayPhase(Player player)
     {
         try
         {

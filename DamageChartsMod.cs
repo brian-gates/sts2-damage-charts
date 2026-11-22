@@ -101,10 +101,9 @@ public static class DamageChartsMod
     private static ForecastLedgerView? _forecastLedger;
     private static ForecastResult? _frozenForecast;  // last planning-phase value, held during the enemy turn
     private static ForecastInputs? _frozenInputs;    // the inputs _frozenForecast was computed from
-    private static bool _fcPlanningLast;             // UpdateForecast saw the planning phase last time it ran
+    private static long _fcPlanningFrame = -1;       // the frame UpdateForecast last computed a planning-phase value
     // Checks each frozen forecast against the HP really lost by the next round, for the run stats file.
     private static readonly ForecastCheck _forecastCheck = new();
-    private static int _checkRound;                  // the round the forecast check last saw
     private static bool _detailVisible;
     private static bool _summaryActive;       // auto end-of-combat summary showing
     private static bool _summaryAvailable;    // post-combat moment (until the map opens): the hotkey toggles the summary
@@ -1176,7 +1175,7 @@ public static class DamageChartsMod
                 {
                     SubscribeNewCreatures(cs); // keep tracking even while hidden
                     CheckBufferSaves();
-                    CheckForecastRound(cs);
+                    ObserveForecastCheck(cs);
                     // Sticky: did this combat reach a real conclusion (all enemies dead, or local player
                     // dead)? If the player abandons the fight instead, this stays false and we suppress the
                     // end-of-combat summary.
@@ -1371,14 +1370,7 @@ public static class DamageChartsMod
             // value instead of letting the shown loss climb as the animation resolves.
             bool planning = ForecastReader.IsPlanningPhase(cs, _players, _localSlot);
             if (planning || _frozenForecast == null) { _frozenForecast = r; _frozenInputs = inputs; }
-            // Planning just ended: the frozen value is this enemy turn's forecast; check it at the next round.
-            // Only seen while the forecast is shown (this method runs only then).
-            if (planning) _fcPlanningLast = true;
-            else if (_fcPlanningLast)
-            {
-                _fcPlanningLast = false;
-                if (_frozenInputs is { } fi) _forecastCheck.Freeze(cs.RoundNumber, _frozenForecast.Value, fi, _tracker.TakenTotal(_localSlot));
-            }
+            if (planning) _fcPlanningFrame = _frame;   // fresh for the forecast check's freeze (ObserveForecastCheck)
             r = _frozenForecast.Value;
             _forecast.UiScaleMul = _uiScale;
             if (_forecastLedger != null) _forecastLedger.UiScaleMul = _uiScale;
@@ -1406,16 +1398,17 @@ public static class DamageChartsMod
         catch (Exception ex) { ErrorLog.Once("forecast", ex); }
     }
 
-    // A new round started: the forecast frozen in the previous one is compared with the HP lost since.
-    private static void CheckForecastRound(CombatState cs)
+    // Every combat tick, shown or not: the forecast check freezes when planning ends (only with a forecast computed
+    // up to the previous tick; else that round is skipped) and evaluates when the local player's next Play phase starts.
+    private static void ObserveForecastCheck(CombatState cs)
     {
         try
         {
-            int round = cs.RoundNumber;
-            if (round == _checkRound) return;
-            _checkRound = round;
-            if (!_forecastCheck.HasPending) return;
-            if (_forecastCheck.RoundStarted(round, _tracker.TakenTotal(_localSlot)) is { } m)
+            bool planning = ForecastReader.IsPlanningPhase(cs, _players, _localSlot);
+            bool localPlay = _localSlot >= 0 && _localSlot < _players.Count && ForecastReader.InPlayPhase(_players[_localSlot]);
+            (ForecastResult, ForecastInputs)? fresh =
+                _frame - _fcPlanningFrame <= 2 && _frozenForecast is { } fr && _frozenInputs is { } fi ? (fr, fi) : null;
+            if (_forecastCheck.Observe(cs.RoundNumber, planning, localPlay, () => _tracker.TakenTotal(_localSlot), fresh) is { } m)
                 GD.Print($"[STS2 Damage] forecast miss round {m.Round}: lost {m.Actual}, forecast {m.Min}-{m.Max}{(m.Hidden ? " (hidden intent)" : "")}");
         }
         catch (Exception ex) { ErrorLog.Once("forecast check", ex); }
@@ -1546,9 +1539,8 @@ public static class DamageChartsMod
         _allEnemiesDeadFrames = 0;
         _frozenForecast = null;
         _frozenInputs = null;
-        _fcPlanningLast = false;
+        _fcPlanningFrame = -1;
         _forecastCheck.BeginFight();
-        _checkRound = 0;
         _localSlot = localSlot;
         _fightMeta = CaptureFightMeta(rs, SafeCombatState());
         _tracker.Reset(_players.Count, labels, localSlot);
