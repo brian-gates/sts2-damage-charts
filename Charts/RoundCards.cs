@@ -102,6 +102,18 @@ internal static class RoundCards
         return new FullFrame(u, pad * u, side * u, gap * u, logX, logW, bar * u);
     }
 
+    // A log column on its own (the compact end-of-combat summary): the scale unit (at most `u`) and bar track width
+    // for a column `width` px wide, by Frame's rules: the text keeps TextMin, the bar track gives way to BarMin
+    // first, then the scale shrinks; slack goes to the bar up to BarMax, then to the text.
+    public static (float U, float BarW) LogColumn(float width, float u)
+    {
+        width = Math.Max(1f, width);
+        float minPerU = RowFixed + BarMin + TextMin;
+        u = Math.Max(0.01f, Math.Min(u, width / minPerU));
+        float bar = BarMin + Math.Clamp(width / u - minPerU, 0f, BarMax - BarMin);
+        return (u, bar * u);
+    }
+
     // Columns inside a card whose content box starts at `left` and is `width` wide (mockup: 30 | 1fr | 90 | 240,
     // gaps 14). `barW` is the track width (FullFrame.BarW); it narrows further only if the text would go below
     // zero. The text gets what is left.
