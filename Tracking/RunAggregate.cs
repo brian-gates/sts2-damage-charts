@@ -28,15 +28,14 @@ internal sealed class RunAggregate
     private Dictionary<string, long>[] _takenBySource = Array.Empty<Dictionary<string, long>>();
     private readonly Dictionary<string, string> _sourceIcon = new();
 
-    private readonly List<int[]> _encDealt = new(); // per encounter: dealt[slot]
-    private readonly List<int[]> _encTaken = new(); // per encounter: taken[slot]
-    private readonly List<long[]> _encHeal = new(); // per encounter: heal[slot]
-    private readonly List<long[]> _encBlock = new();// per encounter: block[slot]
     private readonly List<PlayerSources?[]> _encSources = new(); // per encounter: that fight's by-source breakdown per slot
     private readonly List<FightMeta?> _encMeta = new();          // per encounter: floor / name / elite-boss / rounds
     private readonly List<LogEntry> _log = new();
     private int _encounters;
     private string? _runKey; // identity of the run these fights belong to (its run id); null = not known yet
+    // RunSourceSnapshot, built once per change (Fold / Clear): the recap renders it every frame, and its log
+    // (up to LogCap fat entries) would otherwise be a fresh large-object-heap array each frame.
+    private SourceSnapshot? _snapshot;
 
     public bool HasData() => _encounters > 0;
     public int FightCount => _encounters;
@@ -54,24 +53,6 @@ internal sealed class RunAggregate
         return had;
     }
 
-    // One finished combat's totals for a given player slot, for the in-combat run-history band.
-    public readonly struct EncounterStat
-    {
-        public readonly int Fight;
-        public readonly long Dealt, Taken, Heal, Block;
-        public EncounterStat(int fight, long dealt, long taken, long heal, long block)
-        { Fight = fight; Dealt = dealt; Taken = taken; Heal = heal; Block = block; }
-    }
-
-    public List<EncounterStat> EncounterStats(int slot)
-    {
-        var list = new List<EncounterStat>();
-        if (slot < 0 || slot >= _playerCount) return list;
-        for (int i = 0; i < _encDealt.Count; i++)
-            list.Add(new EncounterStat(i + 1, _encDealt[i][slot], _encTaken[i][slot], _encHeal[i][slot], _encBlock[i][slot]));
-        return list;
-    }
-
     public void Clear()
     {
         _playerCount = 0;
@@ -80,10 +61,7 @@ internal sealed class RunAggregate
         _dealt = _taken = _heal = _block = _absorbed = _buffered = Array.Empty<long>();
         _dealtBySource = _takenBySource = Array.Empty<Dictionary<string, long>>();
         _sourceIcon.Clear();
-        _encDealt.Clear();
-        _encTaken.Clear();
-        _encHeal.Clear();
-        _encBlock.Clear();
+        _snapshot = null;
         _encSources.Clear();
         _encMeta.Clear();
         _log.Clear();
@@ -108,10 +86,7 @@ internal sealed class RunAggregate
         }
 
         _encounters++;
-        var encD = new int[_playerCount];
-        var encT = new int[_playerCount];
-        var encH = new long[_playerCount];
-        var encB = new long[_playerCount];
+        _snapshot = null;
         for (int s = 0; s < _playerCount && s < src.PerPlayer.Length; s++)
         {
             var ps = src.PerPlayer[s];
@@ -124,15 +99,7 @@ internal sealed class RunAggregate
             _buffered[s] += ps.BufferedTotal;
             Merge(_dealtBySource[s], ps.Dealt);
             Merge(_takenBySource[s], ps.Taken);
-            encD[s] = (int)Math.Min(int.MaxValue, ps.DealtTotal);
-            encT[s] = (int)Math.Min(int.MaxValue, ps.TakenTotal);
-            encH[s] = ps.HealTotal;
-            encB[s] = ps.BlockTotal;
         }
-        _encDealt.Add(encD);
-        _encTaken.Add(encT);
-        _encHeal.Add(encH);
-        _encBlock.Add(encB);
         var encSrc = new PlayerSources?[_playerCount];
         for (int s = 0; s < _playerCount && s < src.PerPlayer.Length; s++) encSrc[s] = src.PerPlayer[s];
         _encSources.Add(encSrc);
@@ -186,16 +153,10 @@ internal sealed class RunAggregate
         return true;
     }
 
-    // Tooltip detail for one finished fight (1-based, the recap chart's row.Round); null when out of range.
-    public GroupDetail? FightDetail(int fight)
-    {
-        int i = fight - 1;
-        if (i < 0 || i >= _encSources.Count) return null;
-        return GroupDetails.ForFight(fight, _encMeta[i], _encSources[i], _labels);
-    }
-
+    // The run so far as one snapshot. Cached until the next Fold or Clear; callers only read it.
     public SourceSnapshot RunSourceSnapshot()
     {
+        if (_snapshot != null) return _snapshot;
         var perPlayer = new PlayerSources[_playerCount];
         for (int s = 0; s < _playerCount; s++)
         {
@@ -212,24 +173,8 @@ internal sealed class RunAggregate
             ps.TakenTotal = tt;
             perPlayer[s] = ps;
         }
-        return new SourceSnapshot(perPlayer, (string[])_labels.Clone(), _playerCount, _localSlot, _log.ToArray());
-    }
-
-    // Per-encounter chart: one row per combat, with the combat's dealt/taken totals. The "Round" field
-    // carries the 1-based encounter index; one dealt segment per slot so the bar renders at full height.
-    public ChartSnapshot RunChartSnapshot()
-    {
-        var rows = new List<ChartRow>(_encDealt.Count);
-        for (int i = 0; i < _encDealt.Count; i++)
-        {
-            var dealt = _encDealt[i];
-            var taken = _encTaken[i];
-            var segs = new List<DealtSeg>[_playerCount];
-            for (int s = 0; s < _playerCount; s++)
-                segs[s] = new List<DealtSeg> { new DealtSeg(dealt[s], null, "") };
-            rows.Add(new ChartRow(i + 1, dealt, taken, segs));
-        }
-        return new ChartSnapshot(rows, (string[])_labels.Clone(), _playerCount);
+        _snapshot = new SourceSnapshot(perPlayer, (string[])_labels.Clone(), _playerCount, _localSlot, _log.ToArray());
+        return _snapshot;
     }
 
     private List<SourceEntry> SortedList(Dictionary<string, long> map, out long total)

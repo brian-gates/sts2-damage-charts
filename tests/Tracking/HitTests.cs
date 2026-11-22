@@ -160,6 +160,28 @@ public class HitTests
     }
 
     [Fact]
+    public void Snapshots_AreReusedUntilSomethingChanges()
+    {
+        var t = Tracker();
+        t.AddHit(Dealt(1));
+        var a = t.SourceSnapshot();
+        var c = t.Snapshot();
+        Assert.Same(a, t.SourceSnapshot());          // per-frame reads share one snapshot
+        Assert.Same(c, t.Snapshot());
+        t.AddDealt(1, 0, 5, "Strike");
+        Assert.NotSame(a, t.SourceSnapshot());
+        Assert.NotSame(c, t.Snapshot());
+        var b = t.SourceSnapshot();
+        t.AddHealed(0, 3);
+        Assert.NotSame(b, t.SourceSnapshot());
+        Assert.Equal(3, t.SourceSnapshot().PerPlayer[0].HealTotal);
+        var d = t.SourceSnapshot();
+        t.Reset(1, new[] { "Silent" }, 0);
+        Assert.NotSame(d, t.SourceSnapshot());
+        Assert.Empty(t.SourceSnapshot().Log);
+    }
+
+    [Fact]
     public void Reset_ClearsHits()
     {
         var t = Tracker();

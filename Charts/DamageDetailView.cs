@@ -1451,8 +1451,6 @@ internal sealed class DamageDetailView
 
     private static string Truncate(string s, int n) => s.Length <= n ? s : s[..(n - 1)] + "…";
 
-    // In the full-screen takeover, force a content color fully opaque (only the backdrop stays dim).
-    private Color Opaque(Color c) => _opaque ? new Color(c.R, c.G, c.B, 1f) : c;
 
     // Which game Kreon a label gets under native_visuals (Body = UiTheme's font, unchanged when off).
     private enum FontRole { Body, Bold, Numeric }

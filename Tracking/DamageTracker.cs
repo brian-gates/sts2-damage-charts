@@ -149,6 +149,13 @@ internal sealed class DamageTracker
     private int _playerCount = 1;
     private int _localSlot;
     private string[] _labels = { "You" };
+    // Snapshots are rebuilt only when something changed (every mutation bumps _version): views read them every
+    // frame, and rebuilding copies the log and hit list each time.
+    private int _version;
+    private SourceSnapshot? _sourceSnap;
+    private int _sourceSnapVersion = -1;
+    private ChartSnapshot? _chartSnap;
+    private int _chartSnapVersion = -1;
 
     public void Reset(int playerCount, string[] labels, int localSlot)
     {
@@ -173,6 +180,7 @@ internal sealed class DamageTracker
             _playerCount = Math.Max(1, playerCount);
             _labels = labels;
             _localSlot = Math.Max(0, localSlot);
+            _version++;
         }
     }
 
@@ -189,6 +197,7 @@ internal sealed class DamageTracker
             _log.Add(LogEntry.Of(h, PlayerLabel, _playerCount > 1));
             if (_log.Count > LogCap) _log.RemoveRange(0, _log.Count - LogCap);
             if (_fightHits.Count < HitCap) _fightHits.Add(h); else _hitsTruncated = true;
+            _version++;
         }
     }
 
@@ -231,6 +240,7 @@ internal sealed class DamageTracker
             map.TryGetValue(name, out long cur);
             map[name] = cur + 1;
             if (icon != null && !_sourceIcon.ContainsKey(name)) _sourceIcon[name] = icon;
+            _version++;
         }
     }
 
@@ -249,6 +259,7 @@ internal sealed class DamageTracker
         {
             byPlayer.TryGetValue(slot, out long cur);
             byPlayer[slot] = cur + amount;
+            _version++;
         }
     }
 
@@ -258,6 +269,7 @@ internal sealed class DamageTracker
         if (amount <= 0 || slot < 0) return;
         lock (_lock)
         {
+            _version++;
             var key = (round, slot);
             if (!_rounds.TryGetValue(key, out var vals)) { vals = new int[2]; _rounds[key] = vals; }
             vals[field] += amount;
@@ -282,9 +294,19 @@ internal sealed class DamageTracker
         }
     }
 
+    // Per-round chart data; cached until the next change. Callers only read it.
     public ChartSnapshot Snapshot()
     {
         lock (_lock)
+        {
+            if (_chartSnap != null && _chartSnapVersion == _version) return _chartSnap;
+            _chartSnapVersion = _version;
+            return _chartSnap = BuildChartLocked();
+        }
+    }
+
+    private ChartSnapshot BuildChartLocked()
+    {
         {
             var rows = new List<ChartRow>();
             if (_rounds.Count == 0) return new ChartSnapshot(rows, (string[])_labels.Clone(), _playerCount);
@@ -307,9 +329,19 @@ internal sealed class DamageTracker
         }
     }
 
+    // By-source totals, the log and the fight's hits; cached until the next change. Callers only read it.
     public SourceSnapshot SourceSnapshot()
     {
         lock (_lock)
+        {
+            if (_sourceSnap != null && _sourceSnapVersion == _version) return _sourceSnap;
+            _sourceSnapVersion = _version;
+            return _sourceSnap = BuildSourceLocked();
+        }
+    }
+
+    private SourceSnapshot BuildSourceLocked()
+    {
         {
             var perPlayer = new PlayerSources[_playerCount];
             for (int s = 0; s < _playerCount; s++)

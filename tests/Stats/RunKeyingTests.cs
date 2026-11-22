@@ -55,7 +55,25 @@ public class RunKeyingTests
         run.Fold(s1, c1);
         Assert.Equal(1, run.FightCount);
         Assert.Equal(2, run.RunSourceSnapshot().PlayerCount);
-        Assert.Single(run.EncounterStats(1));
+        Assert.True(run.TryGetFight(1, out _, out var sources));
+        Assert.Equal(2, sources.Length);
+    }
+
+    [Fact]
+    public void RunSnapshotIsReusedUntilTheNextFoldOrClear()
+    {
+        var run = new RunAggregate();
+        var (s, c) = Combat(1, 10);
+        run.Fold(s, c);
+        var a = run.RunSourceSnapshot();
+        Assert.Same(a, run.RunSourceSnapshot());   // the recap reads it every frame
+        var (s2, c2) = Combat(1, 4);
+        run.Fold(s2, c2);
+        var b = run.RunSourceSnapshot();
+        Assert.NotSame(a, b);
+        Assert.Equal(14, b.PerPlayer[0].DealtTotal);
+        run.Clear();
+        Assert.NotSame(b, run.RunSourceSnapshot());
     }
 
     [Fact]
