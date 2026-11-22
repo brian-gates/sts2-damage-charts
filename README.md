@@ -163,6 +163,8 @@ After the first publish, subscribe in-client and verify the overlay loads in a r
 - `bars_style`: `"compact"` (default), the small chart above the forecast, or `"full"` for the larger one.
 - `bars_anchor`: `"forecast"` (default) stacks the chart above the forecast; dragging it switches to
   `"free"` and remembers the spot.
+- `bars_scale`: a number (default `1.0`, range `0.75` to `2.5`) that sizes the chart on top of `ui_scale`.
+  Dragging the grip in the chart's bottom-right corner sets it and remembers it.
 - `ui_scale`: a number (default `1.0`) that scales every panel (text and spacing) on top of the automatic
   resolution scaling. Bump it (e.g. `1.25`) if text reads too small.
 - `native_visuals`: **default `true`.** Set `false` for the original flat look.

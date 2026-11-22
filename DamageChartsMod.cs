@@ -50,6 +50,7 @@ public static class DamageChartsMod
     private static bool _showBars = true;
     private static bool _barsCompact = true;
     private static bool _barsDocked = true;
+    private static float _barsScale = ChartScale.Default;   // config bars_scale: the chart's own size, set by its corner grip
     private static bool _showForecast = true;
     private static float? _fcPosXFrac;
     private static float? _fcPosYFrac;
@@ -274,6 +275,7 @@ public static class DamageChartsMod
             if (root.TryGetProperty("show_bars", out var sb) && sb.ValueKind == JsonValueKind.False) _showBars = false;
             _barsCompact = !(root.TryGetProperty("bars_style", out var bst) && bst.ValueKind == JsonValueKind.String && bst.GetString() == "full");
             _barsDocked = !(root.TryGetProperty("bars_anchor", out var ban) && ban.ValueKind == JsonValueKind.String && ban.GetString() == "free");
+            _barsScale = ChartScale.Read(root);
             if (root.TryGetProperty("forecast", out var fc) && fc.ValueKind == JsonValueKind.False) _showForecast = false;
             if (root.TryGetProperty("forecast_pos_x_frac", out var fpx) && fpx.TryGetSingle(out var ffx)) _fcPosXFrac = ffx;
             if (root.TryGetProperty("forecast_pos_y_frac", out var fpy) && fpy.TryGetSingle(out var ffy)) _fcPosYFrac = ffy;
@@ -298,7 +300,7 @@ public static class DamageChartsMod
         return true;
     }
 
-    // Persist position (and current settings) when the chart is dragged to a new spot.
+    // Persist position, size (and current settings) when the chart is dragged to a new spot or resized.
     private static void SaveConfig()
     {
         try
@@ -334,9 +336,10 @@ public static class DamageChartsMod
             }
             catch { /* unreadable file: rewrite from our keys */ }
             foreach (var kv in dict) merged[kv.Key] = JsonSerializer.SerializeToNode(kv.Value);
+            ChartScale.Write(merged, _bars.ScaleMul);
             File.WriteAllText(path, merged.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
             RememberConfigWriteTime(path);
-            _posXFrac = pos.X; _posYFrac = pos.Y;
+            _posXFrac = pos.X; _posYFrac = pos.Y; _barsScale = _bars.ScaleMul;
         }
         catch (Exception ex) { GD.PrintErr($"[STS2 Damage] save config failed: {ex.Message}"); }
     }
@@ -1664,7 +1667,7 @@ public static class DamageChartsMod
             Vector2? savedPos = (_posXFrac.HasValue && _posYFrac.HasValue) ? new Vector2(_posXFrac.Value, _posYFrac.Value) : null;
             // A view whose content the game freed (mounted beneath its hover tips) still owns its layer.
             if (_bars != null && !_bars.IsValid()) { _bars.Dispose(); _bars = null; }
-            if (_bars == null) _bars = new DamageChartView(root, savedPos);
+            if (_bars == null) _bars = new DamageChartView(root, savedPos) { ScaleMul = _barsScale };
             Vector2? fcPos = (_fcPosXFrac.HasValue && _fcPosYFrac.HasValue) ? new Vector2(_fcPosXFrac.Value, _fcPosYFrac.Value) : (Vector2?)null;
             if (_forecast != null && !_forecast.IsValid()) { _forecast.Dispose(); _forecast = null; }
             if (_forecast == null) _forecast = new DamageForecastView(root, fcPos);
