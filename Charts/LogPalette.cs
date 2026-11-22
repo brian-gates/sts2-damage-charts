@@ -3,7 +3,8 @@ using System;
 namespace STS2_DamageCharts.Charts;
 
 // Pure (unit-tested): the combat log's amount text colors, shared by the compact summary and the full view, chosen
-// for at least 4.5:1 contrast (WCAG AA) against the panels they sit on. Hex "rrggbb"; the views build Godot
+// for at least 4.5:1 contrast (WCAG AA) against the plain panels they sit on (the native hover-tip art is not
+// modelled; the margins here are >= 6:1). Hex "rrggbb"; the views build Godot
 // colors from them once. Bars keep their own fills (they carry no text).
 internal static class LogPalette
 {

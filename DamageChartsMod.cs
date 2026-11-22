@@ -1963,13 +1963,17 @@ public static class DamageChartsMod
     {
         try
         {
-            int enemies = 0, gone = 0;
-            foreach (var c in _subs.Keys)
+            // Escapes listed by the combat state now, too: one can end the fight within its frame. The state is
+            // still there after a natural end (until the room exits) and null after a quit's Reset.
+            List<Creature>? fledAtEnd = null;
+            try
             {
-                if (c == null || !c.IsMonster || c.IsPet) continue;
-                enemies++;
-                if (c.IsDead || _escaped.Contains(c)) gone++;
+                if (InstanceGet(SafeCombatState(), "EscapedCreatures") is System.Collections.IEnumerable fled)
+                    foreach (var f in fled) if (f is Creature fc) (fledAtEnd ??= new List<Creature>()).Add(fc);
             }
+            catch { }
+            var (enemies, gone) = CombatOutcome.EnemiesGone(
+                _subs.Keys.Where(c => c != null && c.IsMonster && !c.IsPet), c => c.IsDead, _escaped, fledAtEnd);
             bool localDead = _localSlot >= 0 && _localSlot < _players.Count && _players[_localSlot]?.Creature?.IsDead == true;
             bool sampled = _combatResolved;
             _combatResolved = CombatOutcome.Resolved(sampled, localDead, enemies, gone);
