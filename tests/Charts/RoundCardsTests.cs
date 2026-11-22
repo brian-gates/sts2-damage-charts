@@ -169,7 +169,7 @@ public class RoundCardsTests
     {
         var (u, barW) = RoundCards.LogColumn(442f, 0.7f);
         Assert.Equal(0.7f, u);                               // the requested scale fits
-        Assert.Equal((80f + (442f / 0.7f - 478f)) * 0.7f, barW, 2);   // the bar takes the slack first (157 of 160)
+        Assert.Equal((80f + (442f / 0.7f - 478f)) * 0.7f, barW, 2);   // the bar takes the slack first (153.4 of 160)
         var (u2, bar2) = RoundCards.LogColumn(300f, 0.7f);   // narrower: the scale shrinks, bar at its minimum
         Assert.True(u2 < 0.7f);
         Assert.Equal(80f * u2, bar2, 2);
