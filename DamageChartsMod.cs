@@ -838,6 +838,11 @@ public static class DamageChartsMod
     private static bool _shareRunIdNew;          // a new screen: reset the button before showing it
     private static bool _shareIdMissLogged;
     private static Type? _clickableType;
+    // Share fight under the end-of-combat summary, for the fight just written (RunStatsFile.LastWritten).
+    private static ShareButton? _shareFight;
+    private static string? _shareFightRun;      // the fight it was last reset for
+    private static int _shareFightIndex;
+    private static bool _summaryOnScreen;       // the summary was drawn this tick
 
     private static void TryApplyGameOverHook()
     {
@@ -885,7 +890,11 @@ public static class DamageChartsMod
 
     private static bool ShareCoversMouse()
     {
-        try { return _share != null && _share.IsValid() && _share.Covers(RootMouse()); }
+        try
+        {
+            return (_share != null && _share.IsValid() && _share.Covers(RootMouse()))
+                || (_shareFight != null && _shareFight.IsValid() && _shareFight.Covers(RootMouse()));
+        }
         catch { return false; }
     }
 
@@ -962,9 +971,42 @@ public static class DamageChartsMod
                 _shareRunIdNew = true;
             }
             if (_shareRunIdNew) { _share.Reset(_shareRunId!, screen); _shareRunIdNew = false; }
+            // Share fight beside it for the run's last fight, once that fight is in the run stats file (the
+            // combat may end after the screen appears). A last fight that wasn't written offers none.
+            var last = RunStatsFile.LastWritten;
+            if (last is { } lw && lw.RunId == _shareRunId) _share.SetFight(lw.Index, lw.Floor);
+            else _share.SetFight(null, null);
             _share.Update(Input.IsMouseButtonPressed(MouseButton.Left));
         }
         catch (Exception ex) { try { _share?.Hide(); } catch { } ErrorLog.Once("share", ex); }
+    }
+
+    // Each frame: Share fight under the end-of-combat summary while the summary is drawn and the fight it
+    // shows was written to the run stats file. A new fight resets it. Never counts toward the tick's error limit.
+    private static void UpdateShareFight()
+    {
+        try
+        {
+            var last = RunStatsFile.LastWritten;
+            bool shown = _summaryOnScreen && last != null && _detail != null && !IsMenuOpen();
+            if (!shown) { _shareFight?.Hide(); return; }
+            var lw = last!.Value;
+            if (_shareFight == null || !_shareFight.IsValid())
+            {
+                _shareFight?.Dispose();
+                _shareFight = new ShareButton(((SceneTree)Engine.GetMainLoop()).Root, ShareSpot.Summary);
+                _shareFightRun = null;
+            }
+            if (lw.RunId != _shareFightRun || lw.Index != _shareFightIndex)
+            {
+                _shareFight.Reset(lw.RunId, null);
+                _shareFightRun = lw.RunId; _shareFightIndex = lw.Index;
+            }
+            _shareFight.SetFight(lw.Index, lw.Floor);
+            var f = _detail!.SummaryFrame;
+            _shareFight.Update(Input.IsMouseButtonPressed(MouseButton.Left), new Box(f.Position.X, f.Position.Y, f.Size.X, f.Size.Y));
+        }
+        catch (Exception ex) { try { _shareFight?.Hide(); } catch { } ErrorLog.Once("share fight", ex); }
     }
 
     // ===== Per-frame tick =====
@@ -977,6 +1019,7 @@ public static class DamageChartsMod
         {
             _frame++;
             _tipShown = false;
+            _summaryOnScreen = false;
             if (_frame % 30 == 0) ReloadConfigIfChangedOnDisk();
             if (_frame > 120 && _frame % 30 == 0)
             {
@@ -1110,12 +1153,13 @@ public static class DamageChartsMod
                     _detail.Render(_tracker.SourceSnapshot(), _tracker.Snapshot(), _playerColors);
                     _detail.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left));
                     if (_detail.TakeCloseRequest()) { _summaryActive = false; _detail.SetVisible(false); } // ✕ clicked
-                    else ShowDetailChartTip(static (_, _) => null);   // summary has no chart: just the ✕ tip
+                    else { ShowDetailChartTip(static (_, _) => null); _summaryOnScreen = true; }   // summary has no chart: just the ✕ tip
                 }
             }
 
             if (!_tipShown) _tooltip?.Hide();
             UpdateShare();
+            UpdateShareFight();
             _errCount = 0;
         }
         catch (Exception ex)
@@ -1344,6 +1388,7 @@ public static class DamageChartsMod
 
         _summaryActive = false; // a new fight clears any lingering end-of-combat summary
         _summaryAvailable = false;
+        RunStatsFile.LastWritten = null;   // Share fight never offers an earlier fight while this one is unwritten
         _recapVisible = false;   // the recap is an out-of-combat view
         _combatResolved = false; // until enemies/player actually die, this combat hasn't ended naturally
         _allEnemiesDeadFrames = 0;
@@ -1368,6 +1413,8 @@ public static class DamageChartsMod
         _tooltip?.Hide();
         _forecast?.Hide(); _forecastLedger?.Hide();
         // Fold this combat into the run-wide aggregate before the next combat's Reset() wipes the tracker.
+        // Share fight offers only this combat's fight, and only once it is written (TryWriteRunStats).
+        RunStatsFile.LastWritten = null;
         if (_tracker.HasData())
         {
             _run.Fold(_tracker.SourceSnapshot(), _tracker.Snapshot(), _fightMeta);
@@ -1510,7 +1557,11 @@ public static class DamageChartsMod
             File.Move(tmp, path, overwrite: true);
             GD.Print($"[STS2 Damage] run stats: {outcome} floor {floor} -> {path}");
         }
-        catch (Exception ex) { GD.PrintErr($"[STS2 Damage] run stats write failed: {ex.Message}"); }
+        catch (Exception ex)
+        {
+            RunStatsFile.LastWritten = null;   // AddFight's fight never reached the file: nothing to share
+            GD.PrintErr($"[STS2 Damage] run stats write failed: {ex.Message}");
+        }
     }
 
     private static bool _layersDumped;
@@ -2037,6 +2088,7 @@ public static class DamageChartsMod
         try { _tooltip?.Dispose(); } catch { }
         try { _forecast?.Dispose(); } catch { }
         try { _share?.Dispose(); } catch { }
-        _bars = null; _detail = null; _tooltip = null; _forecast = null; _share = null; _gameOverScreen = null;
+        try { _shareFight?.Dispose(); } catch { }
+        _bars = null; _detail = null; _tooltip = null; _forecast = null; _share = null; _shareFight = null; _gameOverScreen = null;
     }
 }

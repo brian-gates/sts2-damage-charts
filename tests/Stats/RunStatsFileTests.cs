@@ -500,4 +500,46 @@ public class RunStatsFileTests
         Assert.Null(fights[1]!["log"]);
         Assert.Null(fights[1]!["log_dropped"]);
     }
+
+    [Fact]
+    public void LastWritten_IsTheFightJustAdded()
+    {
+        RunStatsFile.LastWritten = null;
+        string first = RunStatsFile.AddFight(new List<JsonObject>(), Run, A, "1.6.0", 100, Meta(3), TwoPlayers(), new[] { A, B }, null, false, 1, out _)!;
+        Assert.Equal((Run, 1, (int?)3), RunStatsFile.LastWritten);
+        var existing = RunStatsFile.ParseFights(first, Run)!;
+        string second = RunStatsFile.AddFight(existing, Run, A, "1.6.0", 200, Meta(5), TwoPlayers(), new[] { A, B }, null, false, 1, out _)!;
+        Assert.Equal((Run, 2, (int?)5), RunStatsFile.LastWritten);
+
+        // A fight replayed after a reload keeps the stored fight's index.
+        RunStatsFile.AddFight(RunStatsFile.ParseFights(second, Run)!, Run, A, "1.6.0", 300, Meta(3, rounds: 9), TwoPlayers(), new[] { A, B }, null, false, 1, out var o);
+        Assert.Equal(RunStatsFile.Outcome.Replaced, o);
+        Assert.Equal((Run, 1, (int?)3), RunStatsFile.LastWritten);
+
+        // An unknown floor is null.
+        RunStatsFile.AddFight(new List<JsonObject>(), Run, A, "1.6.0", 100, new FightMeta(), TwoPlayers(), new[] { A, B }, null, false, 1, out _);
+        Assert.Equal((Run, 1, (int?)null), RunStatsFile.LastWritten);
+    }
+
+    [Fact]
+    public void LastWritten_IsTheIndexInTheFileWhenStoredIndexesAreRenumbered()
+    {
+        // Stored indexes out of order: Serialize renumbers by position, and LastWritten follows the file.
+        var a = Fight(3); a["index"] = 5;
+        var b = Fight(4); b["index"] = 2;
+        string text = RunStatsFile.AddFight(new List<JsonObject> { a, b }, Run, A, "1.6.0", 100, Meta(8), TwoPlayers(), new[] { A, B }, null, false, 1, out _)!;
+        var written = JsonNode.Parse(text)!["fights"]!.AsArray();
+        Assert.Equal(3, (int)written[2]!["index"]!);
+        Assert.Equal((Run, 3, (int?)8), RunStatsFile.LastWritten);
+    }
+
+    [Fact]
+    public void LastWritten_IsClearedWhenNothingIsWritten()
+    {
+        var fights = new List<JsonObject>();
+        for (int i = 1; i <= RunStatsFile.MaxFights; i++) RunStatsFile.Upsert(fights, Fight(i), 1);
+        RunStatsFile.LastWritten = ("ffffffffffffffff", 1, 1);
+        Assert.Null(RunStatsFile.AddFight(fights, Run, A, "1.6.0", 1, Meta(999), TwoPlayers(), new[] { A, B }, null, false, 1, out _));
+        Assert.Null(RunStatsFile.LastWritten);
+    }
 }

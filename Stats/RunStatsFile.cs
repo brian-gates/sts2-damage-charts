@@ -269,8 +269,13 @@ internal static class RunStatsFile
     // Add `fight` to `fights`. With a known floor, the `floorOrdinal`-th fight on that floor (1-based, counted
     // this session) already in the file is the same fight played again after a reload: it is replaced and
     // keeps its index. Otherwise the fight is appended with the next index, unless the file is full.
-    public static Outcome Upsert(List<JsonObject> fights, JsonObject fight, int floorOrdinal)
+    public static Outcome Upsert(List<JsonObject> fights, JsonObject fight, int floorOrdinal) =>
+        Upsert(fights, fight, floorOrdinal, out _);
+
+    // `at`: where the fight went in `fights` (-1 when the file is full).
+    private static Outcome Upsert(List<JsonObject> fights, JsonObject fight, int floorOrdinal, out int at)
     {
+        at = -1;
         int? floor = IntOf(fight["floor"]);
         if (floor is int f && floorOrdinal > 0)
         {
@@ -281,6 +286,7 @@ internal static class RunStatsFile
                 if (++seen != floorOrdinal) continue;
                 var replaced = WithIndex(fight, IntOf(fights[i]["index"]) ?? i + 1);
                 fights[i] = replaced;
+                at = i;
                 return Outcome.Replaced;
             }
         }
@@ -289,6 +295,7 @@ internal static class RunStatsFile
         foreach (var e in fights) next = Math.Max(next, IntOf(e["index"]) ?? 0);
         next = Math.Max(next, fights.Count) + 1;
         fights.Add(WithIndex(fight, next));
+        at = fights.Count - 1;
         return Outcome.Appended;
     }
 
@@ -300,17 +307,26 @@ internal static class RunStatsFile
         return o;
     }
 
-    public static string Serialize(string runId, string recordedBy, string modVersion, long updated, List<JsonObject> fights)
+    // "index" must start at 1 and strictly increase: Serialize keeps the stored numbers when they do, else
+    // renumbers by position. The index fight `k` gets in the file.
+    private static bool IndexesOrdered(List<JsonObject> fights)
     {
-        // "index" must start at 1 and strictly increase: keep the stored numbers when they do, else renumber.
-        bool ordered = true;
         int last = 0;
         foreach (var f in fights)
         {
             int? i = IntOf(f["index"]);
-            if (i is not int n || n <= last) { ordered = false; break; }
+            if (i is not int n || n <= last) return false;
             last = n;
         }
+        return true;
+    }
+
+    private static int WrittenIndex(List<JsonObject> fights, int k) =>
+        IndexesOrdered(fights) && IntOf(fights[k]["index"]) is int i ? i : k + 1;
+
+    public static string Serialize(string runId, string recordedBy, string modVersion, long updated, List<JsonObject> fights)
+    {
+        bool ordered = IndexesOrdered(fights);
         var arr = new JsonArray();
         for (int k = 0; k < fights.Count; k++)
             arr.Add(ordered ? fights[k].DeepClone() : WithIndex(fights[k], k + 1));
@@ -331,18 +347,28 @@ internal static class RunStatsFile
     // fight without source lists would push it past the size cap). The new fight shrinks as needed to fit:
     // first with its log and all sources, then without the log (marked "log_dropped") and with fewer sources.
     // Earlier fights are never rewritten. `existing` is left unchanged.
+    //
+    // LastWritten is the fight the last AddFight call produced (its run, its index in the file and its floor),
+    // or null when that call produced none. A replayed fight keeps the stored fight's index. Game thread only.
+    public static (string RunId, int Index, int? Floor)? LastWritten { get; set; }
+
     public static string? AddFight(List<JsonObject> existing, string runId, string recordedBy, string modVersion,
         long updated, FightMeta? meta, IReadOnlyList<PlayerSources?> perPlayer, IReadOnlyList<string?> steamIds,
         IReadOnlyList<Hit>? hits, bool hitsTruncated, int floorOrdinal, out Outcome outcome)
     {
+        LastWritten = null;
         outcome = Outcome.Full;
         foreach (var (maxSources, withLog) in new[] { (MaxSources, true), (MaxSources, false), (10, false), (0, false) })
         {
             var fights = new List<JsonObject>(existing);
-            outcome = Upsert(fights, BuildFight(meta, perPlayer, steamIds, hits, hitsTruncated, maxSources, withLog), floorOrdinal);
+            outcome = Upsert(fights, BuildFight(meta, perPlayer, steamIds, hits, hitsTruncated, maxSources, withLog), floorOrdinal, out int at);
             if (outcome == Outcome.Full) return null;
             string text = Serialize(runId, recordedBy, modVersion, updated, fights);
-            if (Encoding.UTF8.GetByteCount(text) <= MaxBytes) return text;
+            if (Encoding.UTF8.GetByteCount(text) <= MaxBytes)
+            {
+                LastWritten = (runId, WrittenIndex(fights, at), IntOf(fights[at]["floor"]));
+                return text;
+            }
         }
         outcome = Outcome.TooLarge;
         return null;

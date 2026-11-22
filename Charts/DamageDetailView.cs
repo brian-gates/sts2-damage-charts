@@ -115,6 +115,9 @@ internal sealed class DamageDetailView
 
     // When true, render as an end-of-combat summary (compact, click-through over rewards).
     public bool SummaryMode;
+    // The summary panel's outer frame (art included) in viewport pixels, as of the last summary render; empty
+    // otherwise. Share fight sits under it.
+    public Rect2 SummaryFrame { get; private set; }
     // When true, the full-screen takeover is the run recap: adds a Dealt/Taken/Healed/Block totals band
     // and relabels the chart axis per-fight instead of per-round. Only meaningful when !SummaryMode.
     public bool RecapMode;
@@ -451,6 +454,7 @@ internal sealed class DamageDetailView
             _bg.Visible = !full;
             if (!full) { _bg.SetPosition(Vector2.Zero); _bg.SetSize(new Vector2(_w, _h)); }
             _bgShadow.Visible = false;
+            SummaryFrame = full ? new Rect2() : new Rect2(_container.Position, new Vector2(_w, _h));
             if (!full && EnsureNativePanel())
             {
                 // The hover-tip frame's art sits in its outer margins (content inset L22 T16 R45 B28), so
@@ -458,6 +462,7 @@ internal sealed class DamageDetailView
                 var r = new Rect2(-12f, -8f, _w + 47f, _h + 26f);
                 _bg.SetPosition(r.Position); _bg.SetSize(r.Size);
                 _bgShadow.Visible = true; _bgShadow.SetPosition(r.Position); _bgShadow.SetSize(r.Size);
+                SummaryFrame = new Rect2(_container.Position + r.Position, r.Size);
             }
             _barLayer.SetSize(new Vector2(_w, _h));
             // Chart hover geometry is re-recorded by RenderRoundChart; nothing to hover until it draws.

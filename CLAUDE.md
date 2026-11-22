@@ -104,6 +104,12 @@ it reads Spire Sync's status file (`spire-sync-status.json` in the user data dir
 `spiresync://share/<run_id>` + copies `<server>/runs/<run_id>`, then re-reads the status file once a second
 and follows its `share` entry for that run (`ShareAction.Follow`: waiting, shared, failed, 6 min timeout,
 older app), or explains (app not running / signed out). No network calls of its own.
+**Share fight** is the same class in a second mode (`ShareSpot.Summary`, under the end-of-combat summary via
+`DamageDetailView.SummaryFrame`) and a second button beside Share run on the game-over screen. It shares
+`RunStatsFile.LastWritten` (the fight the last `AddFight` produced; cleared at combat start/end and on a failed
+write), opens `spiresync://share/<run_id>?fight=<index>&floor=<floor>` (app needs `capabilities: ["share_fight"]`),
+and copies `<server>/runs/<run_id>/fights/<index>` only when `ShareAction.FollowFight` sees the app confirm it
+(polled about once a second, also while hidden, up to 5 minutes).
 
 **Shared helpers:**
 - `UiTheme` — palette matching the game's `StsColors`, font/panel-style capture from the live tree,

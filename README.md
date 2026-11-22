@@ -29,6 +29,11 @@ A standalone damage analytics and incoming-damage forecast mod for [Slay the Spi
   running and signed in; otherwise the button says what to do (open Spire Sync, or sign in to it). The
   mod itself makes no network calls: it reads the status file Spire Sync keeps in the game's user data
   folder and hands the run to the app.
+  **Share fight** shares a single fight: each fight has its own page on Spire Sync with its hit-by-hit
+  log and a link preview. The button sits under the end-of-combat summary, and on the victory and death
+  screens next to Share for the run's last fight. It copies the fight's link as soon as Spire Sync
+  confirms the fight has reached the site (needs a Spire Sync version that shares fights; an older one
+  is asked to update).
 - **Game-native look**: uses the game's own fonts, icons, hover-tip frames, scrollbars and shaders
   (loaded from your install, never bundled). Optional **big-moment effects** reuse the game's own
   damage-number and flash VFX.

@@ -112,6 +112,62 @@ internal static class ShareLayout
         return best;
     }
 
+    // ----- Share fight -----
+
+    public const float StackGap = 12f;   // between Share run and Share fight
+
+    // Share fight on the game-over screen, the same size as Share run (`first`) and beside it: under it, above
+    // it, right of it, then left of it. The first that fits the viewport and touches neither Share run, the
+    // game's row nor the content wins; else the clamped one that overlaps least. Share run never moves for it.
+    public static Box PlaceSecond(Box first, Box row, Box obstacleA, Box obstacleB, float vpW, float vpH, float scale)
+    {
+        if (!(scale > 0f) || !float.IsFinite(scale)) scale = 1f;
+        float gap = StackGap * scale, m = Margin * scale, w = first.W, h = first.H;
+        Box best = default;
+        float bestCost = float.MaxValue;
+        for (int i = 0; i < 4; i++)
+        {
+            var b = i switch
+            {
+                0 => new Box(first.X, first.Bottom + gap, w, h),
+                1 => new Box(first.X, first.Y - gap - h, w, h),
+                2 => new Box(first.Right + gap, first.Y, w, h),
+                _ => new Box(first.X - gap - w, first.Y, w, h),
+            };
+            if (Fits(b, row, obstacleA, obstacleB, vpW, vpH, m) && !b.Intersects(first)) return b;
+            b = Clamp(b, vpW, vpH, m);
+            float cost = RowWeight * (Overlap(b, row) + Overlap(b, first)) + Overlap(b, obstacleA) + Overlap(b, obstacleB);
+            if (cost < bestCost) { best = b; bestCost = cost; }
+        }
+        return best;
+    }
+
+    // A w x h box by `anchor`: below it (left edges aligned), right of it (bottom edges aligned), then above it
+    // (left edges aligned). The first that fits the viewport and covers neither `avoid` nor the anchor wins;
+    // else the clamped one that overlaps them least. Share fight under the end-of-combat summary (anchor and
+    // avoid both the summary), and its message by that button (avoid: the summary and the button).
+    public static Box PlaceNear(Box anchor, Box avoid, float w, float h, float vpW, float vpH, float scale)
+    {
+        if (!(scale > 0f) || !float.IsFinite(scale)) scale = 1f;
+        float gap = 10f * scale, m = Margin * scale;
+        Box best = default;
+        float bestCost = float.MaxValue;
+        for (int i = 0; i < 3; i++)
+        {
+            var b = i switch
+            {
+                0 => new Box(anchor.X, anchor.Bottom + gap, w, h),
+                1 => new Box(anchor.Right + gap, anchor.Bottom - h, w, h),
+                _ => new Box(anchor.X, anchor.Y - gap - h, w, h),
+            };
+            if (Fits(b, default, avoid, anchor, vpW, vpH, m)) return b;
+            b = Clamp(b, vpW, vpH, m);
+            float cost = Overlap(b, avoid) + Overlap(b, anchor);
+            if (cost < bestCost) { best = b; bestCost = cost; }
+        }
+        return best;
+    }
+
     public static float Overlap(Box a, Box b)
     {
         if (!a.Intersects(b)) return 0f;
