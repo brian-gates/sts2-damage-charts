@@ -397,13 +397,63 @@ public class RunStatsFileTests
         Assert.False((bool)m["hidden"]!);
         Assert.Equal(4L, (long)m["block"]!);
         Assert.Equal(1L, (long)m["buffer"]!);
-        Assert.Equal(1, (int)m["intangible"]!);   // the server reads it as an amount
+        Assert.True((bool)m["intangible"]!);
         var it = m["items"]![1]!;
         Assert.Equal("attack", (string)it["kind"]!);
         Assert.Equal("Cultist 1", (string)it["label"]!);
         Assert.Equal(2L, (long)it["hits"]!);
         Assert.Equal(5L, (long)it["per_hit"]!);
         Assert.True((bool)it["conditional"]!);
+    }
+
+    // Pins the server's strict schema (sts2-saves src/damage.ts): value kinds and ranges of every new field.
+    [Fact]
+    public void NewFieldsMatchTheServerSchema()
+    {
+        var players = TwoPlayers();
+        players[0].BufferedTotal = 24;
+        var hits = new[] { H(HitKind.Buffered, 0, "Cultist", null, -1, "you", 0, 24, 2) };
+        var misses = new[] { Miss(3, items: 2), new ForecastMiss(4, 0, 0, 5, true, 0, 0, false, 0, 0, System.Array.Empty<ForecastMissItem>()) };
+        string text = RunStatsFile.AddFight(new List<JsonObject>(), Run, A, "1.6.0", 1, Meta(), players, new[] { A, B },
+            hits, false, 1, out _, misses, "v0.114.0")!;
+        var root = JsonNode.Parse(text)!;
+        AssertOnlySpecKeys(root);
+        Assert.Equal(JsonValueKind.String, root["game_version"]!.GetValueKind());
+        Assert.True(((string)root["game_version"]!).Length <= 80);
+        var f = root["fights"]![0]!;
+        Assert.Equal(JsonValueKind.Number, f["players"]![0]!["buffered"]!.GetValueKind());
+        var row = f["log"]!["hits"]![0]!.AsArray();
+        Assert.Equal(5, (int)row[1]!);
+        Assert.True((long)row[5]! >= 0);                       // kind 5 never -1
+        var arr = f["forecast_misses"]!.AsArray();
+        Assert.True(arr.Count <= 20);
+        foreach (var m in arr)
+        {
+            var o = m!.AsObject();
+            Assert.InRange((int)o["round"]!, 0, 10000);
+            foreach (var k in new[] { "min", "max", "actual", "block", "buffer", "osty", "wuppy" })
+            {
+                Assert.Equal(JsonValueKind.Number, o[k]!.GetValueKind());   // present, never null
+                Assert.True((long)o[k]! >= 0);
+            }
+            Assert.True((long)o["min"]! <= (long)o["max"]!);
+            Assert.Contains(o["intangible"]!.GetValueKind(), new[] { JsonValueKind.True, JsonValueKind.False });
+            Assert.Contains(o["hidden"]!.GetValueKind(), new[] { JsonValueKind.True, JsonValueKind.False });
+            var items = o["items"]!.AsArray();
+            Assert.True(items.Count <= 20);
+            foreach (var it in items)
+            {
+                var io = it!.AsObject();
+                Assert.Equal(new[] { "kind", "label", "hits", "per_hit", "conditional" }, io.Select(kv => kv.Key).ToArray());
+                Assert.InRange(((string)io["kind"]!).Length, 1, 24);
+                Assert.True(((string)io["label"]!).Length <= 80);
+                Assert.True((long)io["hits"]! >= 0);
+                Assert.True((long)io["per_hit"]! >= 0);
+                Assert.Contains(io["conditional"]!.GetValueKind(), new[] { JsonValueKind.True, JsonValueKind.False });
+            }
+        }
+        Assert.Equal(JsonValueKind.True, arr[0]!["intangible"]!.GetValueKind());
+        Assert.Equal(JsonValueKind.False, arr[1]!["intangible"]!.GetValueKind());
     }
 
     [Fact]

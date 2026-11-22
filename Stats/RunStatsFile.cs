@@ -144,8 +144,8 @@ internal static class RunStatsFile
         return fight;
     }
 
-    // { round, min, max, actual, hidden, block, buffer, intangible, osty, wuppy, items }. The server reads
-    // intangible as an amount: 1 when the player was Intangible, else 0.
+    // { round, min, max, actual, hidden, block, buffer, intangible, osty, wuppy, items }: every field is always
+    // known to the forecast, so none is omitted (and none is ever null).
     private static JsonObject MissJson(ForecastMiss m)
     {
         var items = new JsonArray();
@@ -171,7 +171,7 @@ internal static class RunStatsFile
             ["hidden"] = m.Hidden,
             ["block"] = Amount(m.Block),
             ["buffer"] = Amount(m.Buffer),
-            ["intangible"] = m.Intangible ? 1 : 0,
+            ["intangible"] = m.Intangible,
             ["osty"] = Amount(m.Osty),
             ["wuppy"] = Amount(m.Wuppy),
             ["items"] = items,
