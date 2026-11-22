@@ -417,3 +417,30 @@ public class ShareProgressTests
         Assert.Equal(ShareAction.SharedNote, F(fight).Message);
     }
 }
+
+// One follow at a time across every Share button: only the latest press may copy.
+public class ShareFollowTests
+{
+    [Fact]
+    public void OnlyTheLatestPressIsCurrent()
+    {
+        long first = ShareFollow.Begin();
+        Assert.True(ShareFollow.IsCurrent(first));
+        long second = ShareFollow.Begin();   // a press on either button, run or fight
+        Assert.False(ShareFollow.IsCurrent(first));
+        Assert.True(ShareFollow.IsCurrent(second));
+        Assert.False(ShareFollow.IsCurrent(0));   // never started
+    }
+
+    [Fact]
+    public void CancelEndsTheCurrentFollow()
+    {
+        long t = ShareFollow.Begin();
+        ShareFollow.Cancel(t);
+        Assert.False(ShareFollow.IsCurrent(t));
+        // Cancelling a follow that is no longer current leaves the newer one alone.
+        long newer = ShareFollow.Begin();
+        ShareFollow.Cancel(t);
+        Assert.True(ShareFollow.IsCurrent(newer));
+    }
+}

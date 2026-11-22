@@ -132,6 +132,7 @@ internal sealed class ShareButton
     // Following a share after a press (ShareAction.Follow / FollowFight): until Done, re-read the status file
     // every PollMs.
     private bool _following;
+    private long _followToken;       // this button's press in ShareFollow: a newer press anywhere ends the follow
     private bool _followFight;       // the share followed is a fight's (_followIndex), whose link is copied at the end
     private int _followIndex;
     private string? _followLink;
@@ -197,7 +198,7 @@ internal sealed class ShareButton
     {
         _runId = runId;
         _message = null;
-        _following = false;
+        StopFollowing();
         _hiddenAtMs = 0;
         _armed = Target.None;
         _downLast = true;   // a button still held from the previous screen isn't a press here
@@ -227,6 +228,7 @@ internal sealed class ShareButton
         if (_following && !_followFight && _hiddenAtMs == 0) _hiddenAtMs = Time.GetTicksMsec();
         _armed = Target.None;
         _downLast = true;   // a press that started while hidden isn't a click once shown
+        if (_following && !ShareFollow.IsCurrent(_followToken)) Superseded();
         if (_following && _followFight && IsValid())
         {
             try { ulong now = Time.GetTicksMsec(); if (now >= _nextPollMs) Poll(now); }
@@ -253,6 +255,7 @@ internal sealed class ShareButton
                 _hiddenAtMs = 0;
             }
             if (_noteUntilMs != 0 && now >= _noteUntilMs) { _message = null; _noteUntilMs = 0; }
+            if (_following && !ShareFollow.IsCurrent(_followToken)) Superseded();
             if (_following && now >= _nextPollMs) Poll(now);
             Layout(now);
 
@@ -303,7 +306,7 @@ internal sealed class ShareButton
             case Target.Run: ShareRun(); break;
             case Target.Fight: ShareFight(); break;
             case Target.GetApp: OS.ShellOpen(ShareAction.DownloadUrl); break;
-            case Target.Close: _message = null; _following = false; break;
+            case Target.Close: _message = null; StopFollowing(); break;
         }
     }
 
@@ -311,6 +314,7 @@ internal sealed class ShareButton
     {
         if (_fightIndex is not int index) return;
         _following = false;
+        _followToken = ShareFollow.Begin();   // this press ends any other button's follow
         var status = ShareAction.ReadStatusFile(AppStatus.FilePath(), DateTimeOffset.UtcNow);
         var action = ShareAction.ForFight(status, _runId, index, _fightFloor);
         GD.Print($"[STS2 Damage] share fight {_runId} #{index}: Spire Sync {status.State}, fights {(status.CanShareFight ? "supported" : "not supported")}");
@@ -344,6 +348,7 @@ internal sealed class ShareButton
     private void ShareRun()
     {
         _following = false;
+        _followToken = ShareFollow.Begin();   // this press ends any other button's follow
         var status = ShareAction.ReadStatusFile(AppStatus.FilePath(), DateTimeOffset.UtcNow);
         var action = ShareAction.For(status, _runId);
         GD.Print($"[STS2 Damage] share {_runId}: Spire Sync {status.State}");
@@ -391,6 +396,7 @@ internal sealed class ShareButton
                 _shareReported |= status.ShareReported;
                 p = ShareAction.Follow(status.Share, _shareReported, _runId, _pressedAtUnix, elapsed);
             }
+            if (!ShareFollow.IsCurrent(_followToken)) { Superseded(); return; }   // a newer press owns the clipboard
             if (p.Copy && _followLink != null) DisplayServer.ClipboardSet(_followLink);
             if (!ReferenceEquals(p.Message, _message) || p.Done)
             {
@@ -399,9 +405,23 @@ internal sealed class ShareButton
                              $"{(status.Share?.RunId == _runId ? status.Share.State.ToString() : "no confirmation")}");
                 Show(p.Message, getApp: false, transient: p.AutoHide);
             }
-            if (p.Done) _following = false;
+            if (p.Done) StopFollowing();
         }
-        catch (Exception ex) { _following = false; ErrorLog.Once("share progress", ex); }
+        catch (Exception ex) { StopFollowing(); ErrorLog.Once("share progress", ex); }
+    }
+
+    private void StopFollowing()
+    {
+        _following = false;
+        ShareFollow.Cancel(_followToken);
+    }
+
+    // Another press (on this button or the other one) took over: stop without copying, and drop this note.
+    private void Superseded()
+    {
+        _following = false;
+        _message = null;
+        _noteUntilMs = 0;
     }
 
     private void Show(string text, bool getApp, bool transient)

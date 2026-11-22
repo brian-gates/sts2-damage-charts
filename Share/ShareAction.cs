@@ -155,3 +155,21 @@ internal static class ShareRun
         return (null, Why.Unresolved);
     }
 }
+
+// Which press owns the clipboard: one follow at a time across every Share button (the game-over screen's and
+// the one under the end-of-combat summary). Each press, run or fight, on either button, Begins a new follow,
+// which ends any earlier one, so a slow confirmation for an older press can never replace a newer link.
+// Game thread only. Pure: the tests compile it directly.
+internal static class ShareFollow
+{
+    private static long _current;
+    private static long _last;
+
+    public static long Begin() => _current = ++_last;
+
+    // True while `token` is the latest follow and hasn't been cancelled (0 = never started).
+    public static bool IsCurrent(long token) => token != 0 && token == _current;
+
+    // Ends `token`'s follow if it is still the current one; a newer follow is left alone.
+    public static void Cancel(long token) { if (IsCurrent(token)) _current = 0; }
+}
