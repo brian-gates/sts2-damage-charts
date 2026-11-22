@@ -42,7 +42,7 @@ public class RunStatsFileTests
         var allowed = new Dictionary<string, string[]>
         {
             ["root"] = new[] { "v", "run_id", "recorded_by", "mod_version", "updated", "fights" },
-            ["fight"] = new[] { "index", "floor", "encounter", "kind", "rounds", "players" },
+            ["fight"] = new[] { "index", "floor", "encounter", "kind", "rounds", "players", "log", "log_dropped" },
             ["player"] = new[] { "steam_id", "dealt", "taken", "healed", "block", "absorbed", "potions" },
             ["list"] = new[] { "total", "sources" },
             ["source"] = new[] { "name", "id", "amount", "hits" },
@@ -243,16 +243,16 @@ public class RunStatsFileTests
         var fights = new List<JsonObject>();
         for (int i = 1; i <= RunStatsFile.MaxFights; i++) RunStatsFile.Upsert(fights, Fight(i), 1);
         Assert.Equal(RunStatsFile.Outcome.Full, RunStatsFile.Upsert(fights, Fight(999), 1));
-        Assert.Null(RunStatsFile.AddFight(fights, Run, A, "1.4.0", 1, Meta(999), TwoPlayers(), new[] { A, B }, 1, out var o));
+        Assert.Null(RunStatsFile.AddFight(fights, Run, A, "1.4.0", 1, Meta(999), TwoPlayers(), new[] { A, B }, null, false, 1, out var o));
         Assert.Equal(RunStatsFile.Outcome.Full, o);
     }
 
     [Fact]
     public void ContinuingARunKeepsEarlierFightsFromTheFile()
     {
-        string first = RunStatsFile.AddFight(new List<JsonObject>(), Run, A, "1.3.1", 100, Meta(3), TwoPlayers(), new[] { A, B }, 1, out _)!;
+        string first = RunStatsFile.AddFight(new List<JsonObject>(), Run, A, "1.3.1", 100, Meta(3), TwoPlayers(), new[] { A, B }, null, false, 1, out _)!;
         var existing = RunStatsFile.ParseFights(first, Run)!;
-        string second = RunStatsFile.AddFight(existing, Run, A, "1.3.1", 200, Meta(4), TwoPlayers(), new[] { A, B }, 1, out var o)!;
+        string second = RunStatsFile.AddFight(existing, Run, A, "1.3.1", 200, Meta(4), TwoPlayers(), new[] { A, B }, null, false, 1, out var o)!;
         Assert.Equal(RunStatsFile.Outcome.Appended, o);
         Assert.Single(existing); // the caller's list is not changed
         var root = JsonNode.Parse(second)!;
@@ -307,12 +307,186 @@ public class RunStatsFileTests
             if (System.Text.Encoding.UTF8.GetByteCount(RunStatsFile.Serialize(Run, ids[0], "1.4.0", 1, trial)) > RunStatsFile.MaxBytes - 20_000) break;
             existing = trial;
         }
-        string? text = RunStatsFile.AddFight(existing, Run, ids[0], "1.4.0", 1, Meta(500), fat, ids, 1, out var o);
+        string? text = RunStatsFile.AddFight(existing, Run, ids[0], "1.4.0", 1, Meta(500), fat, ids, null, false, 1, out var o);
         Assert.NotNull(text);
         Assert.Equal(RunStatsFile.Outcome.Appended, o);
         Assert.True(System.Text.Encoding.UTF8.GetByteCount(text!) <= RunStatsFile.MaxBytes);
         var last = JsonNode.Parse(text!)!["fights"]!.AsArray().Last()!;
         Assert.True(last["players"]![0]!["dealt"]!["sources"]!.AsArray().Count < RunStatsFile.MaxSources);
         Assert.Equal(50L, (long)last["players"]![0]!["dealt"]!["total"]!);
+    }
+
+    // ===== The hit log =====
+
+    private static Hit H(HitKind kind, int slot, string? src, string? srcId, int srcSlot, string? tgt, int tgtSlot, long amount, int round = 1)
+        => new(round, kind, slot, src, srcId, srcSlot, tgt, tgtSlot, amount);
+
+    [Fact]
+    public void BuildFight_WritesCompactLog()
+    {
+        var hits = new[]
+        {
+            H(HitKind.Dealt, 0, "Strike", "CARD.STRIKE_SILENT", 0, "Cultist", -1, 6),
+            H(HitKind.Taken, 0, "Cultist", null, -1, "you", 0, 9),
+            H(HitKind.Potion, 1, "Fire Potion", "POTION.FIRE_POTION", -1, "Cultist", -1, -1, round: 3),
+        };
+        var f = RunStatsFile.BuildFight(Meta(), TwoPlayers(), new[] { A, B }, hits, false);
+        Assert.Equal("{\"players\":[\"" + A + "\",\"" + B + "\"],\"names\":[\"Strike\",\"Cultist\",\"Fire Potion\"],"
+            + "\"ids\":[\"CARD.STRIKE_SILENT\",null,\"POTION.FIRE_POTION\"],"
+            + "\"hits\":[[1,0,0,0,1,6],[1,1,0,1,-2,9],[3,4,1,2,1,-1]],\"truncated\":false}",
+            f["log"]!.ToJsonString());
+        Assert.Null(f["log_dropped"]);
+    }
+
+    [Fact]
+    public void Log_ResolvesEachKindsSides()
+    {
+        // Dealt: the source is the card, not the dealer. Healed: no target. A player other than the hit's own is a ref.
+        var hits = new[]
+        {
+            H(HitKind.Dealt, 0, "you", "CARD.X", 0, "Cultist", -1, 5),         // SourceSlot == Slot: named source
+            H(HitKind.Healed, 1, null, null, -1, "Ally", 1, 4),                // target -1, "Ally" not a name
+            H(HitKind.Absorbed, 0, "Cultist", null, -1, "Osty", -1, 3),        // pet is a named target
+            H(HitKind.Taken, 1, "you", null, 0, "Ally", 1, 2),                 // another player hit them: source ref -2
+        };
+        var log = RunStatsFile.BuildFight(Meta(), TwoPlayers(), new[] { A, B }, hits, false)["log"]!;
+        Assert.Equal(new[] { "you", "Cultist", "Osty" }, log["names"]!.AsArray().Select(n => (string)n!).ToArray());
+        Assert.Equal("[[1,0,0,0,1,5],[1,3,1,-1,-1,4],[1,2,0,1,2,3],[1,1,1,-2,-3,2]]", log["hits"]!.ToJsonString());
+    }
+
+    [Fact]
+    public void Log_LeavesOutPlayersTheFightDoesNotWrite()
+    {
+        // Slot 1 has no PlayerSources, so it is not in "players" and the server would reject a log naming it.
+        var hits = new[]
+        {
+            H(HitKind.Dealt, 1, "Bash", null, 1, "Cultist", -1, 8),
+            H(HitKind.Dealt, 0, "Strike", null, 0, "Cultist", -1, 6),
+            H(HitKind.Taken, 0, "Cultist", null, 1, "you", 0, 3),              // source is the unwritten player
+        };
+        var f = RunStatsFile.BuildFight(Meta(), new PlayerSources?[] { TwoPlayers()[0], null }, new[] { A, B }, hits, false);
+        var log = f["log"]!;
+        Assert.Equal(new[] { A }, log["players"]!.AsArray().Select(n => (string)n!).ToArray());
+        Assert.Equal("[[1,0,0,0,1,6],[1,1,0,-1,-2,3]]", log["hits"]!.ToJsonString());
+    }
+
+    [Fact]
+    public void Log_CapsHitsNamesAndClipsStrings()
+    {
+        var many = Enumerable.Range(0, 650).Select(i => H(HitKind.Dealt, 0, "S" + i, null, 0, new string('t', 120), -1, 1)).ToArray();
+        var log = RunStatsFile.BuildFight(Meta(), TwoPlayers(), new[] { A, B }, many, false)["log"]!;
+        Assert.Equal(600, log["hits"]!.AsArray().Count);
+        Assert.True((bool)log["truncated"]!);
+        Assert.Equal(log["names"]!.AsArray().Count, log["ids"]!.AsArray().Count);
+        Assert.True(log["names"]!.AsArray().Count <= 600);
+        Assert.All(log["names"]!.AsArray(), n => Assert.True(((string)n!).Length <= 80));
+        // The tracker's own truncation flag passes through.
+        var few = RunStatsFile.BuildFight(Meta(), TwoPlayers(), new[] { A, B }, many.Take(2).ToArray(), true)["log"]!;
+        Assert.True((bool)few["truncated"]!);
+    }
+
+    [Fact]
+    public void NoHitsMeansNoLog()
+    {
+        Assert.Null(RunStatsFile.BuildFight(Meta(), TwoPlayers(), new[] { A, B }, null, false)["log"]);
+        var empty = RunStatsFile.BuildFight(Meta(), TwoPlayers(), new[] { A, B }, Array.Empty<Hit>(), false);
+        Assert.Null(empty["log"]);
+        Assert.Null(empty["log_dropped"]);
+    }
+
+    [Fact]
+    public void BuildFight_LogMatchesTotals()
+    {
+        // Fed through the tracker as the game does: a total and its hit together.
+        var t = new DamageTracker();
+        t.Reset(2, new[] { "you", "Ally" }, 0);
+        void Dealt(int round, int slot, int amt, string src, string id)
+        {
+            t.AddDealt(round, slot, amt, src, null, id);
+            t.AddHit(H(HitKind.Dealt, slot, src, id, slot, "Cultist", -1, amt, round));
+        }
+        void Taken(int round, int slot, int amt, string src)
+        {
+            t.AddTaken(round, slot, amt, src);
+            t.AddHit(H(HitKind.Taken, slot, src, null, -1, "you", slot, amt, round));
+        }
+        Dealt(1, 0, 6, "Strike", "CARD.STRIKE_SILENT");
+        Dealt(1, 0, 9, "Poison", "POWER.POISON_POWER");
+        Dealt(2, 0, 4, "Strike", "CARD.STRIKE_SILENT");
+        Dealt(2, 1, 11, "Bash", "CARD.BASH");
+        Taken(1, 0, 7, "Cultist");
+        Taken(2, 1, 5, "Louse");
+        t.AddAbsorbed(1, 3);
+        t.AddHit(H(HitKind.Absorbed, 1, "Louse", null, -1, "Osty", -1, 3, 2));
+        t.AddHealed(0, 5);
+        t.AddHit(H(HitKind.Healed, 0, null, null, -1, "you", 0, 5, 2));
+        t.AddPotion(1, "Fire Potion", null, "POTION.FIRE_POTION");
+        t.AddHit(H(HitKind.Potion, 1, "Fire Potion", "POTION.FIRE_POTION", -1, "Cultist", -1, -1, 2));
+
+        var snap = t.SourceSnapshot();
+        var f = RunStatsFile.BuildFight(Meta(), snap.PerPlayer, new[] { A, B }, snap.FightHits, snap.HitsTruncated);
+        var log = f["log"]!;
+        Assert.False((bool)log["truncated"]!);
+        var logPlayers = log["players"]!.AsArray().Select(n => (string)n!).ToList();
+        foreach (var p in f["players"]!.AsArray())
+        {
+            int idx = logPlayers.IndexOf((string)p!["steam_id"]!);
+            long Sum(int kind) => log["hits"]!.AsArray().Select(h => h!.AsArray())
+                .Where(h => (int)h[2]! == idx && (int)h[1]! == kind).Sum(h => (long)h[5]!);
+            Assert.Equal((long)p["dealt"]!["total"]!, Sum(0));
+            Assert.Equal((long)p["taken"]!["total"]!, Sum(1));
+            Assert.Equal(p["absorbed"] is { } a ? (long)a : 0L, Sum(2));
+            Assert.Equal((long)p["healed"]!, Sum(3));
+        }
+        Assert.Equal(11L, (long)f["players"]![1]!["dealt"]!["total"]!); // the fixture really exercised the totals
+    }
+
+    private static List<JsonObject> FileOfSize(long target)
+    {
+        // One earlier fight, padded (it is only ever read back, so a long encounter name is fine) to `target` bytes.
+        var pad = new JsonObject { ["index"] = 1, ["floor"] = 1, ["encounter"] = "", ["players"] = new JsonArray() };
+        var list = new List<JsonObject> { pad };
+        long baseSize = System.Text.Encoding.UTF8.GetByteCount(RunStatsFile.Serialize(Run, A, "1.4.0", 1, list));
+        pad["encounter"] = new string('p', (int)(target - baseSize));
+        return list;
+    }
+
+    [Fact]
+    public void AddFight_DropsLogBeforeSources_WhenNearCap()
+    {
+        var existing = FileOfSize(RunStatsFile.MaxBytes - 1500);
+        var hits = Enumerable.Range(0, 80).Select(i => H(HitKind.Dealt, 0, "Strike", "CARD.STRIKE_SILENT", 0, "Cultist", -1, 1, 1 + i / 10)).ToArray();
+
+        // Premise: the fight fits with no log, and does not with it.
+        var withLog = new List<JsonObject>(existing);
+        RunStatsFile.Upsert(withLog, RunStatsFile.BuildFight(Meta(2), TwoPlayers(), new[] { A, B }, hits, false), 1);
+        Assert.True(System.Text.Encoding.UTF8.GetByteCount(RunStatsFile.Serialize(Run, A, "1.4.0", 1, withLog)) > RunStatsFile.MaxBytes);
+
+        string? text = RunStatsFile.AddFight(existing, Run, A, "1.4.0", 1, Meta(2), TwoPlayers(), new[] { A, B }, hits, false, 1, out var o);
+        Assert.NotNull(text);
+        Assert.Equal(RunStatsFile.Outcome.Appended, o);
+        Assert.True(System.Text.Encoding.UTF8.GetByteCount(text!) <= RunStatsFile.MaxBytes);
+        var last = JsonNode.Parse(text!)!["fights"]!.AsArray().Last()!;
+        Assert.True((bool)last["log_dropped"]!);
+        Assert.Null(last["log"]);
+        Assert.Equal(2, last["players"]![0]!["dealt"]!["sources"]!.AsArray().Count);
+        Assert.Equal(140L, (long)last["players"]![0]!["dealt"]!["total"]!);
+    }
+
+    [Fact]
+    public void AddFight_LeavesEarlierFightsLogsAlone()
+    {
+        var hits = new[] { H(HitKind.Dealt, 0, "Strike", "CARD.STRIKE_SILENT", 0, "Cultist", -1, 6) };
+        string first = RunStatsFile.AddFight(new List<JsonObject>(), Run, A, "1.5.2", 100, Meta(3), TwoPlayers(), new[] { A, B }, hits, false, 1, out _)!;
+        var existing = RunStatsFile.ParseFights(first, Run)!;
+        Assert.NotNull(existing[0]["log"]); // a stored log survives the read-back
+        string before = existing[0].ToJsonString();
+
+        string second = RunStatsFile.AddFight(existing, Run, A, "1.5.2", 200, Meta(4), TwoPlayers(), new[] { A, B }, null, false, 1, out var o)!;
+        Assert.Equal(RunStatsFile.Outcome.Appended, o);
+        var fights = JsonNode.Parse(second)!["fights"]!.AsArray();
+        Assert.Equal(before, fights[0]!.ToJsonString());
+        Assert.Null(fights[1]!["log"]);
+        Assert.Null(fights[1]!["log_dropped"]);
     }
 }

@@ -23,11 +23,14 @@ internal static class RunStatsFile
     public const int MaxPlayers = 8;
     public const int MaxSources = 50;
     public const int MaxString = 80;
+    public const int MaxLogHits = 600;
+    public const int MaxLogNames = 600;
+    public const int MaxRound = 10000;
     public const int MaxBytes = 1_000_000; // the spec's 1 MB, read conservatively as decimal
     public const long MaxAmount = 1_000_000_000; // the server rejects amounts above 1e9
 
     // The only keys the server accepts at each level (any other key is a 400).
-    private static readonly string[] FightKeys = { "index", "floor", "encounter", "kind", "rounds", "players" };
+    private static readonly string[] FightKeys = { "index", "floor", "encounter", "kind", "rounds", "players", "log", "log_dropped" };
     private static readonly string[] PlayerKeys = { "steam_id", "dealt", "taken", "healed", "block", "absorbed", "potions" };
     private static readonly string[] ListKeys = { "total", "sources" };
     private static readonly string[] SourceKeys = { "name", "id", "amount", "hits" };
@@ -79,12 +82,16 @@ internal static class RunStatsFile
 
     // One fight's entry, without "index" (Upsert assigns it). `steamIds[slot]` names each player slot of
     // `perPlayer`; a slot without an id or data is left out. Sources are capped at `maxSources` per list
-    // (largest first); totals always cover every source.
+    // (largest first); totals always cover every source. `hits` is the fight's combat log (null when unknown):
+    // it is written as "log" when `withLog`, else the fight says "log_dropped" so readers know one existed.
     public static JsonObject BuildFight(FightMeta? meta, IReadOnlyList<PlayerSources?> perPlayer,
-        IReadOnlyList<string?> steamIds, int maxSources = MaxSources)
+        IReadOnlyList<string?> steamIds, IReadOnlyList<Hit>? hits = null, bool hitsTruncated = false,
+        int maxSources = MaxSources, bool withLog = true)
     {
         var players = new JsonArray();
         var seen = new HashSet<string>(StringComparer.Ordinal);
+        var logSlot = new Dictionary<int, int>(); // player slot -> index in "players" (only written players)
+        var logPlayers = new List<string>();
         for (int s = 0; s < perPlayer.Count && players.Count < MaxPlayers; s++)
         {
             var ps = perPlayer[s];
@@ -104,15 +111,79 @@ internal static class RunStatsFile
             };
             // Optional in the format (sts2-saves accepts it since Nov 2026); only written when a pet took hits.
             if (ps.AbsorbedTotal > 0) player["absorbed"] = Amount(ps.AbsorbedTotal);
+            logSlot[s] = players.Count;
+            logPlayers.Add(sid);
             players.Add(player);
         }
-        return new JsonObject
+        var fight = new JsonObject
         {
             ["floor"] = meta != null && meta.Floor > 0 ? meta.Floor : null,
             ["encounter"] = Clip(string.IsNullOrWhiteSpace(meta?.Name) ? null : meta!.Name),
             ["kind"] = KindName(meta),
             ["rounds"] = meta != null && meta.Rounds > 0 ? meta.Rounds : null,
             ["players"] = players,
+        };
+        if (hits != null && hits.Count > 0)
+        {
+            if (!withLog) fight["log_dropped"] = true;
+            else if (BuildLog(hits, hitsTruncated, logSlot, logPlayers) is { } log) fight["log"] = log;
+        }
+        return fight;
+    }
+
+    // The fight's hit log in the shared compact form. Only hits of written players are kept (the server rejects a
+    // log naming a player the fight lacks), and a player side that isn't written becomes -1. A player side is a
+    // ref when it is a player other than the hit's own player; otherwise the side is the named thing that did
+    // or received it (a card, power or monster), as for a dealt hit's source. A healed hit has no target: the
+    // healed player is already the hit's player. Null when no hit is left.
+    private static JsonObject? BuildLog(IReadOnlyList<Hit> hits, bool truncated,
+        Dictionary<int, int> logSlot, List<string> logPlayers)
+    {
+        var names = new List<string>();
+        var ids = new List<string?>();
+        var nameIndex = new Dictionary<string, int>(StringComparer.Ordinal);
+        int Name(string? raw, string? id)
+        {
+            string? n = Clip(raw);
+            if (string.IsNullOrEmpty(n)) return -1;
+            if (nameIndex.TryGetValue(n, out int at))
+            {
+                ids[at] ??= Clip(id); // the first id seen for the name (a null one is filled by a later id)
+                return at;
+            }
+            if (names.Count >= MaxLogNames) return -1;
+            nameIndex[n] = names.Count;
+            names.Add(n);
+            ids.Add(Clip(id));
+            return names.Count - 1;
+        }
+        int Ref(int slot) => logSlot.TryGetValue(slot, out int i) ? -(i + 2) : -1;
+
+        var rows = new JsonArray();
+        for (int i = 0; i < hits.Count; i++)
+        {
+            if (i >= MaxLogHits) { truncated = true; break; }
+            var h = hits[i];
+            if (!logSlot.TryGetValue(h.Slot, out int player)) continue;
+            int source = h.SourceSlot >= 0 && h.SourceSlot != h.Slot ? Ref(h.SourceSlot) : Name(h.Source, h.SourceId);
+            int target = h.Kind == HitKind.Healed ? -1 : h.TargetSlot >= 0 ? Ref(h.TargetSlot) : Name(h.Target, null);
+            long amount = h.Kind == HitKind.Potion || h.Amount < 0 ? -1 : Amount(h.Amount);
+            rows.Add(new JsonArray((int)Math.Clamp(h.Round, 0, MaxRound), (int)h.Kind, player, source, target, amount));
+        }
+        if (rows.Count == 0) return null;
+        var namesArr = new JsonArray();
+        foreach (var n in names) namesArr.Add(n);
+        var idsArr = new JsonArray();
+        foreach (var id in ids) idsArr.Add(id);
+        var players = new JsonArray();
+        foreach (var sid in logPlayers) players.Add(sid);
+        return new JsonObject
+        {
+            ["players"] = players,
+            ["names"] = namesArr,
+            ["ids"] = idsArr,
+            ["hits"] = rows,
+            ["truncated"] = truncated,
         };
     }
 
@@ -257,17 +328,18 @@ internal static class RunStatsFile
 
     // The whole update: `existing` (the file's current fights, from ParseFights, or empty) gains this fight,
     // and the new file text comes back; null when nothing should be written (the file is full, or even a
-    // fight without source lists would push it past the size cap). The new fight's source lists shrink as
-    // needed to fit; earlier fights are never rewritten. `existing` is left unchanged.
+    // fight without source lists would push it past the size cap). The new fight shrinks as needed to fit:
+    // first with its log and all sources, then without the log (marked "log_dropped") and with fewer sources.
+    // Earlier fights are never rewritten. `existing` is left unchanged.
     public static string? AddFight(List<JsonObject> existing, string runId, string recordedBy, string modVersion,
         long updated, FightMeta? meta, IReadOnlyList<PlayerSources?> perPlayer, IReadOnlyList<string?> steamIds,
-        int floorOrdinal, out Outcome outcome)
+        IReadOnlyList<Hit>? hits, bool hitsTruncated, int floorOrdinal, out Outcome outcome)
     {
         outcome = Outcome.Full;
-        foreach (int maxSources in new[] { MaxSources, 10, 0 })
+        foreach (var (maxSources, withLog) in new[] { (MaxSources, true), (MaxSources, false), (10, false), (0, false) })
         {
             var fights = new List<JsonObject>(existing);
-            outcome = Upsert(fights, BuildFight(meta, perPlayer, steamIds, maxSources), floorOrdinal);
+            outcome = Upsert(fights, BuildFight(meta, perPlayer, steamIds, hits, hitsTruncated, maxSources, withLog), floorOrdinal);
             if (outcome == Outcome.Full) return null;
             string text = Serialize(runId, recordedBy, modVersion, updated, fights);
             if (Encoding.UTF8.GetByteCount(text) <= MaxBytes) return text;

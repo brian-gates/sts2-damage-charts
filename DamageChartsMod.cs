@@ -1495,8 +1495,11 @@ public static class DamageChartsMod
                     GD.PrintErr($"[STS2 Damage] run stats: unreadable {path}, moved to .bad and started over");
                 }
             }
+            // The hits come from this fight's tracker (the run aggregate keeps none); it is reset only at the next combat.
+            var fightSnap = _tracker.SourceSnapshot();
             string? text = RunStatsFile.AddFight(fights, ident.RunId, ident.LocalId!, _modVersion,
-                DateTimeOffset.UtcNow.ToUnixTimeSeconds(), meta, sources, ident.SteamIds, _statsFloorCount, out var outcome);
+                DateTimeOffset.UtcNow.ToUnixTimeSeconds(), meta, sources, ident.SteamIds,
+                fightSnap.FightHits, fightSnap.HitsTruncated, _statsFloorCount, out var outcome);
             if (text == null)
             {
                 GD.Print($"[STS2 Damage] run stats: fight not written ({outcome})");
