@@ -928,7 +928,7 @@ internal sealed class DamageDetailView
         foreach (var e in log)
         {
             if (e.Round != lastRound) { rows.Add(($"──── Round {e.Round} ────", sepColor, true)); lastRound = e.Round; }
-            rows.Add((e.Text, e.Taken ? UiTheme.Red : UiTheme.Cream, false));
+            rows.Add((e.Text, e.Tone switch { LogTone.Taken => UiTheme.Red, LogTone.Buffered => UiTheme.Saved, _ => UiTheme.Cream }, false));
         }
 
         _maxOffset = Math.Max(0, rows.Count - _visible);

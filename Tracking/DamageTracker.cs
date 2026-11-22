@@ -30,8 +30,8 @@ internal readonly struct LogEntry
 {
     public readonly int Round;
     public readonly string Text;
-    public readonly bool Taken;
-    public LogEntry(int round, string text, bool taken) { Round = round; Text = text; Taken = taken; }
+    public readonly LogTone Tone;
+    public LogEntry(int round, string text, LogTone tone) { Round = round; Text = text; Tone = tone; }
 }
 
 internal sealed class PlayerSources
@@ -43,6 +43,7 @@ internal sealed class PlayerSources
     public long HealTotal;   // total HP healed this scope (no by-source breakdown)
     public long BlockTotal;  // total block gained this scope (no by-source breakdown)
     public long AbsorbedTotal; // attack damage the player's pet (Wuppy, Osty) lost in their place
+    public long BufferedTotal; // HP the player's Buffer saved (the cancelled hits' intended HP loss); not HP lost
     public List<SourceEntry> Potions = new();  // potions used this scope: name, times used, icon
 }
 
@@ -103,6 +104,7 @@ internal sealed class DamageTracker
     private readonly Dictionary<int, long> _healByPlayer = new();   // slot -> total healed
     private readonly Dictionary<int, long> _blockByPlayer = new();  // slot -> total block gained
     private readonly Dictionary<int, long> _absorbedByPlayer = new(); // slot -> damage their pet took for them
+    private readonly Dictionary<int, long> _bufferedByPlayer = new(); // slot -> HP their Buffer saved
     private readonly Dictionary<int, Dictionary<string, long>> _potionsByPlayer = new(); // slot -> potion -> uses
     private readonly List<LogEntry> _log = new();
     private const int LogCap = 500;
@@ -129,6 +131,7 @@ internal sealed class DamageTracker
             _healByPlayer.Clear();
             _blockByPlayer.Clear();
             _absorbedByPlayer.Clear();
+            _bufferedByPlayer.Clear();
             _potionsByPlayer.Clear();
             _log.Clear();
             _fightHits.Clear();
@@ -150,7 +153,7 @@ internal sealed class DamageTracker
     {
         lock (_lock)
         {
-            _log.Add(new LogEntry(h.Round, h.Text(PlayerLabel), h.IsTaken));
+            _log.Add(new LogEntry(h.Round, h.Text(PlayerLabel), h.Tone));
             if (_log.Count > LogCap) _log.RemoveRange(0, _log.Count - LogCap);
             if (_fightHits.Count < HitCap) _fightHits.Add(h); else _hitsTruncated = true;
         }
@@ -169,6 +172,19 @@ internal sealed class DamageTracker
     public void AddBlock(int slot, int amount) => AddTotal(_blockByPlayer, slot, amount);
 
     public void AddAbsorbed(int slot, int amount) => AddTotal(_absorbedByPlayer, slot, amount);
+
+    public void AddBuffered(int slot, int amount) => AddTotal(_bufferedByPlayer, slot, amount);
+
+    // HP this player has lost so far this fight (the sum of their taken sources). For the forecast check.
+    public long TakenTotal(int slot)
+    {
+        lock (_lock)
+        {
+            long total = 0;
+            if (_takenBySource.TryGetValue(slot, out var map)) foreach (var v in map.Values) total += v;
+            return total;
+        }
+    }
 
     // A potion drunk/thrown this combat. Counted per player (not damage, so it stays out of the bars)
     // and shares the source-icon map so the summary can show its art.
@@ -271,6 +287,7 @@ internal sealed class DamageTracker
                 _healByPlayer.TryGetValue(s, out ps.HealTotal);
                 _blockByPlayer.TryGetValue(s, out ps.BlockTotal);
                 _absorbedByPlayer.TryGetValue(s, out ps.AbsorbedTotal);
+                _bufferedByPlayer.TryGetValue(s, out ps.BufferedTotal);
                 ps.Potions = SortedList(_potionsByPlayer, s, out _, field: 2);
                 perPlayer[s] = ps;
             }

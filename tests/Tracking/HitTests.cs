@@ -23,6 +23,14 @@ public class HitTests
             new Hit(3, HitKind.Potion, 0, "Fire Potion", null, -1, "Cultist", -1, -1).Text(Name));
         Assert.Equal("Blood Potion used → Ironclad",
             new Hit(3, HitKind.Potion, 0, "Blood Potion", null, -1, "Ironclad", 1, -1).Text(Name));
+        Assert.Equal("Cultist → you  24 (Buffer)",
+            new Hit(2, HitKind.Buffered, 0, "Cultist", "MONSTER.CULTIST", -1, "you", 0, 24).Text(Name));
+    }
+
+    [Fact]
+    public void Text_UnknownBufferedAttackerReadsAsQuestionMark()
+    {
+        Assert.Equal("? → you  7 (Buffer)", new Hit(1, HitKind.Buffered, 0, null, null, -1, "you", 0, 7).Text(Name));
     }
 
     [Fact]
@@ -65,18 +73,39 @@ public class HitTests
         Assert.Equal(300, snap.Log.Length); // the panel shows the latest 300 of the 500 kept
         Assert.Equal("S699 → E  699", snap.Log[^1].Text);
         Assert.Equal("S400 → E  400", snap.Log[0].Text);
-        Assert.All(snap.Log, e => Assert.False(e.Taken));
+        Assert.All(snap.Log, e => Assert.Equal(LogTone.Plain, e.Tone));
     }
 
     [Fact]
-    public void Tracker_TakenFlagCoversTakenAndAbsorbedOnly()
+    public void Tracker_ToneMarksTakenAbsorbedAndBufferedLines()
     {
         var t = Tracker();
         t.AddHit(new Hit(1, HitKind.Taken, 0, "A", null, -1, "you", 0, 1));
         t.AddHit(new Hit(1, HitKind.Absorbed, 0, "A", null, -1, "Pet", -1, 1));
         t.AddHit(new Hit(1, HitKind.Healed, 0, null, null, -1, "you", 0, 1));
         t.AddHit(new Hit(1, HitKind.Potion, 0, "P", null, -1, null, -1, -1));
-        Assert.Equal(new[] { true, true, false, false }, t.SourceSnapshot().Log.Select(e => e.Taken).ToArray());
+        t.AddHit(new Hit(1, HitKind.Buffered, 0, "A", null, -1, "you", 0, 9));
+        Assert.Equal(new[] { LogTone.Taken, LogTone.Taken, LogTone.Plain, LogTone.Plain, LogTone.Buffered },
+            t.SourceSnapshot().Log.Select(e => e.Tone).ToArray());
+        Assert.False(new Hit(1, HitKind.Buffered, 0, "A", null, -1, "you", 0, 9).IsTaken); // saved HP is not HP lost
+    }
+
+    [Fact]
+    public void Tracker_BufferedTotalIsSeparateFromTaken()
+    {
+        var t = Tracker();
+        t.AddTaken(1, 0, 5, "Cultist");
+        t.AddBuffered(0, 24);
+        t.AddBuffered(0, 6);
+        t.AddBuffered(0, 0);   // nothing saved: ignored
+        var ps = t.SourceSnapshot().PerPlayer[0];
+        Assert.Equal(30, ps.BufferedTotal);
+        Assert.Equal(5, ps.TakenTotal);
+        Assert.Equal(5, t.TakenTotal(0));
+        Assert.Equal(0, t.TakenTotal(3));
+        t.Reset(1, new[] { "Silent" }, 0);
+        Assert.Equal(0, t.SourceSnapshot().PerPlayer[0].BufferedTotal);
+        Assert.Equal(0, t.TakenTotal(0));
     }
 
     [Fact]
