@@ -9,9 +9,11 @@ namespace STS2_DamageCharts.Overlay;
 // NRelicInventory is an HFlowContainer whose own rect is far taller than the relics it shows, so its Size is
 // never used. The bottom comes from, in order:
 //   1. the game's own NRelicInventory.GetBottomOfInventory() (undocumented; listed in sts2.xml's Godot
-//      MethodName cache, so it is a script-callable method returning a float or a Vector2, Y used). Its value
-//      is read as a global (canvas) Y, like the game's other layout positions, and mapped to viewport px with
-//      the row's canvas transform;
+//      MethodName cache). It returns a Vector2 in the row's PARENT's local space (the row's position captured
+//      at _Ready, moved down by its wrapped lines), so it is mapped to viewport px through the parent's
+//      canvas transform. Being based on the _Ready position, it doesn't follow the row's hide/show tweens,
+//      so panels don't jump when the row slides away. Called through a bound delegate (no boxing per call);
+//      a float or double return (a future game change) is read as the Y through reflection;
 //   2. else the union of the row's visible child Controls (the relic holders).
 // PanelTop ignores a bottom deeper than 40% of the viewport. The node is cached while valid and inside the
 // tree; a miss is retried at most twice a second since the lookup walks the tree. Never throws.
@@ -48,6 +50,9 @@ internal static class RelicRow
         catch { return null; }
     }
 
+    private static Func<Vector2>? _bottomCall;   // GetBottomOfInventory bound to _bottomTarget
+    private static Control? _bottomTarget;
+
     private static float? GameBottom(Control row)
     {
         try
@@ -59,16 +64,29 @@ internal static class RelicRow
                     BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance, null, Type.EmptyTypes, null);
             }
             if (_bottomMethod == null) return null;
-            float y;
-            switch (_bottomMethod.Invoke(row, null))
+            Vector2 local;
+            if (_bottomMethod.ReturnType == typeof(Vector2))
             {
-                case float f: y = f; break;
-                case double d: y = (float)d; break;
-                case Vector2 v: y = v.Y; break;
-                default: return null;
+                if (_bottomCall == null || !ReferenceEquals(_bottomTarget, row))
+                {
+                    _bottomCall = (Func<Vector2>)Delegate.CreateDelegate(typeof(Func<Vector2>), row, _bottomMethod);
+                    _bottomTarget = row;
+                }
+                local = _bottomCall();
             }
-            if (!float.IsFinite(y)) return null;
-            return (row.GetCanvasTransform() * new Vector2(0f, y)).Y;
+            else
+            {
+                switch (_bottomMethod.Invoke(row, null))
+                {
+                    case float f: local = new Vector2(0f, f); break;
+                    case double d: local = new Vector2(0f, (float)d); break;
+                    default: return null;
+                }
+            }
+            if (!float.IsFinite(local.Y)) return null;
+            // Parent-local -> viewport px (the parent's canvas transform; the row's own would add its position twice).
+            var xf = row.GetParent() is CanvasItem parent ? parent.GetGlobalTransformWithCanvas() : row.GetCanvasTransform();
+            return (xf * local).Y;
         }
         catch { return null; }
     }
