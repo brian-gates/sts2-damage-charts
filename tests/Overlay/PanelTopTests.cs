@@ -30,4 +30,18 @@ public class PanelTopTests
     {
         Assert.Equal(1080f * 0.09f, PanelTop.Inset(1080f, bottom), 3);
     }
+
+    [Theory]
+    [InlineData(540f)]    // the HFlowContainer's own rect: half the screen
+    [InlineData(433f)]    // just past 40%
+    public void RelicBottomDeeperThan40Percent_UsesFallback(float bottom)
+    {
+        Assert.Equal(1080f * 0.09f, PanelTop.Inset(1080f, bottom), 3);
+    }
+
+    [Fact]
+    public void RelicBottomAt40Percent_IsStillUsed()
+    {
+        Assert.Equal(432f, PanelTop.Inset(1080f, 432f), 3);
+    }
 }
