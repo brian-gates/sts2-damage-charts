@@ -72,6 +72,8 @@ internal sealed class DamageChartView
     private float _w = BaseWidth, _h = BaseHeight;
     private float _topInset;
     private float _baseSc = 1f;               // resolution scale x ui_scale, before ScaleMul
+    private float _effMul = ChartScale.Default; // ScaleMul as drawn (shrunk when the window is too small)
+    private (float Sc, float Ix, float Iy, float W, float H) _gripKey;
     private float _gripSize;
 
     public DamageChartView(Node root, Vector2? savedPosFrac)
@@ -147,11 +149,11 @@ internal sealed class DamageChartView
             if (leftDown && !_leftLast) // press
             {
                 Vector2 at = _container.Position;   // where the chart is drawn, so the grab point stays put
-                _drag.Press(global.X, global.Y, overPanel, overGrip, at.X, at.Y, _w, _h, ScaleMul);
+                _drag.Press(global.X, global.Y, overPanel, overGrip, at.X, at.Y, _w, _h, _effMul);   // _w/_h are at _effMul
             }
             else if (leftDown && _drag.IsResizing) // dragging the corner grip: top-left stays, size follows
             {
-                ScaleMul = ChartScale.Clamp(_drag.ResizeScale(global.X, global.Y), FitScale(docked: Docked && DockRect != null));
+                ScaleMul = ChartScale.Clamp(_drag.ResizeScale(global.X, global.Y), ResizeFit());
             }
             else if (leftDown && _drag.IsActive) // pressed on the panel: a move once past the threshold
             {
@@ -181,17 +183,20 @@ internal sealed class DamageChartView
         return savedNow;
     }
 
-    // The largest ScaleMul whose chart still fits on screen: from where it is drawn when free, or anywhere
-    // below the top inset when docked (the dock moves it).
-    private float FitScale(bool docked)
+    private float UnitW => (Compact ? CompactWidth : BaseWidth) * _baseSc;
+    private float UnitH => (Compact ? CompactHeight : BaseHeight) * _baseSc;
+
+    // The largest ScaleMul a resize may reach: docked, the room between the top inset and the forecast (the
+    // dock grows it upward); free, the room right of and below where it is drawn (top-left stays put).
+    private float ResizeFit()
     {
-        float unitW = (Compact ? CompactWidth : BaseWidth) * _baseSc, unitH = (Compact ? CompactHeight : BaseHeight) * _baseSc;
-        if (unitW <= 0f || unitH <= 0f) return float.PositiveInfinity;
+        if (Docked && DockRect is Rect2 dock)
+            return ChartScale.DockedFitMax(UnitW, UnitH, DockGap * _baseSc, _vp.X, dock.Position.Y, _topInset);
         Vector2 at = _container.Position;
-        float roomW = docked ? _vp.X : _vp.X - at.X;
-        float roomH = docked ? _vp.Y - _topInset : _vp.Y - at.Y;
-        return Math.Min(roomW / unitW, roomH / unitH);
+        return ChartScale.FitMax(UnitW, UnitH, _vp.X - at.X, _vp.Y - at.Y);
     }
+
+    private const float DockGap = 6f;   // between a docked chart and the forecast, at scale 1
 
     public bool TryGetHover(out GroupDetail info)
     {
@@ -250,7 +255,8 @@ internal sealed class DamageChartView
             _topInset = inset;
             _baseSc = UiTheme.Scale(_vp) * Math.Clamp(UiScaleMul, 0.5f, 4f);
             // The player's size, shrunk (not saved) when the window is too small to show it whole.
-            float sc = _baseSc * ChartScale.Clamp(ScaleMul, FitScale(docked: true));
+            _effMul = ChartScale.Clamp(ScaleMul, ChartScale.FitMax(UnitW, UnitH, _vp.X, _vp.Y - inset));
+            float sc = _baseSc * _effMul;
             _w = (Compact ? CompactWidth : BaseWidth) * sc; _h = (Compact ? CompactHeight : BaseHeight) * sc;
             float margin = BaseMargin * sc;
             int maxGroups = Compact ? CompactMaxGroups : MaxGroups;
@@ -287,7 +293,7 @@ internal sealed class DamageChartView
             if (Docked && !_drag.IsMoving && DockRect is Rect2 dock && _vp.X > 0 && _vp.Y > 0)
             {
                 // Above the forecast, left edges aligned; below it if there's no room under the top bar.
-                float gap = 6f * sc;
+                float gap = DockGap * sc;
                 float dy = dock.Position.Y - gap - _h;
                 if (dy < inset) dy = dock.End.Y + gap;
                 _posFrac = new Vector2(dock.Position.X / _vp.X, dy / _vp.Y);
@@ -456,6 +462,9 @@ internal sealed class DamageChartView
     // The grab area (_gripSize) is a little larger than the strokes so it's easy to hit.
     private void LayoutGrip(float sc, float ix, float iy)
     {
+        var key = (sc, ix, iy, _w, _h);
+        if (key == _gripKey) return;   // unchanged size: keep the strokes as they are
+        _gripKey = key;
         float g = 10f * sc;
         _gripSize = Math.Max(12f, g + Math.Max(ix, iy) + 4f * sc);
         _grip.SetPosition(new Vector2(_w - g - ix - 3f * sc, _h - g - iy - 3f * sc));
