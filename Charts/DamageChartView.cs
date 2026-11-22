@@ -19,11 +19,14 @@ internal sealed class DamageChartView
     private const float BaseHeight = 168f;
     private const float BaseMargin = 14f;
     private const int MaxGroups = 6;
-    // Compact: the always-on strip. Forecast-panel width, no axis labels/icons; hover still breaks it down.
+    // Compact: the always-on strip. Forecast-panel width, no axis labels; source icons only on segments big
+    // enough to hold one (solo fights; co-op cells are too narrow). Hover still breaks it down.
     private const float CompactWidth = 216f;
     private const float CompactHeight = 92f;
     private const int CompactMaxGroups = 8;
     private const float BaseMaxIcon = 34f;
+    private const float CompactMaxIcon = 18f;
+    private const float CompactMinIcon = 9f;
     private const float ChartFrameAlpha = 0.92f; // always-on: let a sliver of the fight show through
 
     private readonly OverlayMount _mount;
@@ -308,7 +311,8 @@ internal sealed class DamageChartView
             _title.SetPosition(Compact ? new Vector2(14 * sc + ix, 2 * sc + iy) : new Vector2(8 * sc + ix, 4 * sc + iy));
 
             int labelCur = 0, barCur = 0, iconCur = 0, gridCur = 0;
-            float maxIcon = BaseMaxIcon * sc;
+            float maxIcon = (Compact ? CompactMaxIcon : BaseMaxIcon) * sc;
+            float minIconBox = (Compact ? CompactMinIcon : 10f) * sc;
 
             // Title reads "Damage Out | In / Round", with Out and In in their bar colours as the legend.
             {
@@ -413,12 +417,12 @@ internal sealed class DamageChartView
                         bar.SetPosition(new Vector2(dealtX, yTop - bh));
                         bar.SetSize(new Vector2(dealtW, Math.Max(bh - 1f, 1f)));
 
-                        if (!Compact && a.Icon != null && bh >= 10 * sc && dealtW >= 14 * sc)
+                        if (a.Icon != null && bh >= minIconBox && dealtW >= (Compact ? minIconBox : 14 * sc))
                         {
                             var tex = _native ? NativeLook.Icon(a.Icon) : LoadTex(a.Icon);
-                            if (tex != null)
+                            float isz = Math.Min(Math.Min(dealtW - 2f, bh - 2f), maxIcon);
+                            if (tex != null && isz >= minIconBox - 2f)
                             {
-                                float isz = Math.Min(Math.Min(dealtW - 2f, bh - 2f), maxIcon);
                                 var ic = NextIcon(ref iconCur);
                                 ic.Texture = tex;
                                 ic.SetSize(new Vector2(isz, isz));
