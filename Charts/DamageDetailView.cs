@@ -26,7 +26,7 @@ internal sealed class DamageDetailView
     private const float SummaryWidth = 480f;
     private const float SummaryHeight = 540f;
     private const int SummaryMaxRows = 10;
-    private const int LogMinRows = 4;       // the log always keeps at least this many lines
+    private const int LogMinRows = 3;       // the summary's log always keeps room for a card with this many lines
 
     private readonly Node _root;
     private readonly CanvasLayer _layer;
@@ -375,9 +375,8 @@ internal sealed class DamageDetailView
         return null;
     }
 
-    // Summary log metrics, shared by Render's stacking math and RenderLog.
+    // Summary log metrics, shared by Render's stacking math and RenderSummaryLog.
     private const float LogHeadH = 22f;     // "Combat Log" heading -> first line
-    private const float LogLineH = 16f;
     private float LogListBottom => _h - 10f;
 
     // Top padding (viewport px) that pushes full-screen content below the game's top bar (~8% of
@@ -519,7 +518,7 @@ internal sealed class DamageDetailView
                 float vgap = 12f;
                 float colTop = headerY + 32f;
                 float colHeadH = 24f;                                     // column heading -> first row (RenderColumn)
-                float logMinH = LogHeadH + LogMinRows * LogLineH;
+                float logMinH = LogHeadH + RoundCards.CardHeight(LogMinRows, CardMetrics.Scaled(SummaryU));
                 float potH = ps.Potions.Count > 0 ? 24f : 0f;          // potions used: one row under the columns
                 float colsLimit = LogListBottom - potH - vgap - logMinH;
                 int srcCount = Math.Max(1, Math.Max(ps.Dealt.Count, ps.Taken.Count));   // empty column = one "—" row
@@ -539,9 +538,9 @@ internal sealed class DamageDetailView
                 header.SetPosition(new Vector2(10f, headerY));
 
                 RenderColumn(ref cur, ref barCur, ref iconCur, leftX, colTop, colW, rowH, maxRows, false, "DEALT", ps.Dealt, ps.DealtTotal, color, false);
-                RenderColumn(ref cur, ref barCur, ref iconCur, rightX, colTop, colW, rowH, maxRows, false, "TAKEN", ps.Taken, ps.TakenTotal, UiTheme.Red, true);
+                RenderColumn(ref cur, ref barCur, ref iconCur, rightX, colTop, colW, rowH, maxRows, false, "TAKEN", ps.Taken, ps.TakenTotal, ATaken, true);
                 if (potH > 0f) RenderPotions(ref cur, ref iconCur, leftX, potY, _w - pad * 2f, ps.Potions, false);
-                RenderLog(ref cur, ref barCur, ref iconCur, snap.Log, palette, colBottom + vgap);
+                RenderSummaryLog(ref cur, ref barCur, ref iconCur, ref boxCur, snap, palette, colBottom + vgap);
             }
 
             for (int i = cur; i < _labels.Count; i++) _labels[i].Visible = false;
@@ -557,14 +556,17 @@ internal sealed class DamageDetailView
     // Mockup colors (sts2-saves layouts "Combined"), shared by the sidebar tiles, source bars and card rows.
     private static readonly Color EPanel = new Color("12222a"), EBorder = new Color("24363d"), ERowLine = new Color("1b2c33");
     private static readonly Color ETrack = new Color("1d2f36"), EBarTrack = new Color("172328"), EDot = new Color("6b7a80");
-    private static readonly Color EDealt = new Color("7fc4ef"), ETaken = new Color("ef6a62"), ESaved = new Color("8cc8ff"), EHealed = new Color("7fd47c");
+    private static readonly Color EDealt = new Color("7fc4ef"), ETaken = new Color("ef6a62");
+    // Amount text in the kind's color, shared by the summary and the full view (LogPalette: >= 4.5:1 on the panels).
+    private static readonly Color ATaken = new Color(LogPalette.Taken), ASaved = new Color(LogPalette.Saved),
+        AHealed = new Color(LogPalette.Healed), ADealt = new Color(LogPalette.Dealt);
     private static readonly Color ESavedBar = new Color("6fb7ff"), EHealedBar = new Color("6cc36a"), ECream = new Color("efe6cf");
     private static readonly (string Label, Color Bg, Color Caption, Color Value)[] ETiles =
     {
         ("Dealt", new Color("172a32"), new Color("9fb6bf"), new Color("7fc4ef")),
-        ("Taken", new Color("2a1719"), new Color("c9a3a0"), new Color("ef6a62")),
-        ("Saved", new Color("15233a"), new Color("a3b6d0"), new Color("8cc8ff")),
-        ("Healed", new Color("162a1c"), new Color("a3c6a8"), new Color("7fd47c")),
+        ("Taken", new Color("2a1719"), new Color("c9a3a0"), new Color(LogPalette.Taken)),
+        ("Saved", new Color("15233a"), new Color("a3b6d0"), new Color(LogPalette.Saved)),
+        ("Healed", new Color("162a1c"), new Color("a3c6a8"), new Color(LogPalette.Healed)),
     };
     // Native look (native_visuals): the game's hover-tip frame for panels, its title shadow, the scrollbar track's
     // tint for dividers and the HP bar track's dark inset for bar tracks.
@@ -761,6 +763,7 @@ internal sealed class DamageDetailView
             bool taken = i >= nd;
             var e = taken ? ps.Taken[i - nd] : ps.Dealt[i];
             Color c = taken ? ETaken : EDealt;
+            Color ac = taken ? ATaken : EDealt;   // the amount text: the accessible taken red
             float nameX = ix;
             var tex = e.Icon != null ? LoadTex(e.Icon) : null;
             tex ??= FallbackIcon(e.Name, e.Total, taken);
@@ -772,7 +775,7 @@ internal sealed class DamageDetailView
                 ic.SetSize(new Vector2(20f * u, 20f * u));
                 nameX += 24f * u;
             }
-            var amt = Next(ref cur, 21, c, FontRole.Numeric);
+            var amt = Next(ref cur, 21, ac, FontRole.Numeric);
             amt.Text = CountText(e.Total, 2);
             amt.HorizontalAlignment = HorizontalAlignment.Right;
             amt.SetPosition(new Vector2(ix, cy)); amt.SetSize(new Vector2(iw, 0f));
@@ -869,7 +872,7 @@ internal sealed class DamageDetailView
                 rl.Text = RoundLabel(item.Number);
                 rl.SetPosition(new Vector2(x + m.PadX, hy - 4f * u));
                 float right = x + w - m.PadX;
-                var tk = Next(ref cur, 22, ETaken);
+                var tk = Next(ref cur, 22, ATaken);
                 tk.Text = CountText(item.Taken, 1);
                 tk.HorizontalAlignment = HorizontalAlignment.Right;
                 tk.SetPosition(new Vector2(right - 200f * u, hy)); tk.SetSize(new Vector2(200f * u, 0f));
@@ -922,10 +925,10 @@ internal sealed class DamageDetailView
 
                 var (amountColor, barColor) = e.Kind switch
                 {
-                    HitKind.Taken or HitKind.Absorbed => (ETaken, ETaken),
-                    HitKind.Buffered => (ESaved, ESavedBar),
-                    HitKind.Healed => (EHealed, EHealedBar),
-                    _ => (ECream, coop ? palette[Math.Clamp(e.Slot, 0, palette.Length - 1)] : EDealt),
+                    HitKind.Taken or HitKind.Absorbed => (ATaken, ETaken),
+                    HitKind.Buffered => (ASaved, ESavedBar),
+                    HitKind.Healed => (AHealed, EHealedBar),
+                    _ => (ADealt, coop ? palette[Math.Clamp(e.Slot, 0, palette.Length - 1)] : EDealt),
                 };
                 var al = Next(ref cur, 28, amountColor, FontRole.Numeric, e.AmountText, cols.AmountW);
                 al.HorizontalAlignment = HorizontalAlignment.Right;
@@ -1055,118 +1058,36 @@ internal sealed class DamageDetailView
         }
     }
 
-    // Display rows of the log (LogLayout.Rows), reused every frame.
-    private readonly List<LogRow> _logRows = new();
     private readonly Dictionary<int, string> _roundLabels = new();
     private Texture2D? _healIcon;
     private bool _healIconResolved;
 
-    // The summary's combat log: one line per row with icon, text, amount and bar behind, round dividers between.
-    private void RenderLog(ref int cur, ref int barCur, ref int iconCur, LogEntry[] log, Color[] palette, float top)
+    // The summary's combat log: the full view's round cards (RenderCards), scaled to the summary's width by the same
+    // rules (RoundCards.LogColumn: the text keeps its minimum, the bar track gives way first). Row text at about
+    // 13 px at ui_scale 1 (SummaryU = 0.7 mockup px per px x 1.5 / 1.5).
+    private const float SummaryU = 0.7f;
+
+    private void RenderSummaryLog(ref int cur, ref int barCur, ref int iconCur, ref int boxCur, SourceSnapshot snap,
+                                  Color[] palette, float top)
     {
-        const float pad = 14f;
-        float leftX = 14f;
+        const float pad = 14f, sbSpace = 10f;
         var head = Next(ref cur, 13, UiTheme.Gold, FontRole.Bold);
         head.Text = "Combat Log";
-        head.SetPosition(new Vector2(leftX, top));
-
-        float listTop = top + LogHeadH;
-        float listBottom = LogListBottom;
-        float lineH = LogLineH;
-        float regionH = listBottom - listTop;
-        _visible = Math.Max(1, (int)(regionH / lineH));
-
-        // Flatten to display rows (fight and round dividers + lines), oldest-first.
-        LogLayout.Rows(log, _logRows);
-
-        _maxOffset = Math.Max(0, _logRows.Count - _visible);
-        if (_logAtBottom) _logOffset = _maxOffset;   // follow newest, also once the log window is full and slides
-        _logOffset = Math.Clamp(_logOffset, 0, _maxOffset);
-        _logAtBottom = _logOffset >= _maxOffset;
-
-        int sepSize = 10;
-        int lineSize = 11;
-        float right = _w - 12f - 10f;          // clear of the scrollbar
-        float iconSz = lineH - 2f;
-        float textX = leftX + 4f + iconSz + 4f;               // an icon column, so lines align with or without art
-        float barMaxW = LogLayout.BarMaxWidth(right - textX + 2f);
-        long maxAmount = LogLayout.MaxAmount(log);
-        bool oneEnemy = LogText.SingleDealtTarget(log);
-        var sepColor = new Color(UiTheme.Gold.R, UiTheme.Gold.G, UiTheme.Gold.B, 0.6f);
-        var green = new Color(0.55f, 0.85f, 0.55f);
-        float y = listTop;
-        for (int i = _logOffset; i < _logRows.Count && i < _logOffset + _visible; i++)
+        head.SetPosition(new Vector2(pad, top));
+        float viewTop = top + LogHeadH;
+        float viewH = Math.Max(1f, LogListBottom - viewTop);
+        float logW = _w - 2f * pad - sbSpace;
+        var (u, barW) = RoundCards.LogColumn(logW, SummaryU * Math.Clamp(UiScaleMul, 0.5f, 4f));
+        float scale = _fontScale;
+        _fontScale = u / 1.5f;                     // RenderCards sizes text by the view's scale
+        try
         {
-            var row = _logRows[i];
-            if (row.Kind != LogRowKind.Line)
-            {
-                // Divider: the label centered between two thin gold lines. A fight divider (run recap) is the
-                // stronger one: full gold, a size up, thicker lines.
-                bool fight = row.Kind == LogRowKind.FightDivider;
-                string text = fight ? log[row.Entry].Text : RoundLabel(row.Number);
-                var lbl = Next(ref cur, fight ? sepSize + 1 : sepSize, fight ? UiTheme.Gold : sepColor, FontRole.Bold);
-                lbl.Text = text;
-                float labelW = MeasureLabel(lbl);
-                var d = LogLayout.Divider(leftX, right, labelW, 6f);
-                lbl.SetPosition(new Vector2(d.LabelX, y));
-                float thick = 1f + (fight ? 1f : 0f);
-                float lineY = y + lineH * 0.5f - thick * 0.5f;
-                var lineColor = fight ? UiTheme.Gold : sepColor;
-                DividerLine(ref barCur, d.LeftLineX, d.LeftLineW, lineY, thick, lineColor);
-                DividerLine(ref barCur, d.RightLineX, d.RightLineW, lineY, thick, lineColor);
-                y += lineH;
-                continue;
-            }
-
-            var e = log[row.Entry];
-            if (LogLayout.HasBar(e.Kind))
-            {
-                // Amount bar behind the text, scaled to the largest single amount in the log (chronological,
-                // unlike the sorted source bars above). It carries the kind's color as a soft backdrop (about
-                // 0.45 of the source bars' tint), so the cream text on it stays readable.
-                Color accent = e.Kind switch
-                {
-                    HitKind.Dealt => palette[Math.Clamp(e.Slot, 0, palette.Length - 1)],
-                    HitKind.Buffered => UiTheme.Saved,
-                    HitKind.Healed => green,
-                    _ => UiTheme.Red,
-                };
-                var bar = NextBar(ref barCur);
-                bar.Color = new Color(accent.R, accent.G, accent.B, 0.14f);
-                bar.SetPosition(new Vector2(textX - 2f, y + 1f));
-                bar.SetSize(new Vector2(LogLayout.BarWidth(e.Amount, maxAmount, barMaxW), lineH - 3f));
-            }
-            var tex = LogIcon(e);
-            if (tex != null)
-            {
-                var ic = NextIcon(ref iconCur);
-                ic.Texture = tex;
-                ic.SetPosition(new Vector2(leftX + 4f, y + (lineH - iconSz) * 0.5f));
-                ic.SetSize(new Vector2(iconSz, iconSz));
-            }
-            // Cream text for every kind; the amount follows in bold numeric type in the kind's color.
-            var line2 = Next(ref cur, lineSize, UiTheme.Cream);
-            line2.Text = e.AmountText == null ? e.Lead : oneEnemy && e.Kind == HitKind.Dealt ? e.ShortLead : e.Lead;
-            float lx = e.Kind == null ? leftX + 4f : textX;
-            line2.SetPosition(new Vector2(lx, y));
-            if (e.AmountText != null)
-            {
-                Color amountColor = e.Kind switch
-                {
-                    HitKind.Taken or HitKind.Absorbed => UiTheme.Red,
-                    HitKind.Buffered => UiTheme.Saved,
-                    HitKind.Healed => green,
-                    _ => UiTheme.Cream,
-                };
-                var amt = Next(ref cur, lineSize, amountColor, FontRole.Numeric);
-                amt.Text = e.AmountText;
-                float leadW = line2.Text.Length > 0 ? LeadWidth(line2) + 5f : 0f;
-                amt.SetPosition(new Vector2(lx + leadW, y));
-            }
-            y += lineH;
+            _eNative = EnsureFrameStyles();
+            RenderCards(ref cur, ref barCur, ref iconCur, ref boxCur, snap.Log, palette, snap.PlayerCount > 1,
+                pad, logW, viewTop, viewH, u, barW);
         }
-
-        RenderScrollbar(false, listTop, regionH, _w - pad + 2f, 6f, _logRows.Count);
+        finally { _fontScale = scale; }
+        RenderScrollbar(false, viewTop, viewH, _w - pad + 2f, 6f, _visible + _maxOffset);
     }
 
     // The log's scrollbar at x = sbX over [listTop, listTop + regionH], from _logOffset/_maxOffset/_visible;
@@ -1350,21 +1271,6 @@ internal sealed class DamageDetailView
         })
             if ((_healIcon = LoadTex(p)) != null) break;
         return _healIcon;
-    }
-
-    // A log line's lead width, cached by text and font size (lines repeat every frame; measuring goes through
-    // Godot interop). The cache is dropped when it grows large or the scale changes.
-    private readonly Dictionary<(string, int), float> _leadWidths = new();
-    private float LeadWidth(Label lbl)
-    {
-        int size;
-        try { size = lbl.GetThemeFontSize("font_size"); } catch { size = 0; }
-        var key = (lbl.Text, size);
-        if (_leadWidths.TryGetValue(key, out float w)) return w;
-        if (_leadWidths.Count > 2000) _leadWidths.Clear();
-        w = MeasureLabel(lbl);
-        _leadWidths[key] = w;
-        return w;
     }
 
     // A label's text width at its applied font and size (0 when unknown, which centers it as if empty).

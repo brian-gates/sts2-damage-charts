@@ -25,6 +25,7 @@
     <Compile Include="../Overlay/PanelDrag.cs" Link="PanelDrag.cs" />
     <Compile Include="../Charts/ChartScale.cs" Link="ChartScale.cs" />
     <Compile Include="../Charts/LogLayout.cs" Link="LogLayout.cs" />
+    <Compile Include="../Charts/LogPalette.cs" Link="LogPalette.cs" />
     <Compile Include="../Charts/RoundCards.cs" Link="RoundCards.cs" />
     <Compile Include="../Forecast/IntentRules.cs" Link="IntentRules.cs" />
     <Compile Include="../Stats/RunId.cs" Link="RunId.cs" />

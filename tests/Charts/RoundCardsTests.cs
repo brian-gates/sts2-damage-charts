@@ -143,6 +143,38 @@ public class RoundCardsTests
         Assert.True(c.BarW >= RoundCards.BarMin * u - 0.01f);
     }
 
+    // The compact summary's log column: its panel is 480 px wide (log 442 px after padding and the scrollbar), at
+    // ui_scale 0.5..2 (SummaryU 0.7 per ui_scale step), and narrower widths for safety.
+    [Theory]
+    [InlineData(442f, 0.7f)]
+    [InlineData(442f, 0.875f)]
+    [InlineData(442f, 1.05f)]
+    [InlineData(442f, 1.4f)]
+    [InlineData(300f, 0.7f)]
+    [InlineData(200f, 0.7f)]
+    public void SummaryLogColumnKeepsTheTextColumn(float width, float u0)
+    {
+        var (u, barW) = RoundCards.LogColumn(width, u0);
+        Assert.True(u <= u0 + 1e-4f);
+        var c = RoundCards.Columns(0f, width - 2f * RoundCards.CardPadX * u, u, barW);
+        Assert.True(c.TextW >= RoundCards.TextMin * u - 0.5f, $"text {c.TextW} < {RoundCards.TextMin * u}");
+        Assert.True(c.TextX + c.TextW <= c.AmountX + 0.01f);
+        Assert.True(c.AmountX + c.AmountW <= c.BarX + 0.01f);
+        Assert.True(c.BarX + c.BarW <= width - 2f * RoundCards.CardPadX * u + 0.01f);
+        Assert.InRange(barW, RoundCards.BarMin * u - 0.01f, RoundCards.BarMax * u + 0.01f);
+    }
+
+    [Fact]
+    public void SummaryLogColumnAtTheDefaultSize()
+    {
+        var (u, barW) = RoundCards.LogColumn(442f, 0.7f);
+        Assert.Equal(0.7f, u);                               // the requested scale fits
+        Assert.Equal((80f + (442f / 0.7f - 478f)) * 0.7f, barW, 2);   // the bar takes the slack first (157 of 160)
+        var (u2, bar2) = RoundCards.LogColumn(300f, 0.7f);   // narrower: the scale shrinks, bar at its minimum
+        Assert.True(u2 < 0.7f);
+        Assert.Equal(80f * u2, bar2, 2);
+    }
+
     [Fact]
     public void FullFrameIsTheMockupAt1080p()
     {
