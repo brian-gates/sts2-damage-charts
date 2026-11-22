@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using System.Linq;
 using Xunit;
 using STS2_DamageCharts.Charts;
 using STS2_DamageCharts.Tracking;
@@ -61,5 +63,62 @@ public class LogLayoutTests
         Assert.Equal(0f, d.RightLineW);
         var wide = LogLayout.Divider(0f, 50f, 300f, 8f);   // a label wider than the row is clamped to it
         Assert.Equal(0f, wide.LabelX);
+    }
+
+    // ===== Display rows =====
+
+    private static LogEntry Line(int round) => new(round, "hit", LogTone.Plain, HitKind.Dealt, 3);
+
+    [Fact]
+    public void RecapRows_FightDividersRestartRoundTracking()
+    {
+        // As RunAggregate.Fold builds the recap log: fight 1 with 3 rounds, then fight 2.
+        var run = new RunAggregate();
+        var t = new DamageTracker();
+        t.Reset(1, new[] { "you" }, 0);
+        for (int r = 1; r <= 3; r++)
+        {
+            t.AddDealt(r, 0, 3, "Strike");
+            t.AddHit(new Hit(r, HitKind.Dealt, 0, "Strike", null, 0, "Cultist", -1, 3));
+        }
+        run.Fold(t.SourceSnapshot(), t.Snapshot());
+        t.Reset(1, new[] { "you" }, 0);
+        t.AddDealt(1, 0, 5, "Bash");
+        t.AddHit(new Hit(1, HitKind.Dealt, 0, "Bash", null, 0, "Louse", -1, 5));
+        run.Fold(t.SourceSnapshot(), t.Snapshot());
+
+        var log = run.RunSourceSnapshot().Log;
+        var rows = new List<LogRow>();
+        LogLayout.Rows(log, rows);
+        var seq = rows.Select(r => r.Kind switch
+        {
+            LogRowKind.FightDivider => $"Fight {r.Number}",
+            LogRowKind.RoundDivider => $"Round {r.Number}",
+            _ => "line",
+        }).ToArray();
+        Assert.Equal(new[] { "Fight 1", "Round 1", "line", "Round 2", "line", "Round 3", "line", "Fight 2", "Round 1", "line" }, seq);
+        Assert.Equal("Fight 2", log[rows[7].Entry].Text);
+        Assert.False(LogLayout.HasBar(log[rows[0].Entry].Kind));   // separators get no bar
+    }
+
+    [Fact]
+    public void CombatRows_ADividerPrecedesEachRound()
+    {
+        var rows = new List<LogRow> { new(LogRowKind.Line, 9, 9) };   // reused list is cleared
+        LogLayout.Rows(new[] { Line(1), Line(1), Line(2) }, rows);
+        Assert.Equal(new[] { LogRowKind.RoundDivider, LogRowKind.Line, LogRowKind.Line, LogRowKind.RoundDivider, LogRowKind.Line },
+            rows.Select(r => r.Kind).ToArray());
+        Assert.Equal(new[] { -1, 0, 1, -1, 2 }, rows.Select(r => r.Entry).ToArray());
+    }
+
+    [Fact]
+    public void FightSeparatorIsMarkedNotARound()
+    {
+        var e = LogEntry.FightSeparator(4);
+        Assert.True(e.IsFightSeparator);
+        Assert.Equal(4, e.Fight);
+        Assert.Null(e.Kind);
+        Assert.Equal("Fight 4", e.Text);
+        Assert.False(Line(4).IsFightSeparator);
     }
 }

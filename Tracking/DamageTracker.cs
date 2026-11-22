@@ -25,7 +25,8 @@ internal readonly struct SourceEntry
     { Name = name; Total = total; Icon = icon; Hits = hits; Id = id; }
 }
 
-// One line in the combat log. Kind is null for a text-only line (the run recap's fight separator). Amount, Slot
+// One line in the combat log. Kind is null for a non-hit line. Fight > 0 marks the run recap's separator before
+// fight N (Round is unused there; its Text is "Fight N"). Amount, Slot
 // (whose line it is), Icon (the source's art path) and Name (the source's name, for an icon by name) come from
 // the hit, for the line's icon and amount bar.
 internal readonly struct LogEntry
@@ -38,11 +39,17 @@ internal readonly struct LogEntry
     public readonly int Slot;
     public readonly string? Icon;
     public readonly string? Name;
+    public readonly int Fight;
     public LogEntry(int round, string text, LogTone tone, HitKind? kind = null, long amount = 0, int slot = -1,
-        string? icon = null, string? name = null)
+        string? icon = null, string? name = null, int fight = 0)
     {
         Round = round; Text = text; Tone = tone; Kind = kind; Amount = amount; Slot = slot; Icon = icon; Name = name;
+        Fight = fight;
     }
+
+    public bool IsFightSeparator => Fight > 0;
+
+    public static LogEntry FightSeparator(int fight) => new(0, $"Fight {fight}", LogTone.Plain, fight: Math.Max(1, fight));
 
     public static LogEntry Of(Hit h, string text) =>
         new(h.Round, text, h.Tone, h.Kind, h.Amount, h.Slot, h.Icon, h.Source);

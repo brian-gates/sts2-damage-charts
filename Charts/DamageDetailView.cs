@@ -908,8 +908,8 @@ internal sealed class DamageDetailView
         }
     }
 
-    // Display rows of the log, reused every frame: Entry = index into the log, or -1 for a round divider.
-    private readonly List<(int Entry, int Round)> _logRows = new();
+    // Display rows of the log (LogLayout.Rows), reused every frame.
+    private readonly List<LogRow> _logRows = new();
     private readonly Dictionary<int, string> _roundLabels = new();
     private Texture2D? _healIcon;
     private bool _healIconResolved;
@@ -928,14 +928,8 @@ internal sealed class DamageDetailView
         float regionH = listBottom - listTop;
         _visible = Math.Max(1, (int)(regionH / lineH));
 
-        // Flatten to display rows (round dividers + lines), oldest-first.
-        _logRows.Clear();
-        int lastRound = int.MinValue;
-        for (int i = 0; i < log.Length; i++)
-        {
-            if (log[i].Round != lastRound) { _logRows.Add((-1, log[i].Round)); lastRound = log[i].Round; }
-            _logRows.Add((i, log[i].Round));
-        }
+        // Flatten to display rows (fight and round dividers + lines), oldest-first.
+        LogLayout.Rows(log, _logRows);
 
         _maxOffset = Math.Max(0, _logRows.Count - _visible);
         if (log.Length != _lastLogCount) { if (_logAtBottom) _logOffset = _maxOffset; _lastLogCount = log.Length; } // follow newest
@@ -955,19 +949,22 @@ internal sealed class DamageDetailView
         for (int i = _logOffset; i < _logRows.Count && i < _logOffset + _visible; i++)
         {
             var row = _logRows[i];
-            if (row.Entry < 0)
+            if (row.Kind != LogRowKind.Line)
             {
-                // Round divider: the label centered between two thin gold lines.
-                if (!_roundLabels.TryGetValue(row.Round, out var text)) { text = $"Round {row.Round}"; _roundLabels[row.Round] = text; }
-                var lbl = Next(ref cur, sepSize, sepColor, FontRole.Bold);
+                // Divider: the label centered between two thin gold lines. A fight divider (run recap) is the
+                // stronger one: full gold, a size up, thicker lines.
+                bool fight = row.Kind == LogRowKind.FightDivider;
+                string text = fight ? log[row.Entry].Text : RoundLabel(row.Number);
+                var lbl = Next(ref cur, fight ? sepSize + 1 : sepSize, fight ? UiTheme.Gold : sepColor, FontRole.Bold);
                 lbl.Text = text;
                 float labelW = MeasureLabel(lbl);
                 var d = LogLayout.Divider(leftX, right, labelW, full ? 10f * _fontScale : 6f);
                 lbl.SetPosition(new Vector2(d.LabelX, y));
-                float lineY = y + lineH * 0.5f - 1f;
-                float thick = full ? 2f : 1f;
-                DividerLine(ref barCur, d.LeftLineX, d.LeftLineW, lineY, thick, sepColor);
-                DividerLine(ref barCur, d.RightLineX, d.RightLineW, lineY, thick, sepColor);
+                float thick = (full ? 2f : 1f) + (fight ? 1f : 0f);
+                float lineY = y + lineH * 0.5f - thick * 0.5f;
+                var lineColor = fight ? UiTheme.Gold : sepColor;
+                DividerLine(ref barCur, d.LeftLineX, d.LeftLineW, lineY, thick, lineColor);
+                DividerLine(ref barCur, d.RightLineX, d.RightLineW, lineY, thick, lineColor);
                 y += lineH;
                 continue;
             }
@@ -1133,6 +1130,12 @@ internal sealed class DamageDetailView
         }
         catch { }
         return null;
+    }
+
+    private string RoundLabel(int round)
+    {
+        if (!_roundLabels.TryGetValue(round, out var text)) { text = $"Round {round}"; _roundLabels[round] = text; }
+        return text;
     }
 
     private void DividerLine(ref int barCur, float x, float w, float y, float thick, Color color)

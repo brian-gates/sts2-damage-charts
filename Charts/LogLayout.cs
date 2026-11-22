@@ -4,9 +4,35 @@ using STS2_DamageCharts.Tracking;
 
 namespace STS2_DamageCharts.Charts;
 
-// Pure (unit-tested) layout math for the combat log's amount bars and round dividers.
+internal enum LogRowKind { Line, RoundDivider, FightDivider }
+
+// One display row of the combat log: a line (Entry = index into the log) or a divider (Number = round or fight).
+internal readonly record struct LogRow(LogRowKind Kind, int Entry, int Number);
+
+// Pure (unit-tested) layout math for the combat log's rows, amount bars and round dividers.
 internal static class LogLayout
 {
+    // The log's display rows, oldest first, into `rows` (cleared; reused by the caller every frame). A round
+    // divider precedes the first line of each round; a fight separator (run recap) becomes a fight divider and
+    // starts round tracking over, so the next fight's Round 1 gets its divider.
+    public static void Rows(IReadOnlyList<LogEntry> log, List<LogRow> rows)
+    {
+        rows.Clear();
+        int lastRound = int.MinValue;
+        for (int i = 0; i < log.Count; i++)
+        {
+            var e = log[i];
+            if (e.IsFightSeparator)
+            {
+                rows.Add(new LogRow(LogRowKind.FightDivider, i, e.Fight));
+                lastRound = int.MinValue;
+                continue;
+            }
+            if (e.Round != lastRound) { rows.Add(new LogRow(LogRowKind.RoundDivider, -1, e.Round)); lastRound = e.Round; }
+            rows.Add(new LogRow(LogRowKind.Line, i, e.Round));
+        }
+    }
+
     // Lines with an HP amount get a bar; potion lines and text-only lines don't.
     public static bool HasBar(HitKind? kind) => kind is HitKind k && k != HitKind.Potion;
 

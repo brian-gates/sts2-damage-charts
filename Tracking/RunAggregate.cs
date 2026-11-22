@@ -139,7 +139,7 @@ internal sealed class RunAggregate
             foreach (var r in chart.Rows) if (r.Round > m.Rounds) m.Rounds = r.Round;
         _encMeta.Add(m);
 
-        _log.Add(new LogEntry(_encounters, $"──── Fight {_encounters} ────", LogTone.Plain));
+        _log.Add(LogEntry.FightSeparator(_encounters));
         foreach (var e in src.Log) _log.Add(e);
         if (_log.Count > LogCap) _log.RemoveRange(0, _log.Count - LogCap);
     }
