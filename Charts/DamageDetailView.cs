@@ -587,9 +587,19 @@ internal sealed class DamageDetailView
         t.SetPosition(new Vector2(ix, cy));
         cy += 34f * u + gap;
 
+        // Room planning: every top source should show. When they don't fit at the minimum row pitch, the tiles
+        // get compact (74 -> 58) and that space goes to the sources. The Block line shows only when non-zero.
+        bool blockLine = ps.BlockTotal > 0 || ps.AbsorbedTotal > 0;
+        float potH = ps.Potions.Count > 0 ? 30f * u : 0f;
+        float tg = 10f * u, tw = (iw - tg) * 0.5f;
+        float rowH = 27f * u, maxPitch = 28f * u + gap, minPitch = 29f * u;   // name line 21 + 6 px bar
+        int nSources = ps.Dealt.Count + ps.Taken.Count;
+        float SourcesRoom(float tileH) => bottom - potH - (cy + 2f * tileH + tg + 8f * u + (blockLine ? 22f * u + gap : 0f) + 22f * u + gap * 0.75f);
+        float th = SourcesRoom(74f * u) >= rowH + Math.Max(0, nSources - 1) * minPitch ? 74f * u : 58f * u;
+        bool compact = th < 74f * u;
+
         // 2x2 totals: Dealt, Taken, Saved (Buffer), Healed; always all four (0 when none) so the grid is stable.
         long[] values = { ps.DealtTotal, ps.TakenTotal, ps.BufferedTotal, ps.HealTotal };
-        float tg = 10f * u, tw = (iw - tg) * 0.5f, th = 74f * u;
         for (int i = 0; i < 4; i++)
         {
             float tx = ix + (i % 2) * (tw + tg), ty = cy + (i / 2) * (th + tg);
@@ -598,22 +608,24 @@ internal sealed class DamageDetailView
             var cap = Next(ref cur, 19, tile.Caption);
             cap.Text = tile.Label;
             cap.HorizontalAlignment = HorizontalAlignment.Center;
-            cap.SetPosition(new Vector2(tx, ty + 8f * u)); cap.SetSize(new Vector2(tw, 0f));
-            var val = Next(ref cur, 45, tile.Value, FontRole.Numeric);
+            cap.SetPosition(new Vector2(tx, ty + (compact ? 4f : 8f) * u)); cap.SetSize(new Vector2(tw, 0f));
+            var val = Next(ref cur, compact ? 36 : 45, tile.Value, FontRole.Numeric);
             val.Text = CountText(values[i], 2);
             val.HorizontalAlignment = HorizontalAlignment.Center;
-            val.SetPosition(new Vector2(tx, ty + 26f * u)); val.SetSize(new Vector2(tw, 0f));
+            val.SetPosition(new Vector2(tx, ty + (compact ? 20f : 26f) * u)); val.SetSize(new Vector2(tw, 0f));
         }
         cy += 2f * th + tg + 8f * u;
 
         // Block (and Absorbed, when a pet took hits) as one quiet line under the tiles.
-        var extra = Next(ref cur, 19, new Color("9fb6bf"));   // muted: the full view forces text opaque
-        extra.Text = ps.AbsorbedTotal > 0 ? $"Block {ps.BlockTotal}  ·  Absorbed {ps.AbsorbedTotal}" : $"Block {ps.BlockTotal}";
-        extra.SetPosition(new Vector2(ix, cy));
-        cy += 22f * u + gap;
+        if (blockLine)
+        {
+            var extra = Next(ref cur, 19, new Color("9fb6bf"));   // muted: the full view forces text opaque
+            extra.Text = ps.AbsorbedTotal > 0 ? $"Block {ps.BlockTotal}  ·  Absorbed {ps.AbsorbedTotal}" : $"Block {ps.BlockTotal}";
+            extra.SetPosition(new Vector2(ix, cy));
+            cy += 22f * u + gap;
+        }
 
         // Potions used, at the sidebar's foot when any.
-        float potH = ps.Potions.Count > 0 ? 30f * u : 0f;
         if (potH > 0f) RenderPotions(ref cur, ref iconCur, ix, bottom - potH + 4f * u, iw, ps.Potions, true);
 
         // Top sources: dealt then taken, name + amount over a 6 px bar, sharing the room left.
@@ -621,9 +633,7 @@ internal sealed class DamageDetailView
         sh.Text = "Top sources";
         sh.SetPosition(new Vector2(ix, cy));
         cy += 22f * u + gap * 0.75f;
-        float pitch = 28f * u + gap;
-        int slots = (int)((bottom - potH - cy + gap) / pitch);
-        var (nd, nt) = RoundCards.SplitSources(slots, ps.Dealt.Count, ps.Taken.Count);
+        var (nd, nt, pitch) = RoundCards.SidebarSources(bottom - potH - cy, ps.Dealt.Count, ps.Taken.Count, rowH, maxPitch, minPitch);
         long max = 1;
         for (int i = 0; i < nd; i++) max = Math.Max(max, ps.Dealt[i].Total);
         for (int i = 0; i < nt; i++) max = Math.Max(max, ps.Taken[i].Total);
@@ -649,7 +659,7 @@ internal sealed class DamageDetailView
             amt.SetPosition(new Vector2(ix, cy)); amt.SetSize(new Vector2(iw, 0f));
             var name = Next(ref cur, 21, ECream, FontRole.Body, e.Name, Math.Max(0f, iw - (nameX - ix) - 60f * u));
             name.SetPosition(new Vector2(nameX, cy));
-            float by = cy + 22f * u;
+            float by = cy + 21f * u;
             Box(ref boxCur, ix, by, iw, 6f * u, ETrack, default, 0f, 3f * u);
             float bw = LogLayout.BarWidth(e.Total, max, iw, 6f * u);
             if (bw > 0f) Box(ref boxCur, ix, by, bw, 6f * u, c, default, 0f, 3f * u);
@@ -1228,6 +1238,8 @@ internal sealed class DamageDetailView
             $"res://images/atlases/power_atlas.sprites/{slug}.tres",
             $"res://images/atlases/relic_atlas.sprites/{slug}.tres",
             $"res://images/atlases/potion_atlas.sprites/{slug}.tres",
+            $"res://images/orbs/{slug}_orb.png",   // orb damage labeled by the orb's title ("Lightning")
+            $"res://images/orbs/{slug}.png",
         })
         {
             try { if (ResourceLoader.Exists(p) && GameAssets.Texture(p) is Texture2D t) return t; }

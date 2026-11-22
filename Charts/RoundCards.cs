@@ -101,6 +101,21 @@ internal static class RoundCards
     public static float ScrollY(int offset, float contentH, float viewH, CardMetrics m) =>
         Math.Clamp(offset * m.Step, 0f, Math.Max(0f, contentH - viewH));
 
+    // The sidebar's top sources in `avail` px: every source when they fit at a pitch of at least minPitch (rows
+    // spread up to maxPitch), else as many minPitch rows as fit, shared by SplitSources. Pitch includes the gap
+    // after a row; the last row needs only rowH of it, so that much more height is allowed.
+    public static (int Dealt, int Taken, float Pitch) SidebarSources(float avail, int dealtCount, int takenCount,
+        float rowH, float maxPitch, float minPitch)
+    {
+        int n = Math.Max(0, dealtCount) + Math.Max(0, takenCount);
+        if (n == 0 || avail < rowH) return (0, 0, maxPitch);
+        float room = avail - rowH;                       // the first row; every further row costs a pitch
+        float pitch = n > 1 ? Math.Clamp(room / (n - 1), minPitch, maxPitch) : maxPitch;
+        int slots = 1 + (int)Math.Floor(room / pitch + 1e-4f);
+        var (d, t) = SplitSources(Math.Min(slots, n), dealtCount, takenCount);
+        return (d, t, pitch);
+    }
+
     // The sidebar's top source rows: `slots` rows shared by the dealt and taken lists, half each, a side's unused
     // half going to the other.
     public static (int Dealt, int Taken) SplitSources(int slots, int dealtCount, int takenCount)

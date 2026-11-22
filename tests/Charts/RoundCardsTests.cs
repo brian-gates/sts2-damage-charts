@@ -127,3 +127,47 @@ public class RoundCardsTests
         Assert.Equal((expD, expT), RoundCards.SplitSources(slots, dealt, taken));
     }
 }
+
+public class SidebarSourcesTests
+{
+    // Mockup px: a row is 29 tall, rows 44 apart at most, 33 at least.
+    private static (int, int, float) S(float avail, int d, int t) => RoundCards.SidebarSources(avail, d, t, 29f, 44f, 33f);
+
+    [Fact]
+    public void EverySourceShowsWhenItFitsAtTheMinimumPitch()
+    {
+        // The real-game case: 2 dealt + 3 taken in 170 px (29 + 4 x 35.25): all five, spread to fill.
+        var (d, t, p) = S(170f, 2, 3);
+        Assert.Equal((2, 3), (d, t));
+        Assert.Equal(35.25f, p, 3);
+    }
+
+    [Fact]
+    public void RowsSpreadNoFurtherThanTheMaximumPitch()
+    {
+        var (d, t, p) = S(1000f, 2, 3);
+        Assert.Equal((2, 3), (d, t));
+        Assert.Equal(44f, p);
+    }
+
+    [Fact]
+    public void CapsOnlyWhenOutOfRoom()
+    {
+        // 29 + 3 x 33 = 128: four rows fit, of five.
+        var (d, t, p) = S(130f, 2, 3);
+        Assert.Equal(33f, p);
+        Assert.Equal(4, d + t);
+        Assert.Equal((2, 2), (d, t));
+        // A lone side takes every slot.
+        Assert.Equal((0, 3), (S(130f, 0, 3).Item1, S(130f, 0, 3).Item2));
+        Assert.Equal((10, 0), (S(29f + 9 * 33f, 12, 0).Item1, 0));
+    }
+
+    [Fact]
+    public void NoRoomOrNoSourcesShowsNothing()
+    {
+        Assert.Equal((0, 0), (S(20f, 2, 3).Item1, S(20f, 2, 3).Item2));
+        Assert.Equal((0, 0), (S(500f, 0, 0).Item1, S(500f, 0, 0).Item2));
+        Assert.Equal((1, 0), (S(29f, 1, 0).Item1, S(29f, 1, 0).Item2));
+    }
+}

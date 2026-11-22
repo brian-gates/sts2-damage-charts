@@ -739,6 +739,16 @@ public static class DamageChartsMod
         catch { }
     }
 
+    // res://images/orbs/<entry>.png for an orb's model id ("ORB.LIGHTNING_ORB"), when the game ships it; else null.
+    private static string? OrbIconPath(string? id)
+    {
+        if (string.IsNullOrEmpty(id)) return null;
+        string entry = id![(id.LastIndexOf('.') + 1)..].ToLowerInvariant();
+        if (entry.Length == 0) return null;
+        string p = $"res://images/orbs/{entry}.png";
+        try { return ResourceLoader.Exists(p) ? p : null; } catch { return null; }
+    }
+
     private static void PowerSourcePrefix(object __instance)
     {
         try
@@ -747,13 +757,15 @@ public static class DamageChartsMod
             string? label = TextHelper.SafeGetText(() => t.GetProperty("Title")?.GetValue(__instance));
             if (string.IsNullOrEmpty(label)) return;
             string? icon = null;
-            foreach (var prop in new[] { "PackedIconPath", "ImagePath" }) // powers/relics/orbs use PackedIconPath; potions use ImagePath
+            foreach (var prop in new[] { "PackedIconPath", "ImagePath", "IconPath" }) // powers/relics use PackedIconPath; potions use ImagePath
             {
                 try { if (t.GetProperty(prop)?.GetValue(__instance) is string p && ResourceLoader.Exists(p)) { icon = p; break; } }
                 catch { }
             }
             var owner = SourcePlayer(__instance);
             string? id = ModelIdOf(__instance);
+            // Orbs (Lightning, Dark, Glass...) have no icon property we read: their art is images/orbs/<entry>.png.
+            if (icon == null && t.Namespace?.EndsWith(".Orbs") == true) icon = OrbIconPath(id);
             _activeSource = (label!, icon, owner, id);
             _activeFrame = _frame;
             if (__instance is PowerModel power && power.Owner is { } holder && !holder.IsPlayer && !holder.IsPet)
