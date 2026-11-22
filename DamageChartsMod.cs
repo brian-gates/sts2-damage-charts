@@ -1190,18 +1190,14 @@ public static class DamageChartsMod
                     }
                     else if (_detailVisible && _detail != null)
                     {
-                        // Full-screen breakdown is up: it takes over; hide the compact bars. The tooltip now
-                        // belongs to the takeover's per-round chart.
+                        // Full-screen breakdown is up: it takes over; hide the compact bars.
                         _bars?.Hide(); _forecast?.Hide(); _forecastLedger?.Hide();
                         _detail.SummaryMode = false; _detail.RecapMode = false; _detail.UiScaleMul = _uiScale;
-                        _detail.ShowRunHistory = true;
-                        _detail.RunFights = _run.HasData() ? _run.EncounterStats(_localSlot) : null;
                         _detail.SetVisible(true);
-                        _detail.Render(_tracker.SourceSnapshot(), _tracker.Snapshot(), _playerColors);
+                        _detail.Render(_tracker.SourceSnapshot(), _playerColors);
                         _detail.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left));
                         if (_detail.TakeCloseRequest()) { _detailVisible = false; _detail.SetVisible(false); } // ✕ clicked
-                        else ShowDetailChartTip(static (chart, row) =>
-                            GroupDetails.ForRound(row, chart.Labels, chart.PlayerCount, null, showPct: true, maxRows: 5));
+                        else ShowDetailCloseTip();
 
                     }
                     else if (IsFightEndingNow())
@@ -1251,18 +1247,18 @@ public static class DamageChartsMod
                 // victory/death screen). Unlike the in-combat takeover this is NOT gated by blocking UI,
                 // so it can appear on top of the game's end screen.
                 _bars?.Hide(); _forecast?.Hide(); _forecastLedger?.Hide(); _summaryActive = false;
-                _detail.SummaryMode = false; _detail.RecapMode = true; _detail.ShowRunHistory = false; _detail.UiScaleMul = _uiScale; _detail.SetVisible(true);
-                _detail.Render(_run.RunSourceSnapshot(), _run.RunChartSnapshot(), _playerColors);
+                _detail.SummaryMode = false; _detail.RecapMode = true; _detail.UiScaleMul = _uiScale; _detail.SetVisible(true);
+                _detail.Render(_run.RunSourceSnapshot(), _playerColors);
                 _detail.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left));
                 if (_detail.TakeCloseRequest()) { _recapVisible = false; _detail.RecapMode = false; _detail.SetVisible(false); }
-                else ShowDetailChartTip(static (_, row) => _run.FightDetail(row.Round)); // recap rows: Round = fight number
+                else ShowDetailCloseTip();
             }
             else if (_summaryActive && _detail != null)
             {
                 // End-of-combat summary: shown beside the rewards list (click-through), hidden while a
                 // menu is up, dismissed once the player moves on to the map (or via Cmd+D / next fight).
                 _bars?.Hide(); _tooltip?.Hide(); _forecast?.Hide(); _forecastLedger?.Hide();
-                _detail.RecapMode = false; _detail.ShowRunHistory = false;
+                _detail.RecapMode = false;
                 string? top = TopOverlayName();
                 if (IsMapOpen()) { _summaryActive = false; _summaryAvailable = false; _detail.SetVisible(false); }
                 else if (IsMenuOpen() || top != "NRewardsScreen")
@@ -1277,10 +1273,10 @@ public static class DamageChartsMod
                 {
                     _rewardsSeen = true;
                     _detail.SummaryMode = true; _detail.SetVisible(true);
-                    _detail.Render(_tracker.SourceSnapshot(), _tracker.Snapshot(), _playerColors);
+                    _detail.Render(_tracker.SourceSnapshot(), _playerColors);
                     _detail.UpdateMouse(Input.IsMouseButtonPressed(MouseButton.Left));
                     if (_detail.TakeCloseRequest()) { _summaryActive = false; _detail.SetVisible(false); } // ✕ clicked
-                    else { ShowDetailChartTip(static (_, _) => null); _summaryOnScreen = true; }   // summary has no chart: just the ✕ tip
+                    else { ShowDetailCloseTip(); _summaryOnScreen = true; }
                 }
             }
 
@@ -1450,15 +1446,13 @@ public static class DamageChartsMod
         return _closeTip;
     }
 
-    // Hover tooltip for the close/back button, else for the full-screen view's chart (per round in combat, per fight in the recap). The
-    // detail is built only when the hovered group changes; a failure just leaves the tooltip hidden.
-    private static void ShowDetailChartTip(Func<ChartSnapshot, ChartRow, GroupDetail?> build)
+    // Hover tooltip for the breakdown's close/back button ("Close (C)"); a failure just leaves it hidden.
+    private static void ShowDetailCloseTip()
     {
-        if (_detail == null || _tooltip == null || !_detail.Visible) return;
+        if (_detail == null || _tooltip == null || !_detail.Visible || !_detail.CloseHovered) return;
         try
         {
-            var gd = _detail.CloseHovered ? CloseTip(_detail.HotkeyHint) : _detail.HoveredDetail(build);
-            if (gd == null) return;
+            var gd = CloseTip(_detail.HotkeyHint);
             _tooltip.UiScaleMul = _uiScale;
             _tooltip.Render(gd, _playerColors, RootMouse());
             _tipShown = true;

@@ -23,6 +23,7 @@ internal sealed class RunAggregate
     private long[] _heal = Array.Empty<long>();
     private long[] _block = Array.Empty<long>();
     private long[] _absorbed = Array.Empty<long>();
+    private long[] _buffered = Array.Empty<long>();
     private Dictionary<string, long>[] _dealtBySource = Array.Empty<Dictionary<string, long>>();
     private Dictionary<string, long>[] _takenBySource = Array.Empty<Dictionary<string, long>>();
     private readonly Dictionary<string, string> _sourceIcon = new();
@@ -76,7 +77,7 @@ internal sealed class RunAggregate
         _playerCount = 0;
         _localSlot = 0;
         _labels = Array.Empty<string>();
-        _dealt = _taken = _heal = _block = _absorbed = Array.Empty<long>();
+        _dealt = _taken = _heal = _block = _absorbed = _buffered = Array.Empty<long>();
         _dealtBySource = _takenBySource = Array.Empty<Dictionary<string, long>>();
         _sourceIcon.Clear();
         _encDealt.Clear();
@@ -120,6 +121,7 @@ internal sealed class RunAggregate
             _heal[s] += ps.HealTotal;
             _block[s] += ps.BlockTotal;
             _absorbed[s] += ps.AbsorbedTotal;
+            _buffered[s] += ps.BufferedTotal;
             Merge(_dealtBySource[s], ps.Dealt);
             Merge(_takenBySource[s], ps.Taken);
             encD[s] = (int)Math.Min(int.MaxValue, ps.DealtTotal);
@@ -154,6 +156,7 @@ internal sealed class RunAggregate
         _heal = new long[_playerCount];
         _block = new long[_playerCount];
         _absorbed = new long[_playerCount];
+        _buffered = new long[_playerCount];
         _dealtBySource = new Dictionary<string, long>[_playerCount];
         _takenBySource = new Dictionary<string, long>[_playerCount];
         for (int s = 0; s < _playerCount; s++)
@@ -203,6 +206,7 @@ internal sealed class RunAggregate
                 HealTotal = _heal[s],
                 BlockTotal = _block[s],
                 AbsorbedTotal = _absorbed[s],
+                BufferedTotal = _buffered[s],
             };
             ps.DealtTotal = dt;
             ps.TakenTotal = tt;
