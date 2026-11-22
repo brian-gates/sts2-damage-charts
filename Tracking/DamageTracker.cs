@@ -40,23 +40,31 @@ internal readonly struct LogEntry
     public readonly string? Icon;
     public readonly string? Name;
     public readonly int Fight;
-    // The line split for drawing: Lead (no amount) and AmountText ("24", "24 (Buffer)"); AmountText null = Text only.
+    // The line as drawn (LogText): Lead, then AmountText ("8", "11 saved", "+6"; null = Lead only). ShortLead is
+    // Lead without the target, used for dealt lines when the log has a single enemy. Target: the hit's target name.
     public readonly string Lead;
+    public readonly string ShortLead;
     public readonly string? AmountText;
+    public readonly string? Target;
     public LogEntry(int round, string text, LogTone tone, HitKind? kind = null, long amount = 0, int slot = -1,
-        string? icon = null, string? name = null, int fight = 0, string? lead = null, string? amountText = null)
+        string? icon = null, string? name = null, int fight = 0, string? lead = null, string? amountText = null,
+        string? shortLead = null, string? target = null)
     {
         Round = round; Text = text; Tone = tone; Kind = kind; Amount = amount; Slot = slot; Icon = icon; Name = name;
-        Fight = fight; Lead = lead ?? text; AmountText = amountText;
+        Fight = fight; Lead = lead ?? text; ShortLead = shortLead ?? Lead; AmountText = amountText; Target = target;
     }
 
     public bool IsFightSeparator => Fight > 0;
 
     public static LogEntry FightSeparator(int fight) => new(0, $"Fight {fight}", LogTone.Plain, fight: Math.Max(1, fight));
 
-    public static LogEntry Of(Hit h, Func<int, string> playerName) =>
-        new(h.Round, h.Text(playerName), h.Tone, h.Kind, h.Amount, h.Slot, h.Icon, h.Source,
-            lead: h.Lead(playerName), amountText: h.AmountText);
+    public static LogEntry Of(Hit h, Func<int, string> playerName, bool coop)
+    {
+        var (lead, amount) = LogText.Format(h, playerName, coop, showTarget: true);
+        string shortLead = h.Kind == HitKind.Dealt ? LogText.Format(h, playerName, coop, showTarget: false).Lead : lead;
+        return new(h.Round, h.Text(playerName), h.Tone, h.Kind, h.Amount, h.Slot, h.Icon, h.Source,
+            lead: lead, amountText: amount, shortLead: shortLead, target: h.Target);
+    }
 }
 
 internal sealed class PlayerSources
@@ -178,7 +186,7 @@ internal sealed class DamageTracker
     {
         lock (_lock)
         {
-            _log.Add(LogEntry.Of(h, PlayerLabel));
+            _log.Add(LogEntry.Of(h, PlayerLabel, _playerCount > 1));
             if (_log.Count > LogCap) _log.RemoveRange(0, _log.Count - LogCap);
             if (_fightHits.Count < HitCap) _fightHits.Add(h); else _hitsTruncated = true;
         }

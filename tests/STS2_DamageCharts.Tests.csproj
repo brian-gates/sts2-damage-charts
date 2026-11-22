@@ -15,6 +15,7 @@
     <Compile Include="../Forecast/ForecastCheck.cs" Link="ForecastCheck.cs" />
     <Compile Include="../Tracking/DamageTracker.cs" Link="DamageTracker.cs" />
     <Compile Include="../Tracking/Hit.cs" Link="Hit.cs" />
+    <Compile Include="../Tracking/LogText.cs" Link="LogText.cs" />
     <Compile Include="../Tracking/BufferCandidates.cs" Link="BufferCandidates.cs" />
     <Compile Include="../Tracking/RunAggregate.cs" Link="RunAggregate.cs" />
     <Compile Include="../Tracking/GroupDetail.cs" Link="GroupDetail.cs" />
@@ -24,6 +25,7 @@
     <Compile Include="../Overlay/PanelDrag.cs" Link="PanelDrag.cs" />
     <Compile Include="../Charts/ChartScale.cs" Link="ChartScale.cs" />
     <Compile Include="../Charts/LogLayout.cs" Link="LogLayout.cs" />
+    <Compile Include="../Charts/DetailLayout.cs" Link="DetailLayout.cs" />
     <Compile Include="../Forecast/IntentRules.cs" Link="IntentRules.cs" />
     <Compile Include="../Stats/RunId.cs" Link="RunId.cs" />
     <Compile Include="../Stats/RunStatsFile.cs" Link="RunStatsFile.cs" />

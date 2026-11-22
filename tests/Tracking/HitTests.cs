@@ -54,8 +54,9 @@ public class HitTests
         t.AddHit(new Hit(1, HitKind.Taken, 0, "Cultist", null, -1, "you", 0, 9));
         t.AddHit(new Hit(1, HitKind.Potion, 0, "P", null, -1, null, -1, -1));
         var log = t.SourceSnapshot().Log;
-        Assert.Equal("Cultist → you", log[0].Lead);
+        Assert.Equal("Cultist", log[0].Lead);       // single player: "→ you" is implied
         Assert.Equal("9", log[0].AmountText);
+        Assert.Equal("Cultist → you  9", log[0].Text);
         Assert.Equal("P used", log[1].Lead);
         Assert.Null(log[1].AmountText);
     }
