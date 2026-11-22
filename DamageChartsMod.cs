@@ -846,13 +846,15 @@ public static class DamageChartsMod
     //      Receiver with IntendedHpLoss > 0 ("after block, before ModifyHpLost") and the player's HP did not drop;
     //   3. the player's Buffer stacks are then below the recorded count. The stack is spent by
     //      BufferPower.AfterModifyingHpLostAfterOsty (an async hook); if it has not landed by step 2 the check is
-    //      retried for a few frames.
-    // HP saved = IntendedHpLoss; the attacker comes from the same pending tag the taken path uses.
+    //      retried for a few frames, until the player's next hit starts.
+    // One stack lost confirms at most one hit (BufferCandidates), since other effects can zero a hit before
+    // Buffer and then Buffer doesn't decrement. HP saved = IntendedHpLoss; the attacker comes from the same
+    // pending tag the taken path uses.
     private const long BufferRetryFrames = 30;
     private static readonly Dictionary<Creature, (int Stacks, int Hp, long Frame)> _bufferBefore = new();
-    private readonly record struct BufferSave(Creature Who, int Slot, int Before, long Intended, int Round,
-        string? Attacker, string? AttackerId, int AttackerSlot, long Frame);
-    private static readonly List<BufferSave> _bufferSaves = new();
+    private readonly record struct BufferSave(Creature Who, int Slot, long Intended, int Round,
+        string? Attacker, string? AttackerId, int AttackerSlot);
+    private static readonly BufferCandidates<Creature, BufferSave> _bufferSaves = new();
     private static bool _bufferLogged;  // one log line per session confirming saves are seen
 
     private static void TryApplyBufferHook()
@@ -879,6 +881,7 @@ public static class DamageChartsMod
         try
         {
             if (!t.IsPlayer) return;
+            _bufferSaves.HitStarted(t);   // an earlier unconfirmed save on this player can no longer be proven
             int stacks = BufferStacks(t);
             if (stacks > 0) _bufferBefore[t] = (stacks, HpOf(t), _frame);
             else _bufferBefore.Remove(t);
@@ -890,7 +893,7 @@ public static class DamageChartsMod
     // Args are matched by type: the DamageResult, and the last Creature is the dealer.
     private static void AfterDamageReceivedPrefix(object[] __args)
     {
-        if (_disabled) return;
+        if (_disabled || _bufferBefore.Count == 0) return;   // no player hit with Buffer is in flight
         try
         {
             object? result = null;
@@ -925,25 +928,20 @@ public static class DamageChartsMod
                 if (dealer != null && dealer.IsPlayer) attackerSlot = SlotOf(dealer.Player);
             }
             int round = SafeCombatState()?.RoundNumber ?? 0;
-            _bufferSaves.Add(new BufferSave(who, slot, before.Stacks, intended, round, attacker, attackerId, attackerSlot, _frame));
+            _bufferSaves.Add(who, before.Stacks, _frame, new BufferSave(who, slot, intended, round, attacker, attackerId, attackerSlot));
             CheckBufferSaves();
         }
         catch { /* never disrupt damage resolution */ }
     }
 
-    // Records each candidate whose player's Buffer stacks went down; drops those too old to still be waiting.
+    // Records the candidates a lost Buffer stack proves (at most one per stack); see BufferCandidates.
     private static void CheckBufferSaves()
     {
         if (_bufferSaves.Count == 0) return;
         try
         {
-            for (int i = 0; i < _bufferSaves.Count; i++)
+            foreach (var s in _bufferSaves.Check(BufferStacks, _frame, BufferRetryFrames))
             {
-                var s = _bufferSaves[i];
-                bool spent = BufferStacks(s.Who) < s.Before;
-                if (!spent && _frame - s.Frame <= BufferRetryFrames) continue;
-                _bufferSaves.RemoveAt(i--);
-                if (!spent) continue;
                 int amount = (int)Math.Min(int.MaxValue, s.Intended);
                 string victim = MaybeName(s.Who);
                 _tracker.AddBuffered(s.Slot, amount);
