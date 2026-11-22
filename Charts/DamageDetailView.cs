@@ -45,7 +45,11 @@ internal sealed class DamageDetailView
     private readonly Panel _bgShadow;     // native hover-tip drop shadow behind _bg (native summary only)
     private readonly Panel _bg;           // themed panel (summary mode)
     private bool _nativePanel;            // _bg/_bgShadow restyled with the game's hover-tip art
-    private readonly Control _boxLayer;   // rounded panels (full view's sidebar, cards, pill bars), behind everything
+    private readonly Control _frameLayer; // the game's panel frames (full view, native_visuals), beneath everything
+    private readonly List<(Panel Shadow, Panel Frame)> _frames = new();
+    private int _frameCur;
+    private StyleBoxTexture? _eFrameStyle, _eShadowStyle;
+    private readonly Control _boxLayer;   // rounded panels (full view's sidebar, cards, pill bars), behind bars and text
     private readonly Control _barLayer;   // behind text
     private readonly List<(Panel Panel, StyleBoxFlat Style)> _boxes = new();
     private readonly List<Label> _labels = new();
@@ -147,7 +151,10 @@ internal sealed class DamageDetailView
         _bg.SetSize(new Vector2(_w, _h));
         _container.AddChild(_bg);
 
-        // Rounded panels first (beneath bars), then bars, then labels and icons on top.
+        // Game panel frames first, then rounded panels (beneath bars), then bars, then labels and icons on top.
+        _frameLayer = new Control { MouseFilter = Control.MouseFilterEnum.Ignore };
+        _frameLayer.SetPosition(Vector2.Zero);
+        _container.AddChild(_frameLayer);
         _boxLayer = new Control { MouseFilter = Control.MouseFilterEnum.Ignore };
         _boxLayer.SetPosition(Vector2.Zero);
         _container.AddChild(_boxLayer);
@@ -483,6 +490,7 @@ internal sealed class DamageDetailView
             var color = palette[Math.Min(slot, palette.Length - 1)];
             string who = (snap.PlayerCount > 1 && slot < snap.Labels.Length) ? $" – {snap.Labels[slot]}" : "";
             int cur = 0, barCur = 0, iconCur = 0, boxCur = 0;
+            _frameCur = 0;
 
             if (full)
             {
@@ -525,6 +533,7 @@ internal sealed class DamageDetailView
             for (int i = barCur; i < _bars.Count; i++) _bars[i].Visible = false;
             for (int i = iconCur; i < _icons.Count; i++) _icons[i].Visible = false;
             for (int i = boxCur; i < _boxes.Count; i++) _boxes[i].Panel.Visible = false;
+            for (int i = _frameCur; i < _frames.Count; i++) { _frames[i].Frame.Visible = false; _frames[i].Shadow.Visible = false; }
         }
         catch (Exception ex) { ErrorLog.Once("detail render", ex); }
     }
@@ -542,6 +551,13 @@ internal sealed class DamageDetailView
         ("Saved", new Color("15233a"), new Color("a3b6d0"), new Color("8cc8ff")),
         ("Healed", new Color("162a1c"), new Color("a3c6a8"), new Color("7fd47c")),
     };
+    // Native look (native_visuals): the game's hover-tip frame for panels, its title shadow, the scrollbar track's
+    // tint for dividers and the HP bar track's dark inset for bar tracks.
+    private const string ETopBarHeart = "res://images/atlases/ui_atlas.sprites/top_bar/top_bar_heart.tres";
+    private const string EBufferIcon = "res://images/atlases/power_atlas.sprites/buffer_power.tres";
+    private static readonly Color ETextShadow = new(0f, 0f, 0f, 0.25098f);       // hover_tip.tscn title shadow
+    private static readonly Color EHpTrack = new(0f, 0f, 0f, 0.55f);             // health bar track (as the forecast's)
+    private bool _eNative;
     private readonly List<CardItem> _cards = new();
     private readonly Dictionary<(long, int), string> _countTexts = new();   // "12 dealt" / "4 taken" / tile values
 
@@ -558,6 +574,7 @@ internal sealed class DamageDetailView
                             PlayerSources ps, Color[] palette, float top, float pad, string title)
     {
         float u = 1.5f * _fontScale;               // one mockup px (1280x720) at this viewport and UI scale
+        _eNative = EnsureFrameStyles();
         float sideX = pad, sideY = top + 14f * u, sideW = 330f * u;
         float sideBottom = Math.Max(sideY + 120f * u, _h - _bottomReserve);
         RenderSidebar(ref cur, ref barCur, ref iconCur, ref boxCur, snap, ps, sideX, sideY, sideW, sideBottom - sideY, u, title);
@@ -565,7 +582,7 @@ internal sealed class DamageDetailView
         // Right: the "Combat Log" heading, then the round cards, scrolling as one list.
         float logX = sideX + sideW + 32f * u;
         float logRight = _w - pad;
-        var head = Next(ref cur, 33, UiTheme.Gold, FontRole.Bold);
+        var head = Next(ref cur, 33, UiTheme.Gold, FontRole.Bold, shadow: _eNative);
         head.Text = "Combat Log";
         head.SetPosition(new Vector2(logX, sideY));
         float viewTop = sideY + 30f * u + 14f * u;
@@ -575,15 +592,64 @@ internal sealed class DamageDetailView
         RenderScrollbar(true, viewTop, viewH, logRight + pad * 0.4f, 8f, _visible + _maxOffset);
     }
 
+    // The hover-tip frame and shadow styles, made once (shared by every frame panel). False when native_visuals
+    // is off or the art is missing: panels then draw as plain rounded boxes.
+    private bool EnsureFrameStyles()
+    {
+        if (!GameAssets.Enabled) return false;
+        try
+        {
+            _eFrameStyle ??= GameAssets.NativePanel();
+            _eShadowStyle ??= GameAssets.NativePanelShadow();
+        }
+        catch { }
+        return _eFrameStyle != null;
+    }
+
+    // A panel behind content: the game's hover-tip frame (with its shadow) sized so its VISIBLE box is the rect
+    // (NativeLook: 9-slice margins are texture px, so the node is drawn at 1080p size and scaled), else a plain
+    // rounded box in the mockup's colors.
+    private void PanelBg(ref int boxCur, float x, float y, float w, float h, float u)
+    {
+        if (w <= 0f || h <= 0f) return;
+        if (!_eNative) { Box(ref boxCur, x, y, w, h, EPanel, EBorder, 1f, 6f * u); return; }
+        (Panel Shadow, Panel Frame) f;
+        if (_frameCur < _frames.Count) f = _frames[_frameCur];
+        else
+        {
+            f = (NativeLook.MakeFramePanel(), NativeLook.MakeFramePanel());
+            _frameLayer.AddChild(f.Shadow);
+            _frameLayer.AddChild(f.Frame);
+            _frames.Add(f);
+        }
+        _frameCur++;
+        float sc = Math.Max(0.1f, _fontScale);
+        var size = new Vector2(w / sc + NativeLook.OverhangX, h / sc + NativeLook.OverhangY);
+        Th.Stylebox(f.Frame, "panel", _eFrameStyle!);
+        if (_eShadowStyle != null) Th.Stylebox(f.Shadow, "panel", _eShadowStyle);
+        Place(f.Frame, x, y, size, sc);
+        Place(f.Shadow, x, y, size, sc);
+        f.Shadow.Visible = _eShadowStyle != null;
+
+        static void Place(Panel p, float x, float y, Vector2 size, float sc)
+        {
+            p.Scale = new Vector2(sc, sc);
+            p.SetPosition(new Vector2(x, y));
+            p.SetSize(size);
+            p.Visible = true;
+        }
+    }
+
     private void RenderSidebar(ref int cur, ref int barCur, ref int iconCur, ref int boxCur, SourceSnapshot snap,
                                PlayerSources ps, float x, float y, float w, float h, float u, string title)
     {
-        Box(ref boxCur, x, y, w, h, EPanel, EBorder, 1f, 6f * u);
-        float pad = 18f * u, gap = 16f * u;
+        PanelBg(ref boxCur, x, y, w, h, u);
+        // Inner margins: the hover-tip text insets (L22 T16 R26 B17 at 1080p) on the game's frame, else the mockup's 18.
+        float pad = _eNative ? 24f * _fontScale : 18f * u, gap = 16f * u;
         float ix = x + pad, iw = w - 2f * pad, cy = y + pad;
         float bottom = y + h - pad;
 
-        var t = Next(ref cur, 36, UiTheme.Gold, FontRole.Bold, title, iw);
+        var t = Next(ref cur, 36, UiTheme.Gold, FontRole.Bold, title, iw, shadow: _eNative);
         t.SetPosition(new Vector2(ix, cy));
         cy += 34f * u + gap;
 
@@ -605,14 +671,29 @@ internal sealed class DamageDetailView
             float tx = ix + (i % 2) * (tw + tg), ty = cy + (i / 2) * (th + tg);
             var tile = ETiles[i];
             Box(ref boxCur, tx, ty, tw, th, tile.Bg, default, 0f, 4f * u);
+            // Native: the game's icon for the stat at the tile's left; caption and number centered beside it.
+            float textX = tx, textW = tw;
+            var tileTex = _eNative ? TileIcon(i) : null;
+            if (tileTex != null)
+            {
+                float isz = Math.Min(32f * u, th - 16f * u);
+                var ic = NextIcon(ref iconCur);
+                ic.Texture = tileTex;
+                ic.SetPosition(new Vector2(tx + 8f * u, ty + (th - isz) * 0.5f));
+                ic.SetSize(new Vector2(isz, isz));
+                textX = tx + 8f * u + isz;
+                textW = tw - (textX - tx);
+            }
             var cap = Next(ref cur, 19, tile.Caption);
             cap.Text = tile.Label;
             cap.HorizontalAlignment = HorizontalAlignment.Center;
-            cap.SetPosition(new Vector2(tx, ty + (compact ? 4f : 8f) * u)); cap.SetSize(new Vector2(tw, 0f));
-            var val = Next(ref cur, compact ? 36 : 45, tile.Value, FontRole.Numeric);
+            cap.SetPosition(new Vector2(textX, ty + (compact ? 4f : 8f) * u)); cap.SetSize(new Vector2(textW, 0f));
+            // Numbers in the game's numeric Kreon with a heavy dark outline and soft shadow, like the top bar's.
+            var val = Next(ref cur, compact ? 36 : 45, tile.Value, FontRole.Numeric,
+                outline: _eNative ? Math.Max(2, (int)Math.Round(10f * _fontScale)) : null, shadow: _eNative);
             val.Text = CountText(values[i], 2);
             val.HorizontalAlignment = HorizontalAlignment.Center;
-            val.SetPosition(new Vector2(tx, ty + (compact ? 20f : 26f) * u)); val.SetSize(new Vector2(tw, 0f));
+            val.SetPosition(new Vector2(textX, ty + (compact ? 20f : 26f) * u)); val.SetSize(new Vector2(textW, 0f));
         }
         cy += 2f * th + tg + 8f * u;
 
@@ -660,11 +741,28 @@ internal sealed class DamageDetailView
             var name = Next(ref cur, 21, ECream, FontRole.Body, e.Name, Math.Max(0f, iw - (nameX - ix) - 60f * u));
             name.SetPosition(new Vector2(nameX, cy));
             float by = cy + 21f * u;
-            Box(ref boxCur, ix, by, iw, 6f * u, ETrack, default, 0f, 3f * u);
+            Box(ref boxCur, ix, by, iw, 6f * u, _eNative ? EHpTrack : ETrack, default, 0f, 3f * u);
             float bw = LogLayout.BarWidth(e.Total, max, iw, 6f * u);
             if (bw > 0f) Box(ref boxCur, ix, by, bw, 6f * u, c, default, 0f, 3f * u);
             cy += pitch;
         }
+    }
+
+    // The tiles' game icons: Dealt the attack intent (sword), Taken the top bar's heart, Saved the Buffer power,
+    // Healed the heal intent. Cached by LoadTex / GameAssets; null keeps the tile text-only.
+    private Texture2D? TileIcon(int i)
+    {
+        try
+        {
+            return i switch
+            {
+                0 => GameAssets.IntentAttackIcon(10),
+                1 => LoadTex(ETopBarHeart),
+                2 => LoadTex(EBufferIcon),
+                _ => HealIcon(),
+            };
+        }
+        catch { return null; }
     }
 
     // The log as round cards (RoundCards), scrolled by _logOffset steps; only what lies inside the view is drawn
@@ -673,6 +771,11 @@ internal sealed class DamageDetailView
                              bool coop, float x, float w, float viewTop, float viewH, float u)
     {
         var m = CardMetrics.Scaled(u);
+        // On the game's frame the content sits at the hover tips' text insets instead of the mockup's padding.
+        if (_eNative) m = m with { PadX = 24f * _fontScale, PadY = 17f * _fontScale };
+        Color line = _eNative ? GameAssets.ScrollTrackTint : ERowLine;
+        Color barTrack = _eNative ? EHpTrack : EBarTrack;
+        Color splitTrack = _eNative ? GameAssets.ScrollTrackTint : ETrack;
         float contentH = RoundCards.Build(log, m, _cards);
         _visible = RoundCards.VisibleSteps(viewH, m);
         _maxOffset = RoundCards.MaxOffset(contentH, viewH, m);
@@ -693,7 +796,7 @@ internal sealed class DamageDetailView
             if (item.Kind == CardItemKind.FightDivider)
             {
                 if (y0 < viewTop || y1 > viewBottom) continue;
-                var lbl = Next(ref cur, 30, UiTheme.Gold, FontRole.Bold);
+                var lbl = Next(ref cur, 30, UiTheme.Gold, FontRole.Bold, shadow: _eNative);
                 lbl.Text = log[item.First].Text;
                 var d = LogLayout.Divider(x, x + w, MeasureLabel(lbl), 12f * u);
                 lbl.SetPosition(new Vector2(d.LabelX, y0 + (item.H - 38f * u) * 0.5f));
@@ -705,13 +808,13 @@ internal sealed class DamageDetailView
 
             // Panel: the visible part of the card.
             float py0 = Math.Max(y0, viewTop), py1 = Math.Min(y1, viewBottom);
-            Box(ref boxCur, x, py0, w, py1 - py0, EPanel, EBorder, 1f, 6f * u);
+            PanelBg(ref boxCur, x, py0, w, py1 - py0, u);
 
             // Header: "Round N" left, "<d> dealt · <t> taken" right.
             float hy = y0 + m.PadY;
             if (hy >= viewTop && hy + m.HeaderH <= viewBottom)
             {
-                var rl = Next(ref cur, 30, UiTheme.Gold, FontRole.Bold);
+                var rl = Next(ref cur, 30, UiTheme.Gold, FontRole.Bold, shadow: _eNative);
                 rl.Text = RoundLabel(item.Number);
                 rl.SetPosition(new Vector2(x + m.PadX, hy - 4f * u));
                 float right = x + w - m.PadX;
@@ -735,7 +838,7 @@ internal sealed class DamageDetailView
             if (sy >= viewTop && sy + m.SplitH <= viewBottom)
             {
                 float bw = w - 2f * m.PadX, bx = x + m.PadX, r = m.SplitH * 0.5f;
-                Box(ref boxCur, bx, sy, bw, m.SplitH, ETrack, default, 0f, r);
+                Box(ref boxCur, bx, sy, bw, m.SplitH, splitTrack, default, 0f, r);
                 var (dw, tw) = RoundCards.SplitBar(item.Dealt, item.Taken, bw);
                 if (dw > 0f) Box(ref boxCur, bx, sy, dw, m.SplitH, EDealt, default, 0f, r, right: tw <= 0f);
                 if (tw > 0f) Box(ref boxCur, bx + dw, sy, tw, m.SplitH, ETaken, default, 0f, r, left: dw <= 0f);
@@ -748,7 +851,7 @@ internal sealed class DamageDetailView
                 if (ry < viewTop || ry + m.RowH > viewBottom) continue;
                 var e = log[item.First + i];
                 var sep = NextBar(ref barCur);
-                sep.Color = ERowLine;
+                sep.Color = line;
                 sep.SetPosition(new Vector2(x + m.PadX, ry - m.Gap * 0.5f));
                 sep.SetSize(new Vector2(w - 2f * m.PadX, Math.Max(1f, u * 0.67f)));
 
@@ -779,7 +882,7 @@ internal sealed class DamageDetailView
                 al.SetPosition(new Vector2(cols.AmountX, ry)); al.SetSize(new Vector2(cols.AmountW, m.RowH));
 
                 float bh = 12f * u, by = ry + (m.RowH - bh) * 0.5f;
-                Box(ref boxCur, cols.BarX, by, cols.BarW, bh, EBarTrack, default, 0f, bh * 0.5f);
+                Box(ref boxCur, cols.BarX, by, cols.BarW, bh, barTrack, default, 0f, bh * 0.5f);
                 float fw = LogLayout.BarWidth(e.Amount, maxAmount, cols.BarW, bh);
                 if (fw > 0f) Box(ref boxCur, cols.BarX, by, fw, bh, barColor, default, 0f, bh * 0.5f);
             }
@@ -1187,7 +1290,7 @@ internal sealed class DamageDetailView
         {
             "res://images/atlases/intent_atlas.sprites/heal/intent_heal_00.tres",
             "res://images/packed/intents/heal/intent_heal_00.png",
-            GameAssets.Paths.UiAtlasSprites + "top_bar_heart.tres",
+            ETopBarHeart,
         })
             if ((_healIcon = LoadTex(p)) != null) break;
         return _healIcon;
@@ -1356,8 +1459,10 @@ internal sealed class DamageDetailView
 
     // With fitText, the label shows that text at the largest size up to fontSize whose width fits fitWidth
     // (sized before applying, so the font size isn't rewritten every frame).
+    // outline: the outline size in px (null = UiTheme's default); shadow: the hover tips' soft drop shadow
+    // (the game's title look), removed again when a pooled label is reused without it.
     private Label Next(ref int cursor, int fontSize, Color color, FontRole role = FontRole.Body,
-                       string? fitText = null, float fitWidth = 0f)
+                       string? fitText = null, float fitWidth = 0f, int? outline = null, bool shadow = false)
     {
         if (_opaque) color = new Color(color.R, color.G, color.B, 1f);
         int fs = Math.Max(1, (int)Math.Round(fontSize * _fontScale));
@@ -1377,7 +1482,14 @@ internal sealed class DamageDetailView
         lbl.HorizontalAlignment = HorizontalAlignment.Left;
         lbl.VerticalAlignment = VerticalAlignment.Top;
         lbl.SetSize(Vector2.Zero);
-        UiTheme.Apply(lbl, fs, color, roleFont);
+        UiTheme.Apply(lbl, fs, color, roleFont, outlineSize: outline);
+        if (shadow)
+        {
+            Th.Color(lbl, "font_shadow_color", ETextShadow);
+            Th.Const(lbl, "shadow_offset_x", Math.Max(1, (int)Math.Round(fs * 3f / 22f)));
+            Th.Const(lbl, "shadow_offset_y", Math.Max(1, (int)Math.Round(fs * 2f / 22f)));
+        }
+        else Th.RemoveColor(lbl, "font_shadow_color");
         lbl.Visible = true;
         cursor++;
         return lbl;

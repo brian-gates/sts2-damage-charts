@@ -20,6 +20,16 @@ public class RoundCardsTests
     }
 
     [Fact]
+    public void NativePaddingChangesOnlyThePads()
+    {
+        // On the game's hover-tip frame the card uses its text insets (PadX 24, PadY 17 at 1080p).
+        var native = M with { PadX = 24f, PadY = 17f };
+        Assert.Equal(RoundCards.CardHeight(2, M) + 2f * 3f, RoundCards.CardHeight(2, native));
+        Assert.Equal(RoundCards.RowY(1, M) + 3f, RoundCards.RowY(1, native));
+        Assert.Equal(M.Step, native.Step);   // scrolling unchanged
+    }
+
+    [Fact]
     public void RowsFollowTheSplitBar()
     {
         Assert.Equal(14f + 26f + 4f, RoundCards.SplitY(M));
