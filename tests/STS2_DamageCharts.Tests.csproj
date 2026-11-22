@@ -12,6 +12,7 @@
   <!-- Compile the pure sources directly (they have no Godot/game refs), so tests need no game DLLs. -->
   <ItemGroup>
     <Compile Include="../Forecast/DamageForecast.cs" Link="DamageForecast.cs" />
+    <Compile Include="../Forecast/ForecastCheck.cs" Link="ForecastCheck.cs" />
     <Compile Include="../Tracking/DamageTracker.cs" Link="DamageTracker.cs" />
     <Compile Include="../Tracking/Hit.cs" Link="Hit.cs" />
     <Compile Include="../Tracking/RunAggregate.cs" Link="RunAggregate.cs" />
