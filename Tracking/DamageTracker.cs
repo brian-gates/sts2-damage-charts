@@ -76,9 +76,13 @@ internal sealed class SourceSnapshot
     public readonly int PlayerCount;
     public readonly int LocalSlot;
     public readonly LogEntry[] Log; // most recent lines, oldest-first
-    public SourceSnapshot(PlayerSources[] perPlayer, string[] labels, int playerCount, int localSlot, LogEntry[] log)
+    public readonly IReadOnlyList<Hit> FightHits;  // every hit of the fight, first DamageTracker.HitCap kept
+    public readonly bool HitsTruncated;
+    public SourceSnapshot(PlayerSources[] perPlayer, string[] labels, int playerCount, int localSlot, LogEntry[] log,
+        IReadOnlyList<Hit>? fightHits = null, bool hitsTruncated = false)
     {
         PerPlayer = perPlayer; Labels = labels; PlayerCount = playerCount; LocalSlot = localSlot; Log = log;
+        FightHits = fightHits ?? Array.Empty<Hit>(); HitsTruncated = hitsTruncated;
     }
 }
 
@@ -102,6 +106,9 @@ internal sealed class DamageTracker
     private readonly Dictionary<int, Dictionary<string, long>> _potionsByPlayer = new(); // slot -> potion -> uses
     private readonly List<LogEntry> _log = new();
     private const int LogCap = 500;
+    public const int HitCap = 600;   // hits kept per fight for the shared log
+    private readonly List<Hit> _fightHits = new();
+    private bool _hitsTruncated;
     private const int LogShow = 300; // detail panel scrolls through this much history
     private int _maxRound;
     private int _playerCount = 1;
@@ -124,6 +131,8 @@ internal sealed class DamageTracker
             _absorbedByPlayer.Clear();
             _potionsByPlayer.Clear();
             _log.Clear();
+            _fightHits.Clear();
+            _hitsTruncated = false;
             _maxRound = 0;
             _playerCount = Math.Max(1, playerCount);
             _labels = labels;
@@ -136,14 +145,18 @@ internal sealed class DamageTracker
         lock (_lock) { return _dealtBySource.Count > 0 || _takenBySource.Count > 0; }
     }
 
-    public void AddLog(int round, string text, bool taken)
+    // Records a hit: the in-game log line is drawn from it, and the first HitCap are kept as data.
+    public void AddHit(Hit h)
     {
         lock (_lock)
         {
-            _log.Add(new LogEntry(round, text, taken));
+            _log.Add(new LogEntry(h.Round, h.Text(PlayerLabel), h.IsTaken));
             if (_log.Count > LogCap) _log.RemoveRange(0, _log.Count - LogCap);
+            if (_fightHits.Count < HitCap) _fightHits.Add(h); else _hitsTruncated = true;
         }
     }
+
+    private string PlayerLabel(int slot) => slot >= 0 && slot < _labels.Length ? _labels[slot] : "?";
 
     public void AddDealt(int round, int slot, int amount, string source, string? icon = null, string? id = null)
         => Add(round, slot, 0, amount, source, _dealtBySource, icon, id);
@@ -263,7 +276,7 @@ internal sealed class DamageTracker
             }
             int from = Math.Max(0, _log.Count - LogShow);
             var log = _log.GetRange(from, _log.Count - from).ToArray();
-            return new SourceSnapshot(perPlayer, (string[])_labels.Clone(), _playerCount, _localSlot, log);
+            return new SourceSnapshot(perPlayer, (string[])_labels.Clone(), _playerCount, _localSlot, log, _fightHits.ToArray(), _hitsTruncated);
         }
     }
 

@@ -13,6 +13,7 @@
   <ItemGroup>
     <Compile Include="../Forecast/DamageForecast.cs" Link="DamageForecast.cs" />
     <Compile Include="../Tracking/DamageTracker.cs" Link="DamageTracker.cs" />
+    <Compile Include="../Tracking/Hit.cs" Link="Hit.cs" />
     <Compile Include="../Tracking/RunAggregate.cs" Link="RunAggregate.cs" />
     <Compile Include="../Tracking/GroupDetail.cs" Link="GroupDetail.cs" />
     <Compile Include="../Forecast/SelfHarmText.cs" Link="SelfHarmText.cs" />

@@ -466,9 +466,10 @@ public static class DamageChartsMod
             if (icon == null) { try { if (potion.ImagePath is string ip && ResourceLoader.Exists(ip)) icon = ip; } catch { } }
             _tracker.AddPotion(slot, name, icon, ModelIdOf(potion));
             int round = SafeCombatState()?.RoundNumber ?? 0;
-            string onto = target == null ? "" : target.IsPlayer ? (target.Player == potion.Owner ? "" : $" → {MaybeName(target)}")
-                : $" → {TextHelper.SafeGetText(() => target.Monster!.Title) ?? "Enemy"}";
-            _tracker.AddLog(round, $"{name} used{onto}", false);
+            string? onto = target == null ? null : target.IsPlayer ? (target.Player == potion.Owner ? null : MaybeName(target))
+                : TextHelper.SafeGetText(() => target.Monster!.Title) ?? "Enemy";
+            int ontoSlot = target != null && target.IsPlayer && onto != null ? SlotOf(target.Player) : -1;
+            _tracker.AddHit(new Hit(round, HitKind.Potion, slot, name, ModelIdOf(potion), -1, onto, ontoSlot, -1));
         }
         catch { /* never disrupt the game's potion flow */ }
     }
@@ -1736,7 +1737,7 @@ public static class DamageChartsMod
                 if (hslot < 0) return;
                 int healed = -lost;
                 _tracker.AddHealed(hslot, healed);
-                _tracker.AddLog(round, $"{MaybeName(creature)} healed  {healed}", false);
+                _tracker.AddHit(new Hit(round, HitKind.Healed, hslot, null, null, -1, MaybeName(creature), hslot, healed));
                 return;
             }
 
@@ -1763,7 +1764,7 @@ public static class DamageChartsMod
                 string by = TextHelper.SafeGetText(() => hit.Dealer!.Monster!.Title) ?? "Enemy";
                 string pet = TextHelper.SafeGetText(() => creature.Monster!.Title) ?? "Pet";
                 if (!_petLogged) { _petLogged = true; GD.Print($"[STS2 Damage] absorbed: {by} -> {pet} {lost}"); }
-                _tracker.AddLog(round, $"{by} → {pet}  {lost}", true);
+                _tracker.AddHit(new Hit(round, HitKind.Absorbed, pslot, by, ModelIdOf(InstanceGet(hit.Dealer, "Monster")), -1, pet, -1, lost));
                 return;
             }
 
@@ -1783,7 +1784,7 @@ public static class DamageChartsMod
                 _tracker.AddTaken(round, slot, lost, attacker, null, attackerId);
                 if (ForecastReader.Debug) GD.Print($"[STS2 Damage] HIT taken src={attacker} amt={lost} round={round} frame={_frame}");
                 VfxMoments.OnTaken(creature, lost);
-                _tracker.AddLog(round, $"{attacker} → {victim}  {lost}", true);
+                _tracker.AddHit(new Hit(round, HitKind.Taken, slot, attacker, attackerId, -1, victim, slot, lost));
                 return;
             }
 
@@ -1803,7 +1804,7 @@ public static class DamageChartsMod
             _tracker.AddDealt(round, dslot, lost, src, icon, srcId);
             if (ForecastReader.Debug) GD.Print($"[STS2 Damage] HIT dealt src={src} amt={lost} round={round} frame={_frame}");
             if (dslot == _localSlot) VfxMoments.OnDealt(creature, lost, src, icon);
-            _tracker.AddLog(round, $"{src} → {TextHelper.SafeGetText(() => creature.Monster!.Title) ?? "Enemy"}  {lost}", false);
+            _tracker.AddHit(new Hit(round, HitKind.Dealt, dslot, src, srcId, dslot, TextHelper.SafeGetText(() => creature.Monster!.Title) ?? "Enemy", -1, lost));
         }
         catch { /* overlay must never break combat */ }
     }
