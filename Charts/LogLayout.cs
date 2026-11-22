@@ -45,6 +45,10 @@ internal static class LogLayout
         return max;
     }
 
+    // The bars' full scale: a share of the row, so the largest bar is a backdrop and text can run past it.
+    public const float BarMaxFrac = 0.45f;
+    public static float BarMaxWidth(float rowWidth) => Math.Max(0f, rowWidth) * BarMaxFrac;
+
     // Width of a line's bar: proportional to amount / max over maxWidth, never past it; any positive amount
     // shows at least minWidth so a 1-HP hit is still visible. 0 for nothing.
     public static float BarWidth(long amount, long max, float maxWidth, float minWidth = 2f)

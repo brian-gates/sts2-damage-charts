@@ -941,7 +941,7 @@ internal sealed class DamageDetailView
         float right = _w - (full ? pad : 12f) - 10f;          // clear of the scrollbar
         float iconSz = lineH - 2f;
         float textX = leftX + 4f + iconSz + 4f;               // an icon column, so lines align with or without art
-        float barMaxW = Math.Max(0f, right - textX + 2f);
+        float barMaxW = LogLayout.BarMaxWidth(right - textX + 2f);
         long maxAmount = LogLayout.MaxAmount(log);
         var sepColor = new Color(UiTheme.Gold.R, UiTheme.Gold.G, UiTheme.Gold.B, 0.6f);
         var green = new Color(0.55f, 0.85f, 0.55f);
@@ -973,7 +973,8 @@ internal sealed class DamageDetailView
             if (LogLayout.HasBar(e.Kind))
             {
                 // Amount bar behind the text, scaled to the largest single amount in the log (chronological,
-                // unlike the sorted source bars above), tinted like those bars.
+                // unlike the sorted source bars above). It carries the kind's color as a soft backdrop (about
+                // 0.45 of the source bars' tint), so the cream text on it stays readable.
                 Color accent = e.Kind switch
                 {
                     HitKind.Dealt => palette[Math.Clamp(e.Slot, 0, palette.Length - 1)],
@@ -983,8 +984,8 @@ internal sealed class DamageDetailView
                 };
                 var bar = NextBar(ref barCur);
                 bar.Color = _opaque
-                    ? new Color(accent.R * 0.4f, accent.G * 0.4f, accent.B * 0.4f, 1f)
-                    : new Color(accent.R, accent.G, accent.B, 0.30f);
+                    ? new Color(accent.R * 0.4f, accent.G * 0.4f, accent.B * 0.4f, 0.45f)
+                    : new Color(accent.R, accent.G, accent.B, 0.14f);
                 bar.SetPosition(new Vector2(textX - 2f, y + 1f));
                 bar.SetSize(new Vector2(LogLayout.BarWidth(e.Amount, maxAmount, barMaxW), lineH - 3f));
             }
@@ -996,10 +997,24 @@ internal sealed class DamageDetailView
                 ic.SetPosition(new Vector2(leftX + 4f, y + 1f));
                 ic.SetSize(new Vector2(iconSz, iconSz));
             }
-            var color = e.Tone switch { LogTone.Taken => UiTheme.Red, LogTone.Buffered => UiTheme.Saved, _ => UiTheme.Cream };
-            var line2 = Next(ref cur, lineSize, color);
-            line2.Text = e.Text;
-            line2.SetPosition(new Vector2(e.Kind == null ? leftX + 4f : textX, y));
+            // Cream text for every kind; the amount follows in bold numeric type in the kind's color.
+            var line2 = Next(ref cur, lineSize, UiTheme.Cream);
+            line2.Text = e.AmountText != null ? e.Lead : e.Text;
+            float lx = e.Kind == null ? leftX + 4f : textX;
+            line2.SetPosition(new Vector2(lx, y));
+            if (e.AmountText != null)
+            {
+                Color amountColor = e.Kind switch
+                {
+                    HitKind.Taken or HitKind.Absorbed => UiTheme.Red,
+                    HitKind.Buffered => UiTheme.Saved,
+                    HitKind.Healed => green,
+                    _ => UiTheme.Cream,
+                };
+                var amt = Next(ref cur, lineSize, amountColor, FontRole.Numeric);
+                amt.Text = e.AmountText;
+                amt.SetPosition(new Vector2(lx + LeadWidth(line2) + (full ? 8f * _fontScale : 5f), y));
+            }
             y += lineH;
         }
 
@@ -1182,6 +1197,21 @@ internal sealed class DamageDetailView
         })
             if ((_healIcon = LoadTex(p)) != null) break;
         return _healIcon;
+    }
+
+    // A log line's lead width, cached by text and font size (lines repeat every frame; measuring goes through
+    // Godot interop). The cache is dropped when it grows large or the scale changes.
+    private readonly Dictionary<(string, int), float> _leadWidths = new();
+    private float LeadWidth(Label lbl)
+    {
+        int size;
+        try { size = lbl.GetThemeFontSize("font_size"); } catch { size = 0; }
+        var key = (lbl.Text, size);
+        if (_leadWidths.TryGetValue(key, out float w)) return w;
+        if (_leadWidths.Count > 2000) _leadWidths.Clear();
+        w = MeasureLabel(lbl);
+        _leadWidths[key] = w;
+        return w;
     }
 
     // A label's text width at its applied font and size (0 when unknown, which centers it as if empty).

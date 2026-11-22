@@ -40,19 +40,23 @@ internal readonly struct LogEntry
     public readonly string? Icon;
     public readonly string? Name;
     public readonly int Fight;
+    // The line split for drawing: Lead (no amount) and AmountText ("24", "24 (Buffer)"); AmountText null = Text only.
+    public readonly string Lead;
+    public readonly string? AmountText;
     public LogEntry(int round, string text, LogTone tone, HitKind? kind = null, long amount = 0, int slot = -1,
-        string? icon = null, string? name = null, int fight = 0)
+        string? icon = null, string? name = null, int fight = 0, string? lead = null, string? amountText = null)
     {
         Round = round; Text = text; Tone = tone; Kind = kind; Amount = amount; Slot = slot; Icon = icon; Name = name;
-        Fight = fight;
+        Fight = fight; Lead = lead ?? text; AmountText = amountText;
     }
 
     public bool IsFightSeparator => Fight > 0;
 
     public static LogEntry FightSeparator(int fight) => new(0, $"Fight {fight}", LogTone.Plain, fight: Math.Max(1, fight));
 
-    public static LogEntry Of(Hit h, string text) =>
-        new(h.Round, text, h.Tone, h.Kind, h.Amount, h.Slot, h.Icon, h.Source);
+    public static LogEntry Of(Hit h, Func<int, string> playerName) =>
+        new(h.Round, h.Text(playerName), h.Tone, h.Kind, h.Amount, h.Slot, h.Icon, h.Source,
+            lead: h.Lead(playerName), amountText: h.AmountText);
 }
 
 internal sealed class PlayerSources
@@ -174,7 +178,7 @@ internal sealed class DamageTracker
     {
         lock (_lock)
         {
-            _log.Add(LogEntry.Of(h, h.Text(PlayerLabel)));
+            _log.Add(LogEntry.Of(h, PlayerLabel));
             if (_log.Count > LogCap) _log.RemoveRange(0, _log.Count - LogCap);
             if (_fightHits.Count < HitCap) _fightHits.Add(h); else _hitsTruncated = true;
         }

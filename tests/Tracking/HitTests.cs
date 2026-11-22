@@ -28,6 +28,39 @@ public class HitTests
     }
 
     [Fact]
+    public void LeadAndAmountMakeUpTheText()
+    {
+        var hits = new[]
+        {
+            new Hit(1, HitKind.Dealt, 0, "Strike", null, 0, "Cultist", -1, 6),
+            new Hit(1, HitKind.Taken, 0, "Cultist", null, -1, "you", 0, 9),
+            new Hit(1, HitKind.Absorbed, 0, "Cultist", null, -1, "Osty", -1, 4),
+            new Hit(1, HitKind.Healed, 0, null, null, -1, "you", 0, 7),
+            new Hit(1, HitKind.Buffered, 0, "Cultist", null, -1, "you", 0, 24),
+        };
+        foreach (var h in hits) Assert.Equal(h.Text(Name), $"{h.Lead(Name)}  {h.AmountText}");
+        Assert.Equal("Cultist → you", hits[4].Lead(Name));
+        Assert.Equal("24 (Buffer)", hits[4].AmountText);
+        Assert.Equal("you healed", hits[3].Lead(Name));
+        var potion = new Hit(3, HitKind.Potion, 0, "Fire Potion", null, -1, "Cultist", -1, -1);
+        Assert.Null(potion.AmountText);
+        Assert.Equal(potion.Text(Name), potion.Lead(Name));
+    }
+
+    [Fact]
+    public void Tracker_LogLinesCarryLeadAndAmount()
+    {
+        var t = Tracker();
+        t.AddHit(new Hit(1, HitKind.Taken, 0, "Cultist", null, -1, "you", 0, 9));
+        t.AddHit(new Hit(1, HitKind.Potion, 0, "P", null, -1, null, -1, -1));
+        var log = t.SourceSnapshot().Log;
+        Assert.Equal("Cultist → you", log[0].Lead);
+        Assert.Equal("9", log[0].AmountText);
+        Assert.Equal("P used", log[1].Lead);
+        Assert.Null(log[1].AmountText);
+    }
+
+    [Fact]
     public void Text_UnknownBufferedAttackerReadsAsQuestionMark()
     {
         Assert.Equal("? → you  7 (Buffer)", new Hit(1, HitKind.Buffered, 0, null, null, -1, "you", 0, 7).Text(Name));

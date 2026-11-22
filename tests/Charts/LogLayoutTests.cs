@@ -28,6 +28,17 @@ public class LogLayoutTests
     }
 
     [Fact]
+    public void BarsScaleToAbout45PercentOfTheRow()
+    {
+        Assert.Equal(450f, LogLayout.BarMaxWidth(1000f), 3);
+        Assert.Equal(0f, LogLayout.BarMaxWidth(-5f));
+        // The largest amount fills the capped width, not the row; half the amount, half of that.
+        float full = LogLayout.BarMaxWidth(1000f);
+        Assert.Equal(450f, LogLayout.BarWidth(24, 24, full), 3);
+        Assert.Equal(225f, LogLayout.BarWidth(12, 24, full), 3);
+    }
+
+    [Fact]
     public void PotionAndTextLinesHaveNoBar()
     {
         Assert.False(LogLayout.HasBar(HitKind.Potion));

@@ -25,17 +25,29 @@ internal readonly record struct Hit(
 
     public LogTone Tone => Kind == HitKind.Buffered ? LogTone.Buffered : IsTaken ? LogTone.Taken : LogTone.Plain;
 
-    // The line the in-game log shows. playerName is only a fallback for a player side with no stored name.
-    public string Text(Func<int, string> playerName)
+    // The line the in-game log shows: Lead, then (for lines with an amount) two spaces and AmountText. playerName
+    // is only a fallback for a player side with no stored name.
+    public string Text(Func<int, string> playerName) =>
+        AmountText is { } amount ? $"{Lead(playerName)}  {amount}" : Lead(playerName);
+
+    // The line without its amount: "Cultist → you", "you healed", or the whole potion line.
+    public string Lead(Func<int, string> playerName)
     {
         string src = Source ?? (SourceSlot >= 0 ? playerName(SourceSlot) : "?");
         string tgt = Target ?? (TargetSlot >= 0 ? playerName(TargetSlot) : "?");
         return Kind switch
         {
-            HitKind.Healed => $"{tgt} healed  {Amount}",
+            HitKind.Healed => $"{tgt} healed",
             HitKind.Potion => Target == null && TargetSlot < 0 ? $"{src} used" : $"{src} used → {tgt}",
-            HitKind.Buffered => $"{src} → {tgt}  {Amount} (Buffer)",
-            _ => $"{src} → {tgt}  {Amount}",
+            _ => $"{src} → {tgt}",
         };
     }
+
+    // The amount as the line shows it ("24", or "24 (Buffer)" for a Buffer save); null for a potion line.
+    public string? AmountText => Kind switch
+    {
+        HitKind.Potion => null,
+        HitKind.Buffered => $"{Amount} (Buffer)",
+        _ => Amount.ToString(),
+    };
 }
