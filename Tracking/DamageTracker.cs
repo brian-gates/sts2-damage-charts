@@ -25,13 +25,27 @@ internal readonly struct SourceEntry
     { Name = name; Total = total; Icon = icon; Hits = hits; Id = id; }
 }
 
-// One line in the combat log.
+// One line in the combat log. Kind is null for a text-only line (the run recap's fight separator). Amount, Slot
+// (whose line it is), Icon (the source's art path) and Name (the source's name, for an icon by name) come from
+// the hit, for the line's icon and amount bar.
 internal readonly struct LogEntry
 {
     public readonly int Round;
     public readonly string Text;
     public readonly LogTone Tone;
-    public LogEntry(int round, string text, LogTone tone) { Round = round; Text = text; Tone = tone; }
+    public readonly HitKind? Kind;
+    public readonly long Amount;
+    public readonly int Slot;
+    public readonly string? Icon;
+    public readonly string? Name;
+    public LogEntry(int round, string text, LogTone tone, HitKind? kind = null, long amount = 0, int slot = -1,
+        string? icon = null, string? name = null)
+    {
+        Round = round; Text = text; Tone = tone; Kind = kind; Amount = amount; Slot = slot; Icon = icon; Name = name;
+    }
+
+    public static LogEntry Of(Hit h, string text) =>
+        new(h.Round, text, h.Tone, h.Kind, h.Amount, h.Slot, h.Icon, h.Source);
 }
 
 internal sealed class PlayerSources
@@ -153,7 +167,7 @@ internal sealed class DamageTracker
     {
         lock (_lock)
         {
-            _log.Add(new LogEntry(h.Round, h.Text(PlayerLabel), h.Tone));
+            _log.Add(LogEntry.Of(h, h.Text(PlayerLabel)));
             if (_log.Count > LogCap) _log.RemoveRange(0, _log.Count - LogCap);
             if (_fightHits.Count < HitCap) _fightHits.Add(h); else _hitsTruncated = true;
         }

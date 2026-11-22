@@ -91,6 +91,23 @@ public class HitTests
     }
 
     [Fact]
+    public void Tracker_LogLinesCarryKindAmountSlotIconAndName()
+    {
+        var t = Tracker();
+        t.AddHit(new Hit(2, HitKind.Dealt, 0, "Strike", "CARD.STRIKE_SILENT", 0, "Cultist", -1, 6, "res://card.png"));
+        t.AddHit(new Hit(2, HitKind.Buffered, 0, "Cultist", null, -1, "you", 0, 24));
+        var log = t.SourceSnapshot().Log;
+        Assert.Equal(HitKind.Dealt, log[0].Kind);
+        Assert.Equal(6, log[0].Amount);
+        Assert.Equal(0, log[0].Slot);
+        Assert.Equal("res://card.png", log[0].Icon);
+        Assert.Equal("Strike", log[0].Name);
+        Assert.Equal(HitKind.Buffered, log[1].Kind);
+        Assert.Null(log[1].Icon);
+        Assert.Equal("Cultist", log[1].Name);
+    }
+
+    [Fact]
     public void Tracker_BufferedTotalIsSeparateFromTaken()
     {
         var t = Tracker();

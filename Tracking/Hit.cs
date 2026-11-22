@@ -14,10 +14,12 @@ internal enum LogTone { Plain, Taken, Buffered }
 // SourceSlot/TargetSlot are -1 unless that side is a player. Amount is -1 for potions.
 // Source/Target keep the display name the log shows today, even for a player side, so the line is unchanged
 // (the tracker's per-slot labels differ from the in-fight names: "you", character title only).
+// Icon: the source's art (a card portrait, power or potion sprite path) for the in-game log line; display only,
+// never written to the stats file. Null = the log picks an icon from the source's name or kind.
 internal readonly record struct Hit(
     int Round, HitKind Kind, int Slot,
     string? Source, string? SourceId, int SourceSlot,
-    string? Target, int TargetSlot, long Amount)
+    string? Target, int TargetSlot, long Amount, string? Icon = null)
 {
     public bool IsTaken => Kind == HitKind.Taken || Kind == HitKind.Absorbed;
 

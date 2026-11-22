@@ -477,7 +477,7 @@ public static class DamageChartsMod
             string? onto = target == null ? null : target.IsPlayer ? (target.Player == potion.Owner ? null : MaybeName(target))
                 : TextHelper.SafeGetText(() => target.Monster!.Title) ?? "Enemy";
             int ontoSlot = target != null && target.IsPlayer && onto != null ? SlotOf(target.Player) : -1;
-            _tracker.AddHit(new Hit(round, HitKind.Potion, slot, name, ModelIdOf(potion), -1, onto, ontoSlot, -1));
+            _tracker.AddHit(new Hit(round, HitKind.Potion, slot, name, ModelIdOf(potion), -1, onto, ontoSlot, -1, icon));
         }
         catch { /* never disrupt the game's potion flow */ }
     }
@@ -2032,7 +2032,7 @@ public static class DamageChartsMod
             _tracker.AddDealt(round, dslot, lost, src, icon, srcId);
             if (ForecastReader.Debug) GD.Print($"[STS2 Damage] HIT dealt src={src} amt={lost} round={round} frame={_frame}");
             if (dslot == _localSlot) VfxMoments.OnDealt(creature, lost, src, icon);
-            _tracker.AddHit(new Hit(round, HitKind.Dealt, dslot, src, srcId, dslot, TextHelper.SafeGetText(() => creature.Monster!.Title) ?? "Enemy", -1, lost));
+            _tracker.AddHit(new Hit(round, HitKind.Dealt, dslot, src, srcId, dslot, TextHelper.SafeGetText(() => creature.Monster!.Title) ?? "Enemy", -1, lost, icon));
         }
         catch { /* overlay must never break combat */ }
     }
