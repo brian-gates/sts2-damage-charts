@@ -27,9 +27,6 @@ internal sealed class DamageTooltipView
     private const float FlatUnit = 0.74f;
     private const float FlatPad = 11f;               // in layout units (x FlatUnit)
 
-    private static readonly Color HealColor = new(0.45f, 0.85f, 0.45f);
-    private static readonly Color BlockColor = new(0.50f, 0.72f, 0.96f);
-    private static readonly Color EliteColor = new(1.00f, 0.66f, 0.25f);
 
     private readonly CanvasLayer _layer;
     public float UiScaleMul = 1f;   // config ui_scale, like the other views
@@ -127,7 +124,7 @@ internal sealed class DamageTooltipView
 
         float contentW = (d.ShowPct ? NativeContentWPct : NativeContentW) * u;
         // A title-only tip (e.g. the close button's "Close (C)") hugs its text like a short game tip.
-        if (d.Players.Count == 0 && string.IsNullOrEmpty(d.Subtitle) && string.IsNullOrEmpty(d.Note) && d.Kind == FightKind.Unknown)
+        if (d.Players.Count == 0)
         {
             Font? f = title ?? UiTheme.DefaultFont;
             try { if (f != null) contentW = Math.Min(contentW, f.GetStringSize(d.Title, HorizontalAlignment.Left, -1, F(22, u)).X + 12f * u); }
@@ -140,24 +137,8 @@ internal sealed class DamageTooltipView
         float rowH = 30f * u, iconSz = NativeIcon * u, gap = 8f * u;
         float amtW = (d.ShowPct ? 120f : 80f) * u;
 
-        // Title row, with the fight's tag right-aligned in its accent color.
-        string? tag = d.Kind switch { FightKind.Elite => "ELITE", FightKind.Boss => "BOSS", _ => null };
-        float tagW = tag != null ? 70f * u : 0f;
-        Text(ref cur, native, d.Title, F(22, u), UiTheme.Gold, title, left, y, contentW - tagW, 34f * u, HorizontalAlignment.Left);
-        if (tag != null)
-            Text(ref cur, native, tag, F(18, u), d.Kind == FightKind.Boss ? UiTheme.Red : EliteColor, title,
-                 right - tagW, y, tagW, 34f * u, HorizontalAlignment.Right);
+        Text(ref cur, native, d.Title, F(22, u), UiTheme.Gold, title, left, y, contentW, 34f * u, HorizontalAlignment.Left);
         y += 36f * u;
-        if (!string.IsNullOrEmpty(d.Subtitle))
-        {
-            Text(ref cur, native, d.Subtitle!, F(18, u), UiTheme.Cream, body, left, y, contentW, 26f * u, HorizontalAlignment.Left);
-            y += 26f * u;
-        }
-        if (!string.IsNullOrEmpty(d.Note))
-        {
-            Text(ref cur, native, d.Note!, F(16, u), dim, body, left, y, contentW, 24f * u, HorizontalAlignment.Left);
-            y += 24f * u;
-        }
 
         float indent = left + 4f * u;
         for (int p = 0; p < d.Players.Count; p++)
@@ -190,15 +171,6 @@ internal sealed class DamageTooltipView
             y += rowH;
             y = SourceRows(ref cur, ref iconCur, native, d, pd.Taken, true, k, body, num, dim, u, indent, right, y, rowH, iconSz, gap, amtW);
 
-            if (pd.Heal != null || pd.Block != null)
-            {
-                float half = contentW * 0.5f;
-                if (pd.Heal is long h)
-                    AmountRow(ref cur, native, "Healed", h.ToString(), HealColor, body, num, F(18, u), left, left + half - 12f * u, y, rowH, 60f * u);
-                if (pd.Block is long b)
-                    AmountRow(ref cur, native, "Block", b.ToString(), BlockColor, body, num, F(18, u), left + half + 12f * u, right, y, rowH, 60f * u);
-                y += rowH;
-            }
         }
 
         float height = y + (native ? NativeLook.InsetB : FlatPad) * u;

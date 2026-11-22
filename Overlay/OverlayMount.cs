@@ -157,7 +157,7 @@ internal sealed class OverlayMount
         return null;
     }
 
-    private static Node? FindByType(Node n, string typeName)
+    internal static Node? FindByType(Node n, string typeName)
     {
         try
         {

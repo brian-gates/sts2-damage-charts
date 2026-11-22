@@ -67,8 +67,8 @@ internal static class ForecastReader
             wuppyHp, wuppyBlock);
     }
 
-    // A power's stack count on the creature (0 if absent or unreadable).
-    private static int ReadPowerAmount(Creature c, string powerType)
+    // A power's stack count on the creature (0 if absent or unreadable). Also used by the Buffer save detection.
+    internal static int ReadPowerAmount(Creature c, string powerType)
     {
         try
         {
@@ -265,7 +265,7 @@ internal static class ForecastReader
         return localSlot >= 0 && localSlot < players.Count && InPlayPhase(players[localSlot]);
     }
 
-    private static bool InPlayPhase(Player player)
+    internal static bool InPlayPhase(Player player)
     {
         try
         {

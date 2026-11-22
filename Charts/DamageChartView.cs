@@ -18,7 +18,6 @@ internal sealed class DamageChartView
     private const float BaseWidth = 340f;
     private const float BaseHeight = 168f;
     private const float BaseMargin = 14f;
-    private const float BaseHeaderH = 24f;
     private const int MaxGroups = 6;
     // Compact: the always-on strip. Forecast-panel width, no axis labels/icons; hover still breaks it down.
     private const float CompactWidth = 216f;
@@ -39,6 +38,9 @@ internal sealed class DamageChartView
     private readonly Control _barLayer;
     private readonly Control _iconLayer;
     private readonly Label _title;
+    // Resize grip: a few diagonal strokes in the bottom-right corner, shown while the panel is hovered.
+    private readonly Control _grip;
+    private readonly Line2D[] _gripLines = new Line2D[3];
     private readonly List<ColorRect> _bars = new();
     private readonly List<ColorRect> _grid = new();
     private readonly List<Label> _labels = new();
@@ -51,6 +53,8 @@ internal sealed class DamageChartView
     // User multiplier from config (ui_scale): enlarges the whole widget (panel + text) on top of the
     // automatic resolution scale, for legibility.
     public float UiScaleMul = 1f;
+    // The player's own size for this chart (config bars_scale, ChartScale range), set by dragging the grip.
+    public float ScaleMul { get; set; } = ChartScale.Default;
     public bool Compact { get; set; }
     // Docked mode: stack directly above this rect (the forecast panel, viewport coords; null = free).
     // A drag undocks it, like the forecast's own player anchor.
@@ -59,17 +63,18 @@ internal sealed class DamageChartView
 
     private Vector2 _posFrac;     // top-left as fraction of viewport
     private bool _posFracInit;
-    private bool _dragging;
+    private readonly PanelDrag _drag = new();   // press anywhere moves (past 5 px) or clicks; the grip resizes
     private bool _leftLast;
-    private Vector2 _dragOffset;  // cursor − absolute pos at drag start
-    private Vector2 _pressStart;
-    private bool _pressedOverPanel;
     private bool _clicked;
 
     // cached each render for UpdateMouse/hover
     private Vector2 _vp = new(1920, 1080);
-    private float _w = BaseWidth, _h = BaseHeight, _headerH = BaseHeaderH;
+    private float _w = BaseWidth, _h = BaseHeight;
     private float _topInset;
+    private float _baseSc = 1f;               // resolution scale x ui_scale, before ScaleMul
+    private float _effMul = ChartScale.Default; // ScaleMul as drawn (shrunk when the window is too small)
+    private (float Sc, float Ix, float Iy, float W, float H) _gripKey;
+    private float _gripSize;
 
     public DamageChartView(Node root, Vector2? savedPosFrac)
     {
@@ -110,6 +115,14 @@ internal sealed class DamageChartView
         _title.Text = "Damage";
         _container.AddChild(_title);
 
+        _grip = new Control { MouseFilter = Control.MouseFilterEnum.Ignore, Visible = false };
+        for (int i = 0; i < _gripLines.Length; i++)
+        {
+            _gripLines[i] = new Line2D { Antialiased = true, DefaultColor = new Color(UiTheme.Cream.R, UiTheme.Cream.G, UiTheme.Cream.B, 0.55f) };
+            _grip.AddChild(_gripLines[i]);
+        }
+        _container.AddChild(_grip);   // kept the last child (NextLabel re-raises it) so it draws over the chart
+
         if (savedPosFrac.HasValue) { _posFrac = savedPosFrac.Value; _posFracInit = true; }
     }
 
@@ -118,7 +131,8 @@ internal sealed class DamageChartView
     public void Hide() { _mount.Visible = false; }
     public void Dispose() => _mount.Dispose();
     public Vector2 PositionFraction => _posFrac;
-    public bool IsDragging => _dragging;
+    // Moving or resizing: hover tooltips stay hidden meanwhile.
+    public bool IsDragging => _drag.IsMoving || _drag.IsResizing;
     public bool TakeClick() { var c = _clicked; _clicked = false; return c; }
 
     public bool UpdateMouse(bool leftDown)
@@ -129,40 +143,65 @@ internal sealed class DamageChartView
         {
             Vector2 local = _container.GetLocalMousePosition();
             Vector2 global = _container.GetViewport().GetMousePosition();   // viewport coords, like _posFrac * _vp
-            bool overPanel = local.X >= 0 && local.X <= _w && local.Y >= 0 && local.Y <= _h;
-            bool overHeader = overPanel && local.Y <= _headerH;
+            bool overPanel = _mount.Visible && local.X >= 0 && local.X <= _w && local.Y >= 0 && local.Y <= _h;
+            bool overGrip = overPanel && local.X >= _w - _gripSize && local.Y >= _h - _gripSize;
 
             if (leftDown && !_leftLast) // press
             {
-                _pressStart = global;
-                _pressedOverPanel = overPanel;
-                if (overHeader) { _dragging = true; _dragOffset = global - new Vector2(_posFrac.X * _vp.X, _posFrac.Y * _vp.Y); }
+                Vector2 at = _container.Position;   // where the chart is drawn, so the grab point stays put
+                _drag.Press(global.X, global.Y, overPanel, overGrip, at.X, at.Y, _w, _h, _effMul);   // _w/_h are at _effMul
             }
-            else if (leftDown && _dragging) // dragging the header
+            else if (leftDown && _drag.IsResizing) // dragging the corner grip: top-left stays, size follows
             {
-                Vector2 abs = global - _dragOffset;
-                float yMin = _vp.Y > 0 ? _topInset / _vp.Y : 0f;
-                float x = _vp.X > 0 ? Math.Clamp(abs.X / _vp.X, 0f, Math.Max(0f, 1f - _w / _vp.X)) : 0f;
-                float y = _vp.Y > 0 ? Math.Clamp(abs.Y / _vp.Y, yMin, Math.Max(yMin, 1f - _h / _vp.Y)) : 0f;
-                _posFrac = new Vector2(x, y);
+                ScaleMul = ChartScale.Clamp(_drag.ResizeScale(global.X, global.Y), ResizeFit());
+            }
+            else if (leftDown && _drag.IsActive) // pressed on the panel: a move once past the threshold
+            {
+                _drag.Move(global.X, global.Y);
+                if (_drag.IsMoving)
+                {
+                    var (ax, ay) = _drag.DragTopLeft(global.X, global.Y);
+                    float yMin = _vp.Y > 0 ? _topInset / _vp.Y : 0f;
+                    float x = _vp.X > 0 ? Math.Clamp(ax / _vp.X, 0f, Math.Max(0f, 1f - _w / _vp.X)) : 0f;
+                    float y = _vp.Y > 0 ? Math.Clamp(ay / _vp.Y, yMin, Math.Max(yMin, 1f - _h / _vp.Y)) : 0f;
+                    _posFrac = new Vector2(x, y);
+                }
             }
             else if (!leftDown && _leftLast) // release
             {
-                bool moved = (global - _pressStart).Length() > 5f;
-                if (_dragging) { _dragging = false; if (moved) { savedNow = true; Docked = false; } else if (_pressedOverPanel) _clicked = true; }
-                else if (_pressedOverPanel && !moved) _clicked = true; // click on the panel → toggle details
-                _pressedOverPanel = false;
+                switch (_drag.Release(global.X, global.Y))
+                {
+                    case PanelRelease.Moved: savedNow = true; Docked = false; break;
+                    case PanelRelease.Resized: savedNow = true; break;
+                    case PanelRelease.Click: _clicked = true; break; // click on the panel → toggle details
+                }
             }
             _leftLast = leftDown;
+            _grip.Visible = overPanel || _drag.IsResizing;
         }
         catch { }
         return savedNow;
     }
 
+    private float UnitW => (Compact ? CompactWidth : BaseWidth) * _baseSc;
+    private float UnitH => (Compact ? CompactHeight : BaseHeight) * _baseSc;
+
+    // The largest ScaleMul a resize may reach: docked, the room between the top inset and the forecast (the
+    // dock grows it upward); free, the room right of and below where it is drawn (top-left stays put).
+    private float ResizeFit()
+    {
+        if (Docked && DockRect is Rect2 dock)
+            return ChartScale.DockedFitMax(UnitW, UnitH, DockGap * _baseSc, _vp.X, dock.Position.Y, _topInset);
+        Vector2 at = _container.Position;
+        return ChartScale.FitMax(UnitW, UnitH, _vp.X - at.X, _vp.Y - at.Y);
+    }
+
+    private const float DockGap = 6f;   // between a docked chart and the forecast, at scale 1
+
     public bool TryGetHover(out GroupDetail info)
     {
         info = null!;
-        if (!IsValid() || _dragging || _lastSnap == null) return false;
+        if (!IsValid() || IsDragging || _lastSnap == null) return false;
         try
         {
             Vector2 local = _container.GetLocalMousePosition();
@@ -200,10 +239,6 @@ internal sealed class DamageChartView
         return null;
     }
 
-    // Y floor (viewport px) that keeps the chart below the game's top bar instead of sliding under the
-    // higher-layer HUD. The bar is ~8% of viewport height (letterbox-excluded); 9% leaves a hair below.
-    private static float TopInset(Vector2 vp) => Math.Max(48f, vp.Y * 0.09f);
-
     public void Render(ChartSnapshot snap, Color[] palette)
     {
         if (!IsValid()) return;
@@ -215,9 +250,14 @@ internal sealed class DamageChartView
             _cellRects.Clear();
 
             _vp = _container.GetViewportRect().Size;
-            float sc = UiTheme.Scale(_vp) * Math.Clamp(UiScaleMul, 0.5f, 4f);
+            // Below the top bar and relic row (PanelTop), measured each frame so it follows a wrapped row.
+            float inset = RelicRow.TopInset(_container, _vp);
+            _topInset = inset;
+            _baseSc = UiTheme.Scale(_vp) * Math.Clamp(UiScaleMul, 0.5f, 4f);
+            // The player's size, shrunk (not saved) when the window is too small to show it whole.
+            _effMul = ChartScale.Clamp(ScaleMul, ChartScale.FitMax(UnitW, UnitH, _vp.X, _vp.Y - inset));
+            float sc = _baseSc * _effMul;
             _w = (Compact ? CompactWidth : BaseWidth) * sc; _h = (Compact ? CompactHeight : BaseHeight) * sc;
-            _headerH = (Compact ? 18f : BaseHeaderH) * sc;
             float margin = BaseMargin * sc;
             int maxGroups = Compact ? CompactMaxGroups : MaxGroups;
 
@@ -245,17 +285,15 @@ internal sealed class DamageChartView
             var numFont = _native ? GameAssets.NumericFont : null;
             var boldFont = _native ? GameAssets.KreonBold : null;
 
-            float inset = TopInset(_vp);
-            _topInset = inset;
             if (!_posFracInit)
             {
                 _posFrac = new Vector2(_vp.X > 0 ? (_vp.X - _w - margin) / _vp.X : 0.7f, _vp.Y > 0 ? Math.Max(margin, inset) / _vp.Y : 0.02f);
                 _posFracInit = true;
             }
-            if (Docked && !_dragging && DockRect is Rect2 dock && _vp.X > 0 && _vp.Y > 0)
+            if (Docked && !_drag.IsMoving && DockRect is Rect2 dock && _vp.X > 0 && _vp.Y > 0)
             {
                 // Above the forecast, left edges aligned; below it if there's no room under the top bar.
-                float gap = 6f * sc;
+                float gap = DockGap * sc;
                 float dy = dock.Position.Y - gap - _h;
                 if (dy < inset) dy = dock.End.Y + gap;
                 _posFrac = new Vector2(dock.Position.X / _vp.X, dy / _vp.Y);
@@ -411,12 +449,34 @@ internal sealed class DamageChartView
                 rl.SetPosition(new Vector2(groupX + groupW * 0.5f - 4 * sc, plotBottom + (Compact ? 1 : 3) * sc));
             }
 
+            LayoutGrip(sc, ix, iy);
             HideRest(_labels, labelCur);
             HideRest(_bars, barCur);
             HideRest(_icons, iconCur);
             HideRest(_grid, gridCur);
         }
         catch (Exception ex) { ErrorLog.Once("bars render", ex); }
+    }
+
+    // Three short diagonal strokes tucked into the bottom-right corner (inside the native frame's bevel).
+    // The grab area (_gripSize) is a little larger than the strokes so it's easy to hit.
+    private void LayoutGrip(float sc, float ix, float iy)
+    {
+        var key = (sc, ix, iy, _w, _h);
+        if (key == _gripKey) return;   // unchanged size: keep the strokes as they are
+        _gripKey = key;
+        float g = 10f * sc;
+        _gripSize = Math.Max(12f, g + Math.Max(ix, iy) + 4f * sc);
+        _grip.SetPosition(new Vector2(_w - g - ix - 3f * sc, _h - g - iy - 3f * sc));
+        _grip.SetSize(new Vector2(g, g));
+        float width = Math.Max(1f, 1.2f * sc);
+        for (int i = 0; i < _gripLines.Length; i++)
+        {
+            float k = g * (i + 1) / _gripLines.Length;   // 1/3, 2/3, full: shortest stroke nearest the corner
+            var line = _gripLines[i];
+            line.Width = width;
+            line.Points = new[] { new Vector2(g, g - k), new Vector2(g - k, g) };
+        }
     }
 
     private static int F(int baseSize, float sc) => Math.Max(7, (int)Math.Round(baseSize * sc));
@@ -427,7 +487,7 @@ internal sealed class DamageChartView
     {
         Label lbl;
         if (cursor < _labels.Count) lbl = _labels[cursor];
-        else { lbl = UiTheme.MakeLabel(fontSize, color); _container.AddChild(lbl); _labels.Add(lbl); }
+        else { lbl = UiTheme.MakeLabel(fontSize, color); _container.AddChild(lbl); _labels.Add(lbl); _container.MoveChild(_grip, _container.GetChildCount() - 1); }
         if (_native) NativeLook.Style(lbl, fontSize, color, nativeFont, onBar ? 4 : 0);
         else { NativeLook.Reset(lbl); UiTheme.Apply(lbl, fontSize, color); }
         lbl.Visible = true;

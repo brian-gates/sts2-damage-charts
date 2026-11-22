@@ -50,10 +50,8 @@ internal sealed class DamageForecastView
 
     private Vector2 _posFrac;
     private bool _posFracInit;
-    private bool _dragging;
+    private readonly PanelDrag _drag = new();   // press anywhere on the panel; a move past 5 px drags it
     private bool _leftLast;
-    private Vector2 _dragOffset;
-    private Vector2 _pressStart;
 
     private Vector2 _vp = new(1920, 1080);
     private float _w = BaseWidth, _h = BaseHeight, _headerH = BaseHeaderH;
@@ -118,7 +116,7 @@ internal sealed class DamageForecastView
     public void Hide() { _mount.Visible = false; }
     public void Dispose() => _mount.Dispose();
     public Vector2 PositionFraction => _posFrac;
-    public bool IsDragging => _dragging;
+    public bool IsDragging => _drag.IsMoving;
     // The panel's drawn rect (viewport coords) while it's showing; the compact chart stacks against it.
     public Rect2? PanelRect => IsValid() && _mount.Visible ? new Rect2(_container.Position, new Vector2(_w, _h)) : null;
     // Docked mode: sit beside the local player's creature (AnchorRect, viewport coords; null = not found,
@@ -128,7 +126,7 @@ internal sealed class DamageForecastView
 
     public bool IsHovered()
     {
-        if (!IsValid() || _dragging) return false;
+        if (!IsValid() || _drag.IsMoving) return false;
         try
         {
             Vector2 local = _container.GetLocalMousePosition();
@@ -136,8 +134,6 @@ internal sealed class DamageForecastView
         }
         catch { return false; }
     }
-
-    private static float TopInset(Vector2 vp) => Math.Max(48f, vp.Y * 0.09f);
 
     public bool UpdateMouse(bool leftDown)
     {
@@ -147,25 +143,28 @@ internal sealed class DamageForecastView
         {
             Vector2 global = _container.GetViewport().GetMousePosition();   // viewport coords, like _posFrac * _vp
             Vector2 local = _container.GetLocalMousePosition();
-            bool overHeader = local.X >= 0 && local.X <= _w && local.Y >= 0 && local.Y <= _headerH;
+            bool overPanel = _mount.Visible && local.X >= 0 && local.X <= _w && local.Y >= 0 && local.Y <= _h;
 
             if (leftDown && !_leftLast)
             {
-                _pressStart = global;
-                if (overHeader) { _dragging = true; _dragOffset = global - new Vector2(_posFrac.X * _vp.X, _posFrac.Y * _vp.Y); }
+                Vector2 at = _container.Position;   // where the panel is drawn, so the grab point stays put
+                _drag.Press(global.X, global.Y, overPanel, overGrip: false, at.X, at.Y, _w, _h, 1f);
             }
-            else if (leftDown && _dragging)
+            else if (leftDown && _drag.IsActive)
             {
-                Vector2 abs = global - _dragOffset;
-                float yMin = _vp.Y > 0 ? _topInset / _vp.Y : 0f;
-                float x = _vp.X > 0 ? Math.Clamp(abs.X / _vp.X, 0f, Math.Max(0f, 1f - _w / _vp.X)) : 0f;
-                float y = _vp.Y > 0 ? Math.Clamp(abs.Y / _vp.Y, yMin, Math.Max(yMin, 1f - _h / _vp.Y)) : 0f;
-                _posFrac = new Vector2(x, y);
+                _drag.Move(global.X, global.Y);
+                if (_drag.IsMoving)
+                {
+                    var (ax, ay) = _drag.DragTopLeft(global.X, global.Y);
+                    float yMin = _vp.Y > 0 ? _topInset / _vp.Y : 0f;
+                    float x = _vp.X > 0 ? Math.Clamp(ax / _vp.X, 0f, Math.Max(0f, 1f - _w / _vp.X)) : 0f;
+                    float y = _vp.Y > 0 ? Math.Clamp(ay / _vp.Y, yMin, Math.Max(yMin, 1f - _h / _vp.Y)) : 0f;
+                    _posFrac = new Vector2(x, y);
+                }
             }
             else if (!leftDown && _leftLast)
             {
-                bool moved = (global - _pressStart).Length() > 5f;
-                if (_dragging) { _dragging = false; if (moved) { savedNow = true; AnchorToPlayer = false; } }
+                if (_drag.Release(global.X, global.Y) == PanelRelease.Moved) { savedNow = true; AnchorToPlayer = false; }
             }
             _leftLast = leftDown;
         }
@@ -193,7 +192,7 @@ internal sealed class DamageForecastView
             if (!_nativePanel) UiTheme.RestylePanel(_bg, 0.5f, sc);
             Font? numFont = GameAssets.NumericFont;  // null when native_visuals is off or the font is missing
 
-            float inset = TopInset(_vp);
+            float inset = RelicRow.TopInset(_container, _vp);
             _topInset = inset;
             if (!_posFracInit)
             {
@@ -201,7 +200,7 @@ internal sealed class DamageForecastView
                                        _vp.Y > 0 ? Math.Max(margin, inset) / _vp.Y : 0.02f);
                 _posFracInit = true;
             }
-            if (AnchorToPlayer && !_dragging && AnchorRect is Rect2 hb && _vp.X > 0 && _vp.Y > 0)
+            if (AnchorToPlayer && !_drag.IsMoving && AnchorRect is Rect2 hb && _vp.X > 0 && _vp.Y > 0)
             {
                 // Left of the player's hitbox, bottom-aligned with it (the HP bar sits just below); flip to
                 // the right side if the player stands too close to the left edge. Kept as the fraction so a
