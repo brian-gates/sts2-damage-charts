@@ -18,6 +18,8 @@
     <Compile Include="../Tracking/GroupDetail.cs" Link="GroupDetail.cs" />
     <Compile Include="../Forecast/SelfHarmText.cs" Link="SelfHarmText.cs" />
     <Compile Include="../Overlay/OverlayTransform.cs" Link="OverlayTransform.cs" />
+    <Compile Include="../Overlay/PanelTop.cs" Link="PanelTop.cs" />
+    <Compile Include="../Overlay/PanelDrag.cs" Link="PanelDrag.cs" />
     <Compile Include="../Forecast/IntentRules.cs" Link="IntentRules.cs" />
     <Compile Include="../Stats/RunId.cs" Link="RunId.cs" />
     <Compile Include="../Stats/RunStatsFile.cs" Link="RunStatsFile.cs" />

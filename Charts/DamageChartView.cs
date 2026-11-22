@@ -18,7 +18,6 @@ internal sealed class DamageChartView
     private const float BaseWidth = 340f;
     private const float BaseHeight = 168f;
     private const float BaseMargin = 14f;
-    private const float BaseHeaderH = 24f;
     private const int MaxGroups = 6;
     // Compact: the always-on strip. Forecast-panel width, no axis labels/icons; hover still breaks it down.
     private const float CompactWidth = 216f;
@@ -59,16 +58,13 @@ internal sealed class DamageChartView
 
     private Vector2 _posFrac;     // top-left as fraction of viewport
     private bool _posFracInit;
-    private bool _dragging;
+    private readonly PanelDrag _drag = new();   // press anywhere moves (past 5 px) or clicks
     private bool _leftLast;
-    private Vector2 _dragOffset;  // cursor − absolute pos at drag start
-    private Vector2 _pressStart;
-    private bool _pressedOverPanel;
     private bool _clicked;
 
     // cached each render for UpdateMouse/hover
     private Vector2 _vp = new(1920, 1080);
-    private float _w = BaseWidth, _h = BaseHeight, _headerH = BaseHeaderH;
+    private float _w = BaseWidth, _h = BaseHeight;
     private float _topInset;
 
     public DamageChartView(Node root, Vector2? savedPosFrac)
@@ -118,7 +114,7 @@ internal sealed class DamageChartView
     public void Hide() { _mount.Visible = false; }
     public void Dispose() => _mount.Dispose();
     public Vector2 PositionFraction => _posFrac;
-    public bool IsDragging => _dragging;
+    public bool IsDragging => _drag.IsMoving;
     public bool TakeClick() { var c = _clicked; _clicked = false; return c; }
 
     public bool UpdateMouse(bool leftDown)
@@ -129,29 +125,32 @@ internal sealed class DamageChartView
         {
             Vector2 local = _container.GetLocalMousePosition();
             Vector2 global = _container.GetViewport().GetMousePosition();   // viewport coords, like _posFrac * _vp
-            bool overPanel = local.X >= 0 && local.X <= _w && local.Y >= 0 && local.Y <= _h;
-            bool overHeader = overPanel && local.Y <= _headerH;
+            bool overPanel = _mount.Visible && local.X >= 0 && local.X <= _w && local.Y >= 0 && local.Y <= _h;
 
             if (leftDown && !_leftLast) // press
             {
-                _pressStart = global;
-                _pressedOverPanel = overPanel;
-                if (overHeader) { _dragging = true; _dragOffset = global - new Vector2(_posFrac.X * _vp.X, _posFrac.Y * _vp.Y); }
+                Vector2 at = _container.Position;   // where the chart is drawn, so the grab point stays put
+                _drag.Press(global.X, global.Y, overPanel, overGrip: false, at.X, at.Y, _w, _h, 1f);
             }
-            else if (leftDown && _dragging) // dragging the header
+            else if (leftDown && _drag.IsActive) // pressed on the panel: a move once past the threshold
             {
-                Vector2 abs = global - _dragOffset;
-                float yMin = _vp.Y > 0 ? _topInset / _vp.Y : 0f;
-                float x = _vp.X > 0 ? Math.Clamp(abs.X / _vp.X, 0f, Math.Max(0f, 1f - _w / _vp.X)) : 0f;
-                float y = _vp.Y > 0 ? Math.Clamp(abs.Y / _vp.Y, yMin, Math.Max(yMin, 1f - _h / _vp.Y)) : 0f;
-                _posFrac = new Vector2(x, y);
+                _drag.Move(global.X, global.Y);
+                if (_drag.IsMoving)
+                {
+                    var (ax, ay) = _drag.DragTopLeft(global.X, global.Y);
+                    float yMin = _vp.Y > 0 ? _topInset / _vp.Y : 0f;
+                    float x = _vp.X > 0 ? Math.Clamp(ax / _vp.X, 0f, Math.Max(0f, 1f - _w / _vp.X)) : 0f;
+                    float y = _vp.Y > 0 ? Math.Clamp(ay / _vp.Y, yMin, Math.Max(yMin, 1f - _h / _vp.Y)) : 0f;
+                    _posFrac = new Vector2(x, y);
+                }
             }
             else if (!leftDown && _leftLast) // release
             {
-                bool moved = (global - _pressStart).Length() > 5f;
-                if (_dragging) { _dragging = false; if (moved) { savedNow = true; Docked = false; } else if (_pressedOverPanel) _clicked = true; }
-                else if (_pressedOverPanel && !moved) _clicked = true; // click on the panel → toggle details
-                _pressedOverPanel = false;
+                switch (_drag.Release(global.X, global.Y))
+                {
+                    case PanelRelease.Moved: savedNow = true; Docked = false; break;
+                    case PanelRelease.Click: _clicked = true; break; // click on the panel → toggle details
+                }
             }
             _leftLast = leftDown;
         }
@@ -162,7 +161,7 @@ internal sealed class DamageChartView
     public bool TryGetHover(out GroupDetail info)
     {
         info = null!;
-        if (!IsValid() || _dragging || _lastSnap == null) return false;
+        if (!IsValid() || IsDragging || _lastSnap == null) return false;
         try
         {
             Vector2 local = _container.GetLocalMousePosition();
@@ -200,10 +199,6 @@ internal sealed class DamageChartView
         return null;
     }
 
-    // Y floor (viewport px) that keeps the chart below the game's top bar instead of sliding under the
-    // higher-layer HUD. The bar is ~8% of viewport height (letterbox-excluded); 9% leaves a hair below.
-    private static float TopInset(Vector2 vp) => Math.Max(48f, vp.Y * 0.09f);
-
     public void Render(ChartSnapshot snap, Color[] palette)
     {
         if (!IsValid()) return;
@@ -215,9 +210,11 @@ internal sealed class DamageChartView
             _cellRects.Clear();
 
             _vp = _container.GetViewportRect().Size;
+            // Below the top bar and relic row (PanelTop), measured each frame so it follows a wrapped row.
+            float inset = RelicRow.TopInset(_container, _vp);
+            _topInset = inset;
             float sc = UiTheme.Scale(_vp) * Math.Clamp(UiScaleMul, 0.5f, 4f);
             _w = (Compact ? CompactWidth : BaseWidth) * sc; _h = (Compact ? CompactHeight : BaseHeight) * sc;
-            _headerH = (Compact ? 18f : BaseHeaderH) * sc;
             float margin = BaseMargin * sc;
             int maxGroups = Compact ? CompactMaxGroups : MaxGroups;
 
@@ -245,14 +242,12 @@ internal sealed class DamageChartView
             var numFont = _native ? GameAssets.NumericFont : null;
             var boldFont = _native ? GameAssets.KreonBold : null;
 
-            float inset = TopInset(_vp);
-            _topInset = inset;
             if (!_posFracInit)
             {
                 _posFrac = new Vector2(_vp.X > 0 ? (_vp.X - _w - margin) / _vp.X : 0.7f, _vp.Y > 0 ? Math.Max(margin, inset) / _vp.Y : 0.02f);
                 _posFracInit = true;
             }
-            if (Docked && !_dragging && DockRect is Rect2 dock && _vp.X > 0 && _vp.Y > 0)
+            if (Docked && !_drag.IsMoving && DockRect is Rect2 dock && _vp.X > 0 && _vp.Y > 0)
             {
                 // Above the forecast, left edges aligned; below it if there's no room under the top bar.
                 float gap = 6f * sc;
