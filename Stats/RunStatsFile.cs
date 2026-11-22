@@ -168,7 +168,7 @@ internal static class RunStatsFile
             if (!logSlot.TryGetValue(h.Slot, out int player)) continue;
             int source = h.SourceSlot >= 0 && h.SourceSlot != h.Slot ? Ref(h.SourceSlot) : Name(h.Source, h.SourceId);
             int target = h.Kind == HitKind.Healed ? -1 : h.TargetSlot >= 0 ? Ref(h.TargetSlot) : Name(h.Target, null);
-            long amount = h.Kind == HitKind.Potion || h.Amount < 0 ? -1 : Amount(h.Amount);
+            long amount = h.Kind == HitKind.Potion ? -1 : Amount(h.Amount); // -1 (no amount) is for potion lines only
             rows.Add(new JsonArray((int)Math.Clamp(h.Round, 0, MaxRound), (int)h.Kind, player, source, target, amount));
         }
         var namesArr = new JsonArray();

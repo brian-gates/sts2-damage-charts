@@ -355,6 +355,19 @@ public class RunStatsFileTests
     }
 
     [Fact]
+    public void Log_NegativeAmountOfANonPotionLineIsZero()
+    {
+        // -1 means "no amount", which the server accepts only on potion lines.
+        var hits = new[]
+        {
+            H(HitKind.Dealt, 0, "Strike", null, 0, "Cultist", -1, -5),
+            H(HitKind.Potion, 0, "Fire Potion", null, -1, "Cultist", -1, 20),
+        };
+        var log = RunStatsFile.BuildFight(Meta(), TwoPlayers(), new[] { A, B }, hits, false)["log"]!;
+        Assert.Equal("[[1,0,0,0,1,0],[1,4,0,2,1,-1]]", log["hits"]!.ToJsonString());
+    }
+
+    [Fact]
     public void Log_LeavesOutPlayersTheFightDoesNotWrite()
     {
         // Slot 1 has no PlayerSources, so it is not in "players" and the server would reject a log naming it.
