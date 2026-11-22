@@ -54,16 +54,11 @@ internal sealed class PlayerDetail
     public List<DetailRow> Dealt = new();     // sorted by amount, descending (all of them; the view trims)
     public long TakenTotal;
     public List<DetailRow> Taken = new();     // empty when the taken side has no by-source breakdown
-    public long? Heal;                        // null = not recorded for this scope
-    public long? Block;
 }
 
 internal sealed class GroupDetail
 {
     public string Title = "";
-    public FightKind Kind;                    // Elite / Boss get a tag beside the title
-    public string? Subtitle;                  // encounter name
-    public string? Note;                      // e.g. "4 rounds"
     public bool ShowPct;                      // amounts read "12 (40%)"
     public int MaxRows = 5;                   // per source list, before "+ N more"
     public List<PlayerDetail> Players = new();
@@ -108,43 +103,6 @@ internal static class GroupDetails
         return list;
     }
 
-    // "Fight 3 · Floor 7", or just "Fight 3" when the floor is unknown.
-    public static string FightTitle(int fight, FightMeta? meta) =>
-        meta != null && meta.Floor > 0 ? $"Fight {fight}{Sep}Floor {meta.Floor}" : $"Fight {fight}";
-
-    public static string? RoundsNote(int rounds) => rounds <= 0 ? null : rounds == 1 ? "1 round" : $"{rounds} rounds";
-
-    // A finished fight from the run aggregate: per player, dealt + taken by source, heal and block.
-    public static GroupDetail ForFight(int fight, FightMeta? meta, IReadOnlyList<PlayerSources?> perPlayer, string[] labels)
-    {
-        var d = new GroupDetail
-        {
-            Title = FightTitle(fight, meta),
-            Kind = meta?.Kind ?? FightKind.Unknown,
-            Subtitle = string.IsNullOrWhiteSpace(meta?.Name) ? null : meta!.Name,
-            Note = RoundsNote(meta?.Rounds ?? 0),
-            ShowPct = true,
-            MaxRows = 5,
-        };
-        for (int s = 0; s < perPlayer.Count; s++)
-        {
-            var ps = perPlayer[s];
-            if (ps == null) continue;
-            d.Players.Add(new PlayerDetail
-            {
-                Slot = s,
-                Label = PlayerLabel(labels, s),
-                DealtTotal = ps.DealtTotal,
-                Dealt = Rows(ps.Dealt, ps.DealtTotal),
-                TakenTotal = ps.TakenTotal,
-                Taken = Rows(ps.Taken, ps.TakenTotal),
-                Heal = ps.HealTotal,
-                Block = ps.BlockTotal,
-            });
-        }
-        return d;
-    }
-
     // One round of the current combat: dealt by source (from the round's hits) and the taken total (the
     // tracker keeps no per-round taken breakdown). `onlySlot` limits it to one player (the compact chart
     // hovers a single player's cell); otherwise every player gets a section.
@@ -177,16 +135,6 @@ internal static class GroupDetails
 
     public static string PlayerLabel(string[] labels, int slot) =>
         slot >= 0 && slot < labels.Length && !string.IsNullOrEmpty(labels[slot]) ? labels[slot] : $"P{slot + 1}";
-
-    // Index of the bar group under (mx, my), or -1. Groups sit side by side from `left`, each `groupW`
-    // wide; the band runs from `top` to `bottom` (callers include the axis labels under the bars).
-    public static int GroupAt(float mx, float my, float left, float top, float bottom, float groupW, int groups)
-    {
-        if (groups <= 0 || groupW <= 0f || float.IsNaN(mx) || float.IsNaN(my)) return -1;
-        if (my < top || my > bottom || mx < left) return -1;
-        int i = (int)Math.Floor((mx - left) / groupW);
-        return i >= 0 && i < groups ? i : -1;
-    }
 
     // Encounter titles come from localization; a missing entry can surface as its raw key
     // ("ENCOUNTER.FOO.title") instead of a name, which is worse than falling back to the enemies.

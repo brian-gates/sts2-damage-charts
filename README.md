@@ -17,6 +17,7 @@ A standalone damage analytics and incoming-damage forecast mod for [Slay the Spi
   **by source**, a per-round chart (hover a round for each player's damage by source that round), the run so far, potions used, and a scrollable combat log (mouse
   wheel, trackpad or scrollbar). Card and pet hits are always named, and so is much of the damage from
   powers (Poison, Thorns), relics and potions; the rest shows as `Status`/`Other`.
+  A hit your Buffer cancelled shows as its own highlighted line, such as `Cultist → you  24 (Buffer)`, with the HP it saved.
 - **End-of-combat summary**: a compact version beside the rewards list after each fight, with potions
   used. C hides and shows it until you move on.
 - **Run recap**: the same hotkey out of combat (e.g. on the victory/death screen) opens a run-wide recap
@@ -176,9 +177,10 @@ After the first publish, subscribe in-client and verify the overlay loads in a r
   the hooks off.
 - `run_stats_file`: **default `true`.** After each finished combat (single-player and multiplayer) the
   mod saves that fight's stats (floor, encounter, rounds, and per player: damage dealt and taken by source, healing,
-  Block, damage your pet absorbed, potions) to `damage-charts/runs/<run id>.json` in the game's user data folder
+  Block, damage your pet absorbed, HP your Buffer saved, potions) to `damage-charts/runs/<run id>.json` in the game's user data folder
   (`~/Library/Application Support/SlayTheSpire2` on macOS, `%APPDATA%\SlayTheSpire2` on Windows), for
-  Spire Sync to upload. Set `false` to stop writing the file.
+  Spire Sync to upload. The file also notes rounds where the incoming-damage forecast was off, and the game version,
+  so the forecast can be improved. Set `false` to stop writing the file.
 
 Changes to `hotkey`, `show_bars` and `vfx_moments` are picked up live (within about half a second);
 the rest apply the next time the game starts.

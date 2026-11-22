@@ -23,6 +23,48 @@ public class HitTests
             new Hit(3, HitKind.Potion, 0, "Fire Potion", null, -1, "Cultist", -1, -1).Text(Name));
         Assert.Equal("Blood Potion used → Ironclad",
             new Hit(3, HitKind.Potion, 0, "Blood Potion", null, -1, "Ironclad", 1, -1).Text(Name));
+        Assert.Equal("Cultist → you  24 (Buffer)",
+            new Hit(2, HitKind.Buffered, 0, "Cultist", "MONSTER.CULTIST", -1, "you", 0, 24).Text(Name));
+    }
+
+    [Fact]
+    public void LeadAndAmountMakeUpTheText()
+    {
+        var hits = new[]
+        {
+            new Hit(1, HitKind.Dealt, 0, "Strike", null, 0, "Cultist", -1, 6),
+            new Hit(1, HitKind.Taken, 0, "Cultist", null, -1, "you", 0, 9),
+            new Hit(1, HitKind.Absorbed, 0, "Cultist", null, -1, "Osty", -1, 4),
+            new Hit(1, HitKind.Healed, 0, null, null, -1, "you", 0, 7),
+            new Hit(1, HitKind.Buffered, 0, "Cultist", null, -1, "you", 0, 24),
+        };
+        foreach (var h in hits) Assert.Equal(h.Text(Name), $"{h.Lead(Name)}  {h.AmountText}");
+        Assert.Equal("Cultist → you", hits[4].Lead(Name));
+        Assert.Equal("24 (Buffer)", hits[4].AmountText);
+        Assert.Equal("you healed", hits[3].Lead(Name));
+        var potion = new Hit(3, HitKind.Potion, 0, "Fire Potion", null, -1, "Cultist", -1, -1);
+        Assert.Null(potion.AmountText);
+        Assert.Equal(potion.Text(Name), potion.Lead(Name));
+    }
+
+    [Fact]
+    public void Tracker_LogLinesCarryLeadAndAmount()
+    {
+        var t = Tracker();
+        t.AddHit(new Hit(1, HitKind.Taken, 0, "Cultist", null, -1, "you", 0, 9));
+        t.AddHit(new Hit(1, HitKind.Potion, 0, "P", null, -1, null, -1, -1));
+        var log = t.SourceSnapshot().Log;
+        Assert.Equal("Cultist", log[0].Lead);       // single player: "→ you" is implied
+        Assert.Equal("9", log[0].AmountText);
+        Assert.Equal("Cultist → you  9", log[0].Text);
+        Assert.Equal("P used", log[1].Lead);
+        Assert.Null(log[1].AmountText);
+    }
+
+    [Fact]
+    public void Text_UnknownBufferedAttackerReadsAsQuestionMark()
+    {
+        Assert.Equal("? → you  7 (Buffer)", new Hit(1, HitKind.Buffered, 0, null, null, -1, "you", 0, 7).Text(Name));
     }
 
     [Fact]
@@ -65,18 +107,78 @@ public class HitTests
         Assert.Equal(300, snap.Log.Length); // the panel shows the latest 300 of the 500 kept
         Assert.Equal("S699 → E  699", snap.Log[^1].Text);
         Assert.Equal("S400 → E  400", snap.Log[0].Text);
-        Assert.All(snap.Log, e => Assert.False(e.Taken));
+        Assert.All(snap.Log, e => Assert.Equal(LogTone.Plain, e.Tone));
     }
 
     [Fact]
-    public void Tracker_TakenFlagCoversTakenAndAbsorbedOnly()
+    public void Tracker_ToneMarksTakenAbsorbedAndBufferedLines()
     {
         var t = Tracker();
         t.AddHit(new Hit(1, HitKind.Taken, 0, "A", null, -1, "you", 0, 1));
         t.AddHit(new Hit(1, HitKind.Absorbed, 0, "A", null, -1, "Pet", -1, 1));
         t.AddHit(new Hit(1, HitKind.Healed, 0, null, null, -1, "you", 0, 1));
         t.AddHit(new Hit(1, HitKind.Potion, 0, "P", null, -1, null, -1, -1));
-        Assert.Equal(new[] { true, true, false, false }, t.SourceSnapshot().Log.Select(e => e.Taken).ToArray());
+        t.AddHit(new Hit(1, HitKind.Buffered, 0, "A", null, -1, "you", 0, 9));
+        Assert.Equal(new[] { LogTone.Taken, LogTone.Taken, LogTone.Plain, LogTone.Plain, LogTone.Buffered },
+            t.SourceSnapshot().Log.Select(e => e.Tone).ToArray());
+        Assert.False(new Hit(1, HitKind.Buffered, 0, "A", null, -1, "you", 0, 9).IsTaken); // saved HP is not HP lost
+    }
+
+    [Fact]
+    public void Tracker_LogLinesCarryKindAmountSlotIconAndName()
+    {
+        var t = Tracker();
+        t.AddHit(new Hit(2, HitKind.Dealt, 0, "Strike", "CARD.STRIKE_SILENT", 0, "Cultist", -1, 6, "res://card.png"));
+        t.AddHit(new Hit(2, HitKind.Buffered, 0, "Cultist", null, -1, "you", 0, 24));
+        var log = t.SourceSnapshot().Log;
+        Assert.Equal(HitKind.Dealt, log[0].Kind);
+        Assert.Equal(6, log[0].Amount);
+        Assert.Equal(0, log[0].Slot);
+        Assert.Equal("res://card.png", log[0].Icon);
+        Assert.Equal("Strike", log[0].Name);
+        Assert.Equal(HitKind.Buffered, log[1].Kind);
+        Assert.Null(log[1].Icon);
+        Assert.Equal("Cultist", log[1].Name);
+    }
+
+    [Fact]
+    public void Tracker_BufferedTotalIsSeparateFromTaken()
+    {
+        var t = Tracker();
+        t.AddTaken(1, 0, 5, "Cultist");
+        t.AddBuffered(0, 24);
+        t.AddBuffered(0, 6);
+        t.AddBuffered(0, 0);   // nothing saved: ignored
+        var ps = t.SourceSnapshot().PerPlayer[0];
+        Assert.Equal(30, ps.BufferedTotal);
+        Assert.Equal(5, ps.TakenTotal);
+        Assert.Equal(5, t.TakenTotal(0));
+        Assert.Equal(0, t.TakenTotal(3));
+        t.Reset(1, new[] { "Silent" }, 0);
+        Assert.Equal(0, t.SourceSnapshot().PerPlayer[0].BufferedTotal);
+        Assert.Equal(0, t.TakenTotal(0));
+    }
+
+    [Fact]
+    public void Snapshots_AreReusedUntilSomethingChanges()
+    {
+        var t = Tracker();
+        t.AddHit(Dealt(1));
+        var a = t.SourceSnapshot();
+        var c = t.Snapshot();
+        Assert.Same(a, t.SourceSnapshot());          // per-frame reads share one snapshot
+        Assert.Same(c, t.Snapshot());
+        t.AddDealt(1, 0, 5, "Strike");
+        Assert.NotSame(a, t.SourceSnapshot());
+        Assert.NotSame(c, t.Snapshot());
+        var b = t.SourceSnapshot();
+        t.AddHealed(0, 3);
+        Assert.NotSame(b, t.SourceSnapshot());
+        Assert.Equal(3, t.SourceSnapshot().PerPlayer[0].HealTotal);
+        var d = t.SourceSnapshot();
+        t.Reset(1, new[] { "Silent" }, 0);
+        Assert.NotSame(d, t.SourceSnapshot());
+        Assert.Empty(t.SourceSnapshot().Log);
     }
 
     [Fact]

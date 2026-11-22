@@ -41,11 +41,13 @@ public class RunStatsFileTests
     {
         var allowed = new Dictionary<string, string[]>
         {
-            ["root"] = new[] { "v", "run_id", "recorded_by", "mod_version", "updated", "fights" },
-            ["fight"] = new[] { "index", "floor", "encounter", "kind", "rounds", "players", "log", "log_dropped" },
-            ["player"] = new[] { "steam_id", "dealt", "taken", "healed", "block", "absorbed", "potions" },
+            ["root"] = new[] { "v", "run_id", "recorded_by", "mod_version", "game_version", "updated", "fights" },
+            ["fight"] = new[] { "index", "floor", "encounter", "kind", "rounds", "players", "log", "log_dropped", "forecast_misses" },
+            ["player"] = new[] { "steam_id", "dealt", "taken", "healed", "block", "absorbed", "buffered", "potions" },
             ["list"] = new[] { "total", "sources" },
             ["source"] = new[] { "name", "id", "amount", "hits" },
+            ["miss"] = new[] { "round", "min", "max", "actual", "hidden", "block", "buffer", "intangible", "osty", "wuppy", "items" },
+            ["item"] = new[] { "kind", "label", "hits", "per_hit", "conditional" },
         };
         void Check(JsonObject o, string level) { foreach (var kv in o) Assert.Contains(kv.Key, allowed[level]); }
         var r = root.AsObject();
@@ -53,6 +55,12 @@ public class RunStatsFileTests
         foreach (var f in r["fights"]!.AsArray())
         {
             Check(f!.AsObject(), "fight");
+            if (f["forecast_misses"] is JsonArray misses)
+                foreach (var m in misses)
+                {
+                    Check(m!.AsObject(), "miss");
+                    foreach (var it in m["items"]!.AsArray()) Check(it!.AsObject(), "item");
+                }
             foreach (var p in f["players"]!.AsArray())
             {
                 Check(p!.AsObject(), "player");
@@ -112,6 +120,42 @@ public class RunStatsFileTests
         var f = RunStatsFile.BuildFight(Meta(), players, new[] { A, B });
         Assert.Equal(14L, (long)f["players"]![0]!["absorbed"]!);
         Assert.False(f["players"]![1]!.AsObject().ContainsKey("absorbed"));  // omitted, not 0
+    }
+
+    [Fact]
+    public void BufferedIsWrittenOnlyWhenABufferSavedHp()
+    {
+        var players = TwoPlayers();
+        players[1].BufferedTotal = 24;
+        var f = RunStatsFile.BuildFight(Meta(), players, new[] { A, B });
+        Assert.Equal(24L, (long)f["players"]![1]!["buffered"]!);
+        Assert.False(f["players"]![0]!.AsObject().ContainsKey("buffered"));  // omitted, not 0
+        Assert.Equal(0L, (long)f["players"]![1]!["taken"]!["total"]!);         // saved HP is not taken
+    }
+
+    [Fact]
+    public void BufferedSurvivesADroppedLog()
+    {
+        var players = TwoPlayers();
+        players[0].BufferedTotal = 9;
+        var f = RunStatsFile.BuildFight(Meta(), players, new[] { A, B }, new[] { H(HitKind.Buffered, 0, "Cultist", null, -1, "you", 0, 9) },
+            false, 0, withLog: false);
+        Assert.True((bool)f["log_dropped"]!);
+        Assert.Equal(9L, (long)f["players"]![0]!["buffered"]!);
+    }
+
+    [Fact]
+    public void GameVersionIsWrittenWhenKnown()
+    {
+        var fights = new List<JsonObject> { Fight() };
+        var root = JsonNode.Parse(RunStatsFile.Serialize(Run, A, "1.6.0", 1, fights, "v0.114.0"))!;
+        Assert.Equal(new[] { "v", "run_id", "recorded_by", "mod_version", "game_version", "updated", "fights" },
+            root.AsObject().Select(kv => kv.Key).ToArray());
+        Assert.Equal("v0.114.0", (string)root["game_version"]!);
+        var none = JsonNode.Parse(RunStatsFile.Serialize(Run, A, "1.6.0", 1, fights, "  "))!;
+        Assert.False(none.AsObject().ContainsKey("game_version"));
+        var clipped = JsonNode.Parse(RunStatsFile.Serialize(Run, A, "1.6.0", 1, fights, new string('v', 100)))!;
+        Assert.Equal(RunStatsFile.MaxString, ((string)clipped["game_version"]!).Length);
     }
 
     [Fact]
@@ -283,6 +327,18 @@ public class RunStatsFileTests
     }
 
     [Fact]
+    public void ParseKeepsBufferedAndForecastMisses()
+    {
+        var players = TwoPlayers();
+        players[0].BufferedTotal = 7;
+        string text = RunStatsFile.AddFight(new List<JsonObject>(), Run, A, "1.6.0", 1, Meta(), players, new[] { A, B },
+            null, false, 1, out _, new[] { Miss(2) }, "v0.114.0")!;
+        var fights = RunStatsFile.ParseFights(text, Run)!;
+        Assert.Equal(7L, (long)fights[0]["players"]![0]!["buffered"]!);
+        Assert.Single(fights[0]["forecast_misses"]!.AsArray());
+    }
+
+    [Fact]
     public void OutOfOrderStoredIndexesAreRenumbered()
     {
         string json = "{\"v\":1,\"run_id\":\"ba18b6e0404293b2\",\"fights\":[" +
@@ -314,6 +370,172 @@ public class RunStatsFileTests
         var last = JsonNode.Parse(text!)!["fights"]!.AsArray().Last()!;
         Assert.True(last["players"]![0]!["dealt"]!["sources"]!.AsArray().Count < RunStatsFile.MaxSources);
         Assert.Equal(50L, (long)last["players"]![0]!["dealt"]!["total"]!);
+    }
+
+    // ===== Forecast misses =====
+
+    private static ForecastMiss Miss(int round, int items = 1) => new(round, 6, 9, 15, false, 4, 1, true, 0, 0,
+        Enumerable.Range(0, items).Select(i => new ForecastMissItem("attack", "Cultist " + i, 2, 5, i % 2 == 1)).ToArray());
+
+    private static int MissTotal(string text) =>
+        JsonNode.Parse(text)!["fights"]!.AsArray().Sum(f => f!["forecast_misses"] is JsonArray a ? a.Count : 0);
+
+    [Fact]
+    public void ForecastMissesAreWrittenInTheSpecShape()
+    {
+        string text = RunStatsFile.AddFight(new List<JsonObject>(), Run, A, "1.6.0", 1, Meta(), TwoPlayers(), new[] { A, B },
+            null, false, 1, out _, new[] { Miss(3, items: 2) })!;
+        var root = JsonNode.Parse(text)!;
+        AssertOnlySpecKeys(root);
+        var m = root["fights"]![0]!["forecast_misses"]![0]!;
+        Assert.Equal(new[] { "round", "min", "max", "actual", "hidden", "block", "buffer", "intangible", "osty", "wuppy", "items" },
+            m.AsObject().Select(kv => kv.Key).ToArray());
+        Assert.Equal(3, (int)m["round"]!);
+        Assert.Equal(6L, (long)m["min"]!);
+        Assert.Equal(9L, (long)m["max"]!);
+        Assert.Equal(15L, (long)m["actual"]!);
+        Assert.False((bool)m["hidden"]!);
+        Assert.Equal(4L, (long)m["block"]!);
+        Assert.Equal(1L, (long)m["buffer"]!);
+        Assert.True((bool)m["intangible"]!);
+        var it = m["items"]![1]!;
+        Assert.Equal("attack", (string)it["kind"]!);
+        Assert.Equal("Cultist 1", (string)it["label"]!);
+        Assert.Equal(2L, (long)it["hits"]!);
+        Assert.Equal(5L, (long)it["per_hit"]!);
+        Assert.True((bool)it["conditional"]!);
+    }
+
+    // Pins the server's strict schema (sts2-saves src/damage.ts): value kinds and ranges of every new field.
+    [Fact]
+    public void NewFieldsMatchTheServerSchema()
+    {
+        var players = TwoPlayers();
+        players[0].BufferedTotal = 24;
+        var hits = new[] { H(HitKind.Buffered, 0, "Cultist", null, -1, "you", 0, 24, 2) };
+        var misses = new[] { Miss(3, items: 2), new ForecastMiss(4, 0, 0, 5, true, 0, 0, false, 0, 0, System.Array.Empty<ForecastMissItem>()) };
+        string text = RunStatsFile.AddFight(new List<JsonObject>(), Run, A, "1.6.0", 1, Meta(), players, new[] { A, B },
+            hits, false, 1, out _, misses, "v0.114.0")!;
+        var root = JsonNode.Parse(text)!;
+        AssertOnlySpecKeys(root);
+        Assert.Equal(JsonValueKind.String, root["game_version"]!.GetValueKind());
+        Assert.True(((string)root["game_version"]!).Length <= 80);
+        var f = root["fights"]![0]!;
+        Assert.Equal(JsonValueKind.Number, f["players"]![0]!["buffered"]!.GetValueKind());
+        var row = f["log"]!["hits"]![0]!.AsArray();
+        Assert.Equal(5, (int)row[1]!);
+        Assert.True((long)row[5]! >= 0);                       // kind 5 never -1
+        var arr = f["forecast_misses"]!.AsArray();
+        Assert.True(arr.Count <= 20);
+        foreach (var m in arr)
+        {
+            var o = m!.AsObject();
+            Assert.InRange((int)o["round"]!, 0, 10000);
+            foreach (var k in new[] { "min", "max", "actual", "block", "buffer", "osty", "wuppy" })
+            {
+                Assert.Equal(JsonValueKind.Number, o[k]!.GetValueKind());   // present, never null
+                Assert.True((long)o[k]! >= 0);
+            }
+            Assert.True((long)o["min"]! <= (long)o["max"]!);
+            Assert.Contains(o["intangible"]!.GetValueKind(), new[] { JsonValueKind.True, JsonValueKind.False });
+            Assert.Contains(o["hidden"]!.GetValueKind(), new[] { JsonValueKind.True, JsonValueKind.False });
+            var items = o["items"]!.AsArray();
+            Assert.True(items.Count <= 20);
+            foreach (var it in items)
+            {
+                var io = it!.AsObject();
+                Assert.Equal(new[] { "kind", "label", "hits", "per_hit", "conditional" }, io.Select(kv => kv.Key).ToArray());
+                Assert.InRange(((string)io["kind"]!).Length, 1, 24);
+                Assert.True(((string)io["label"]!).Length <= 80);
+                Assert.True((long)io["hits"]! >= 0);
+                Assert.True((long)io["per_hit"]! >= 0);
+                Assert.Contains(io["conditional"]!.GetValueKind(), new[] { JsonValueKind.True, JsonValueKind.False });
+            }
+        }
+        Assert.Equal(JsonValueKind.True, arr[0]!["intangible"]!.GetValueKind());
+        Assert.Equal(JsonValueKind.False, arr[1]!["intangible"]!.GetValueKind());
+    }
+
+    [Fact]
+    public void AFightWithoutMissesHasNoKey()
+    {
+        var f = RunStatsFile.BuildFight(Meta(), TwoPlayers(), new[] { A, B }, misses: System.Array.Empty<ForecastMiss>());
+        Assert.False(f.ContainsKey("forecast_misses"));
+    }
+
+    [Fact]
+    public void MissValuesAreClampedForTheServer()
+    {
+        var bad = new ForecastMiss(-1, 9, 4, -2, true, -1, 0, false, 0, 0,
+            new[] { new ForecastMissItem("", new string('l', 100), -1, 3, false), new ForecastMissItem(new string('k', 30), "x", 1, 1, false) });
+        var m = RunStatsFile.BuildFight(Meta(), TwoPlayers(), new[] { A, B }, misses: new[] { bad })["forecast_misses"]![0]!;
+        Assert.Equal(0, (int)m["round"]!);
+        Assert.Equal(9L, (long)m["max"]!);       // never below min
+        Assert.Equal(0L, (long)m["actual"]!);
+        Assert.Equal(0L, (long)m["block"]!);
+        Assert.Equal("other", (string)m["items"]![0]!["kind"]!);
+        Assert.Equal(RunStatsFile.MaxString, ((string)m["items"]![0]!["label"]!).Length);
+        Assert.Equal(0L, (long)m["items"]![0]!["hits"]!);
+        Assert.Equal(RunStatsFile.MaxMissKind, ((string)m["items"]![1]!["kind"]!).Length);
+    }
+
+    [Fact]
+    public void MissesAndTheirItemsAreCappedPerFight()
+    {
+        var many = Enumerable.Range(0, 25).Select(r => Miss(r, items: 30)).ToArray();
+        var f = RunStatsFile.BuildFight(Meta(), TwoPlayers(), new[] { A, B }, misses: many);
+        Assert.Equal(RunStatsFile.MaxMisses, f["forecast_misses"]!.AsArray().Count);
+        Assert.Equal(RunStatsFile.MaxMissItems, f["forecast_misses"]![0]!["items"]!.AsArray().Count);
+    }
+
+    [Fact]
+    public void TheFileHoldsAtMost20MissesOverAllFights()
+    {
+        var fifteen = Enumerable.Range(1, 15).Select(r => Miss(r)).ToArray();
+        string first = RunStatsFile.AddFight(new List<JsonObject>(), Run, A, "1.6.0", 1, Meta(3), TwoPlayers(), new[] { A, B },
+            null, false, 1, out _, fifteen)!;
+        Assert.Equal(15, MissTotal(first));
+
+        var ten = Enumerable.Range(1, 10).Select(r => Miss(r)).ToArray();
+        string second = RunStatsFile.AddFight(RunStatsFile.ParseFights(first, Run)!, Run, A, "1.6.0", 2, Meta(4), TwoPlayers(), new[] { A, B },
+            null, false, 1, out _, ten)!;
+        Assert.Equal(20, MissTotal(second));
+        var fights = JsonNode.Parse(second)!["fights"]!.AsArray();
+        Assert.Equal(15, fights[0]!["forecast_misses"]!.AsArray().Count);     // the earlier fight is untouched
+        Assert.Equal(new[] { 1, 2, 3, 4, 5 }, fights[1]!["forecast_misses"]!.AsArray().Select(m => (int)m!["round"]!).ToArray());
+
+        // A third fight finds no room left: no key at all.
+        string third = RunStatsFile.AddFight(RunStatsFile.ParseFights(second, Run)!, Run, A, "1.6.0", 3, Meta(5), TwoPlayers(), new[] { A, B },
+            null, false, 1, out _, ten)!;
+        Assert.Equal(20, MissTotal(third));
+        Assert.False(JsonNode.Parse(third)!["fights"]![2]!.AsObject().ContainsKey("forecast_misses"));
+    }
+
+    [Fact]
+    public void AReplayedFightsOldMissesDoNotCountAgainstItself()
+    {
+        var twenty = Enumerable.Range(1, 20).Select(r => Miss(r)).ToArray();
+        string first = RunStatsFile.AddFight(new List<JsonObject>(), Run, A, "1.6.0", 1, Meta(3), TwoPlayers(), new[] { A, B },
+            null, false, 1, out _, twenty)!;
+        string replay = RunStatsFile.AddFight(RunStatsFile.ParseFights(first, Run)!, Run, A, "1.6.0", 2, Meta(3), TwoPlayers(), new[] { A, B },
+            null, false, 1, out var o, new[] { Miss(7), Miss(8) })!;
+        Assert.Equal(RunStatsFile.Outcome.Replaced, o);
+        Assert.Equal(2, MissTotal(replay));
+    }
+
+    [Fact]
+    public void AddFight_DropsMissesLast_WhenNearCap()
+    {
+        var existing = FileOfSize(RunStatsFile.MaxBytes - 1500);
+        var misses = Enumerable.Range(1, 20).Select(r => Miss(r, items: 20)).ToArray();
+        string? text = RunStatsFile.AddFight(existing, Run, A, "1.6.0", 1, Meta(2), TwoPlayers(), new[] { A, B },
+            null, false, 1, out var o, misses);
+        Assert.NotNull(text);
+        Assert.Equal(RunStatsFile.Outcome.Appended, o);
+        Assert.True(System.Text.Encoding.UTF8.GetByteCount(text!) <= RunStatsFile.MaxBytes);
+        var last = JsonNode.Parse(text!)!["fights"]!.AsArray().Last()!;
+        Assert.False(last.AsObject().ContainsKey("forecast_misses"));
+        Assert.Equal(140L, (long)last["players"]![0]!["dealt"]!["total"]!);   // totals always kept
     }
 
     // ===== The hit log =====
@@ -352,6 +574,24 @@ public class RunStatsFileTests
         var log = RunStatsFile.BuildFight(Meta(), TwoPlayers(), new[] { A, B }, hits, false)["log"]!;
         Assert.Equal(new[] { "you", "Cultist", "Osty" }, log["names"]!.AsArray().Select(n => (string)n!).ToArray());
         Assert.Equal("[[1,0,0,0,1,5],[1,3,1,-1,-1,4],[1,2,0,1,2,3],[1,1,1,-2,-3,2]]", log["hits"]!.ToJsonString());
+    }
+
+    [Fact]
+    public void Log_WritesBufferedHitsLikeTakenOnes()
+    {
+        var hits = new[]
+        {
+            H(HitKind.Buffered, 0, "Cultist", "MONSTER.CULTIST", -1, "you", 0, 24, 2),
+            H(HitKind.Buffered, 1, null, null, -1, "Ally", 1, 6, 3),       // attacker unknown: source -1
+            H(HitKind.Buffered, 1, "you", null, 0, "Ally", 1, 5, 3),       // another player's hit: source ref
+        };
+        var log = JsonNode.Parse(RunStatsFile.BuildFight(Meta(), TwoPlayers(), new[] { A, B }, hits)["log"]!.ToJsonString())!;
+        var rows = log["hits"]!.AsArray().Select(h => h!.AsArray().Select(v => (long)v!).ToArray()).ToArray();
+        Assert.Equal(new long[] { 2, 5, 0, 0, -2, 24 }, rows[0]);
+        Assert.Equal(new long[] { 3, 5, 1, -1, -3, 6 }, rows[1]);
+        Assert.Equal(new long[] { 3, 5, 1, -2, -3, 5 }, rows[2]);
+        Assert.Equal(new[] { "Cultist" }, log["names"]!.AsArray().Select(n => (string)n!).ToArray());
+        Assert.Equal("MONSTER.CULTIST", (string)log["ids"]![0]!);
     }
 
     [Fact]
@@ -446,6 +686,8 @@ public class RunStatsFileTests
         t.AddHit(H(HitKind.Healed, 0, null, null, -1, "you", 0, 5, 2));
         t.AddPotion(1, "Fire Potion", null, "POTION.FIRE_POTION");
         t.AddHit(H(HitKind.Potion, 1, "Fire Potion", "POTION.FIRE_POTION", -1, "Cultist", -1, -1, 2));
+        t.AddBuffered(0, 24);   // saved HP: its own kind, outside the dealt/taken/absorbed/healed sums
+        t.AddHit(H(HitKind.Buffered, 0, "Cultist", "MONSTER.CULTIST", -1, "you", 0, 24, 2));
 
         var snap = t.SourceSnapshot();
         var f = RunStatsFile.BuildFight(Meta(), snap.PerPlayer, new[] { A, B }, snap.FightHits, snap.HitsTruncated);
@@ -461,7 +703,9 @@ public class RunStatsFileTests
             Assert.Equal((long)p["taken"]!["total"]!, Sum(1));
             Assert.Equal(p["absorbed"] is { } a ? (long)a : 0L, Sum(2));
             Assert.Equal((long)p["healed"]!, Sum(3));
+            Assert.Equal(p["buffered"] is { } bu ? (long)bu : 0L, Sum(5));
         }
+        Assert.Equal(24L, (long)f["players"]![0]!["buffered"]!);
         Assert.Equal(11L, (long)f["players"]![1]!["dealt"]!["total"]!); // the fixture really exercised the totals
     }
 
