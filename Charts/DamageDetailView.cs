@@ -604,7 +604,7 @@ internal sealed class DamageDetailView
             if (full && chartH > 0f)
                 RenderRoundChart(ref cur, ref barCur, ref iconCur, chart, palette, pad, chartTop, _w - pad * 2f, chartH, recap);
 
-            RenderLog(ref cur, snap.Log, full, pad, logTop);
+            RenderLog(ref cur, ref barCur, ref iconCur, snap.Log, palette, full, pad, logTop);
 
             for (int i = cur; i < _labels.Count; i++) _labels[i].Visible = false;
             for (int i = barCur; i < _bars.Count; i++) _bars[i].Visible = false;
@@ -908,7 +908,14 @@ internal sealed class DamageDetailView
         }
     }
 
-    private void RenderLog(ref int cur, LogEntry[] log, bool full, float pad, float top)
+    // Display rows of the log, reused every frame: Entry = index into the log, or -1 for a round divider.
+    private readonly List<(int Entry, int Round)> _logRows = new();
+    private readonly Dictionary<int, string> _roundLabels = new();
+    private Texture2D? _healIcon;
+    private bool _healIconResolved;
+
+    private void RenderLog(ref int cur, ref int barCur, ref int iconCur, LogEntry[] log, Color[] palette,
+                           bool full, float pad, float top)
     {
         float leftX = full ? pad : 14f;
         var head = Next(ref cur, full ? 16 : 13, UiTheme.Gold, FontRole.Bold);
@@ -921,30 +928,81 @@ internal sealed class DamageDetailView
         float regionH = listBottom - listTop;
         _visible = Math.Max(1, (int)(regionH / lineH));
 
-        // Flatten to display rows (round separators + lines), oldest-first.
-        var sepColor = new Color(UiTheme.Gold.R, UiTheme.Gold.G, UiTheme.Gold.B, 0.6f);
-        var rows = new List<(string Text, Color Color, bool Sep)>();
+        // Flatten to display rows (round dividers + lines), oldest-first.
+        _logRows.Clear();
         int lastRound = int.MinValue;
-        foreach (var e in log)
+        for (int i = 0; i < log.Length; i++)
         {
-            if (e.Round != lastRound) { rows.Add(($"──── Round {e.Round} ────", sepColor, true)); lastRound = e.Round; }
-            rows.Add((e.Text, e.Tone switch { LogTone.Taken => UiTheme.Red, LogTone.Buffered => UiTheme.Saved, _ => UiTheme.Cream }, false));
+            if (log[i].Round != lastRound) { _logRows.Add((-1, log[i].Round)); lastRound = log[i].Round; }
+            _logRows.Add((i, log[i].Round));
         }
 
-        _maxOffset = Math.Max(0, rows.Count - _visible);
+        _maxOffset = Math.Max(0, _logRows.Count - _visible);
         if (log.Length != _lastLogCount) { if (_logAtBottom) _logOffset = _maxOffset; _lastLogCount = log.Length; } // follow newest
         _logOffset = Math.Clamp(_logOffset, 0, _maxOffset);
         _logAtBottom = _logOffset >= _maxOffset;
 
         int sepSize = full ? 15 : 10;
         int lineSize = full ? 16 : 11;
+        float right = _w - (full ? pad : 12f) - 10f;          // clear of the scrollbar
+        float iconSz = lineH - 2f;
+        float textX = leftX + 4f + iconSz + 4f;               // an icon column, so lines align with or without art
+        float barMaxW = Math.Max(0f, right - textX + 2f);
+        long maxAmount = LogLayout.MaxAmount(log);
+        var sepColor = new Color(UiTheme.Gold.R, UiTheme.Gold.G, UiTheme.Gold.B, 0.6f);
+        var green = new Color(0.55f, 0.85f, 0.55f);
         float y = listTop;
-        for (int i = _logOffset; i < rows.Count && i < _logOffset + _visible; i++)
+        for (int i = _logOffset; i < _logRows.Count && i < _logOffset + _visible; i++)
         {
-            var r = rows[i];
-            var lbl = Next(ref cur, r.Sep ? sepSize : lineSize, r.Color, r.Sep ? FontRole.Bold : FontRole.Body);
-            lbl.Text = r.Text;
-            lbl.SetPosition(new Vector2(r.Sep ? leftX : leftX + 4f, y));
+            var row = _logRows[i];
+            if (row.Entry < 0)
+            {
+                // Round divider: the label centered between two thin gold lines.
+                if (!_roundLabels.TryGetValue(row.Round, out var text)) { text = $"Round {row.Round}"; _roundLabels[row.Round] = text; }
+                var lbl = Next(ref cur, sepSize, sepColor, FontRole.Bold);
+                lbl.Text = text;
+                float labelW = MeasureLabel(lbl);
+                var d = LogLayout.Divider(leftX, right, labelW, full ? 10f * _fontScale : 6f);
+                lbl.SetPosition(new Vector2(d.LabelX, y));
+                float lineY = y + lineH * 0.5f - 1f;
+                float thick = full ? 2f : 1f;
+                DividerLine(ref barCur, d.LeftLineX, d.LeftLineW, lineY, thick, sepColor);
+                DividerLine(ref barCur, d.RightLineX, d.RightLineW, lineY, thick, sepColor);
+                y += lineH;
+                continue;
+            }
+
+            var e = log[row.Entry];
+            if (LogLayout.HasBar(e.Kind))
+            {
+                // Amount bar behind the text, scaled to the largest single amount in the log (chronological,
+                // unlike the sorted source bars above), tinted like those bars.
+                Color accent = e.Kind switch
+                {
+                    HitKind.Dealt => palette[Math.Clamp(e.Slot, 0, palette.Length - 1)],
+                    HitKind.Buffered => UiTheme.Saved,
+                    HitKind.Healed => green,
+                    _ => UiTheme.Red,
+                };
+                var bar = NextBar(ref barCur);
+                bar.Color = _opaque
+                    ? new Color(accent.R * 0.4f, accent.G * 0.4f, accent.B * 0.4f, 1f)
+                    : new Color(accent.R, accent.G, accent.B, 0.30f);
+                bar.SetPosition(new Vector2(textX - 2f, y + 1f));
+                bar.SetSize(new Vector2(LogLayout.BarWidth(e.Amount, maxAmount, barMaxW), lineH - 3f));
+            }
+            var tex = LogIcon(e);
+            if (tex != null)
+            {
+                var ic = NextIcon(ref iconCur);
+                ic.Texture = tex;
+                ic.SetPosition(new Vector2(leftX + 4f, y + 1f));
+                ic.SetSize(new Vector2(iconSz, iconSz));
+            }
+            var color = e.Tone switch { LogTone.Taken => UiTheme.Red, LogTone.Buffered => UiTheme.Saved, _ => UiTheme.Cream };
+            var line2 = Next(ref cur, lineSize, color);
+            line2.Text = e.Text;
+            line2.SetPosition(new Vector2(e.Kind == null ? leftX + 4f : textX, y));
             y += lineH;
         }
 
@@ -953,13 +1011,13 @@ internal sealed class DamageDetailView
         _sbX = _w - (full ? pad : 12f);
         float sbW = full ? 8f : 6f;
         _sbHitL = _sbX - 6f; _sbHitR = _sbX + 12f;
-        if (RenderNativeScrollbar(full, sbW, rows.Count))
+        if (RenderNativeScrollbar(full, sbW, _logRows.Count))
         {
             _track.Visible = false; _grabber.Visible = false;
         }
         else if (_maxOffset > 0)
         {
-            _grabberH = Math.Max(24f, _trackH * _visible / rows.Count);
+            _grabberH = Math.Max(24f, _trackH * _visible / _logRows.Count);
             _grabberY = _trackY + (_trackH - _grabberH) * ((float)_logOffset / _maxOffset);
             _track.Visible = true; _track.SetPosition(new Vector2(_sbX, _trackY)); _track.SetSize(new Vector2(sbW, _trackH));
             _grabber.Visible = true; _grabber.SetPosition(new Vector2(_sbX, _grabberY)); _grabber.SetSize(new Vector2(sbW, _grabberH));
@@ -1075,6 +1133,64 @@ internal sealed class DamageDetailView
         }
         catch { }
         return null;
+    }
+
+    private void DividerLine(ref int barCur, float x, float w, float y, float thick, Color color)
+    {
+        if (w <= 0f) return;
+        var line = NextBar(ref barCur);
+        line.Color = color;
+        line.SetPosition(new Vector2(x, y));
+        line.SetSize(new Vector2(w, thick));
+    }
+
+    // A log line's icon: Buffer lines the Buffer power, heals a heal icon, else the hit's own art (card, power,
+    // potion), else the source's game sprite by name or an attack intent for damage taken. Every lookup is cached
+    // (LoadTex, _nameIconCache, GameAssets), so nothing is loaded per frame.
+    private Texture2D? LogIcon(in LogEntry e)
+    {
+        if (e.Kind is not HitKind kind) return null;
+        try
+        {
+            switch (kind)
+            {
+                case HitKind.Buffered:
+                    return GameAssets.Enabled ? LoadTex("res://images/atlases/power_atlas.sprites/buffer_power.tres") : null;
+                case HitKind.Healed:
+                    return HealIcon();
+            }
+            if (e.Icon != null && LoadTex(e.Icon) is { } own) return own;
+            return FallbackIcon(e.Name ?? "", e.Amount, kind is HitKind.Taken or HitKind.Absorbed);
+        }
+        catch { return null; }
+    }
+
+    // The game's heal intent (frame 0), else the top bar's heart; null with native_visuals off. Resolved once.
+    private Texture2D? HealIcon()
+    {
+        if (!GameAssets.Enabled) return null;
+        if (_healIconResolved) return _healIcon;
+        _healIconResolved = true;
+        foreach (var p in new[]
+        {
+            "res://images/atlases/intent_atlas.sprites/heal/intent_heal_00.tres",
+            "res://images/packed/intents/heal/intent_heal_00.png",
+            GameAssets.Paths.UiAtlasSprites + "top_bar_heart.tres",
+        })
+            if ((_healIcon = LoadTex(p)) != null) break;
+        return _healIcon;
+    }
+
+    // A label's text width at its applied font and size (0 when unknown, which centers it as if empty).
+    private static float MeasureLabel(Label lbl)
+    {
+        try
+        {
+            var font = lbl.GetThemeFont("font");
+            int size = lbl.GetThemeFontSize("font_size");
+            return font != null ? font.GetStringSize(lbl.Text, HorizontalAlignment.Left, -1, size).X : 0f;
+        }
+        catch { return 0f; }
     }
 
     private static Texture2D? NameIcon(string name)
