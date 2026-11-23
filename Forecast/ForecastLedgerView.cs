@@ -308,7 +308,7 @@ internal static class ForecastIcons
     private static ulong _lastBuildTry;
     private static bool _buildTried;
     private static int _buildTries;
-    private static readonly Dictionary<string, Texture2D?> _byLabel = new();
+    private static readonly LiveCache<Texture2D> _byLabel = new(GodotObject.IsInstanceValid, MaxCachedLabels);
 
     public static Texture2D? For(ForecastItem it)
     {
@@ -328,17 +328,9 @@ internal static class ForecastIcons
 
     private static Texture2D? ByLabel(string prefix, string label, bool powerFirst)
     {
-        string key = prefix + Norm(label);
-        if (_byLabel.TryGetValue(key, out var hit)) return hit;
         if (!EnsureMaps()) return null; // ModelDb not ready yet: don't cache the miss
-
         string n = Norm(label);
-        Texture2D? tex = null;
-        if (powerFirst) tex = PowerTex(n) ?? CardTex(n);
-        else tex = CardTex(n);
-        if (_byLabel.Count >= MaxCachedLabels) _byLabel.Clear();
-        _byLabel[key] = tex;
-        return tex;
+        return _byLabel.Get(prefix + n, _ => powerFirst ? PowerTex(n) ?? CardTex(n) : CardTex(n));
     }
 
     private static Texture2D? PowerTex(string n)

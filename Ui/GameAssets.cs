@@ -199,7 +199,13 @@ internal static class GameAssets
         {
             lock (_lock)
             {
-                if (_cache.TryGetValue(resPath, out var hit)) return hit as T;
+                // The game disposes assets it loaded outside preloading at every room transition, and ours are the
+                // same objects (CacheMode.Reuse): a disposed hit is dropped and loaded again (see LiveCache).
+                if (_cache.TryGetValue(resPath, out var hit))
+                {
+                    if (hit == null || GodotObject.IsInstanceValid(hit)) return hit as T;
+                    _cache.Remove(resPath);
+                }
                 ulong now = Time.GetTicksMsec();
                 if (_missAt.TryGetValue(resPath, out var at) && now - at < MissRetryMs) return null;
 
