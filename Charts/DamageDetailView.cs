@@ -65,7 +65,8 @@ internal sealed class DamageDetailView
     private readonly List<Label> _labels = new();
     private readonly List<ColorRect> _bars = new();
     private readonly List<TextureRect> _icons = new();
-    private readonly Dictionary<string, Texture2D?> _texCache = new();
+    // Textures by res:// path, revalidated on every hit (LiveCache: the game disposes some of them between rooms).
+    private readonly LiveCache<Texture2D> _texCache = new(GodotObject.IsInstanceValid);
     private const float IconSize = 18f;
 
     // Current layout size (recomputed per render from mode + viewport).
@@ -95,7 +96,7 @@ internal sealed class DamageDetailView
     private ShaderMaterial? _blurMat;
     private static readonly StringName BlurLod = "lod", BlurMix = "mix_percentage";
     private float _blurT;
-    private readonly Dictionary<string, Texture2D?> _nameIconCache = new();
+    private readonly LiveCache<Texture2D> _nameIconCache = new(GodotObject.IsInstanceValid, 256);
     // Self-drawn close/back button (full-screen only), animated by us from the poll loop. Interaction is
     // poll-based via _closeRect (the native NBackButton's hover/press animations never fire on our layer).
     private readonly Panel _btn;
@@ -549,7 +550,26 @@ internal sealed class DamageDetailView
             for (int i = boxCur; i < _boxes.Count; i++) _boxes[i].Panel.Visible = false;
             for (int i = _frameCur; i < _frames.Count; i++) { _frames[i].Frame.Visible = false; _frames[i].Shadow.Visible = false; }
         }
-        catch (Exception ex) { ErrorLog.Once("detail render", ex); }
+        catch (Exception ex)
+        {
+            // A frame that throws part-way would leave every pooled node it hadn't reached yet showing the last
+            // good frame, which may be another fight's summary: hide them all, so the panel is blank, not wrong.
+            HidePooled();
+            ErrorLog.Once("detail render", ex);
+        }
+    }
+
+    private void HidePooled()
+    {
+        try
+        {
+            foreach (var l in _labels) l.Visible = false;
+            foreach (var b in _bars) b.Visible = false;
+            foreach (var i in _icons) i.Visible = false;
+            foreach (var b in _boxes) b.Panel.Visible = false;
+            foreach (var f in _frames) { f.Frame.Visible = false; f.Shadow.Visible = false; }
+        }
+        catch { }
     }
 
     // ===== Full view: layout E (sidebar + round cards) =====
@@ -1059,7 +1079,7 @@ internal sealed class DamageDetailView
     }
 
     private readonly Dictionary<int, string> _roundLabels = new();
-    private Texture2D? _healIcon;
+    private string? _healIconPath;
     private bool _healIconResolved;
 
     // The summary's combat log: the full view's round cards (RenderCards), scaled to the summary's width by the same
@@ -1212,7 +1232,7 @@ internal sealed class DamageDetailView
         if (!GameAssets.Enabled || string.IsNullOrEmpty(name)) return null;
         try
         {
-            if (!_nameIconCache.TryGetValue(name, out var tex)) { tex = NameIcon(name); _nameIconCache[name] = tex; }
+            var tex = _nameIconCache.Get(name, NameIcon);
             if (tex != null) return tex;
             if (taken && name is not ("Status" or "Other" or "Unknown"))
                 return GameAssets.IntentAttackIcon((int)Math.Min(total, int.MaxValue));
@@ -1261,7 +1281,7 @@ internal sealed class DamageDetailView
     private Texture2D? HealIcon()
     {
         if (!GameAssets.Enabled) return null;
-        if (_healIconResolved) return _healIcon;
+        if (_healIconResolved) return _healIconPath != null ? LoadTex(_healIconPath) : null;
         _healIconResolved = true;
         foreach (var p in new[]
         {
@@ -1269,8 +1289,8 @@ internal sealed class DamageDetailView
             "res://images/packed/intents/heal/intent_heal_00.png",
             ETopBarHeart,
         })
-            if ((_healIcon = LoadTex(p)) != null) break;
-        return _healIcon;
+            if (LoadTex(p) is { } tex) { _healIconPath = p; return tex; }
+        return null;
     }
 
     // A label's text width at its applied font and size (0 when unknown, which centers it as if empty).
@@ -1384,14 +1404,12 @@ internal sealed class DamageDetailView
         return ic;
     }
 
-    private Texture2D? LoadTex(string path)
+    private Texture2D? LoadTex(string path) => _texCache.Get(path, ProbeTex);
+
+    internal static Texture2D? ProbeTex(string path)
     {
-        if (_texCache.TryGetValue(path, out var cached)) return cached;
-        Texture2D? tex = null;
-        try { if (ResourceLoader.Exists(path)) tex = ResourceLoader.Load<Texture2D>(path, null, ResourceLoader.CacheMode.Reuse); }
-        catch { tex = null; }
-        _texCache[path] = tex;
-        return tex;
+        try { return ResourceLoader.Exists(path) ? ResourceLoader.Load<Texture2D>(path, null, ResourceLoader.CacheMode.Reuse) : null; }
+        catch { return null; }
     }
 
     // Largest size <= px (down to a readable floor) at which `text` fits `maxW`, allowing for the outline.

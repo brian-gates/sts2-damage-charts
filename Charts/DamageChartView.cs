@@ -48,7 +48,7 @@ internal sealed class DamageChartView
     private readonly List<ColorRect> _grid = new();
     private readonly List<Label> _labels = new();
     private readonly List<TextureRect> _icons = new();
-    private readonly Dictionary<string, Texture2D?> _texCache = new();
+    private readonly LiveCache<Texture2D> _texCache = new(GodotObject.IsInstanceValid);
 
     private readonly List<(Rect2 Rect, int Round, int Slot)> _cellRects = new();
     private ChartSnapshot? _lastSnap;
@@ -459,7 +459,12 @@ internal sealed class DamageChartView
             HideRest(_icons, iconCur);
             HideRest(_grid, gridCur);
         }
-        catch (Exception ex) { ErrorLog.Once("bars render", ex); }
+        catch (Exception ex)
+        {
+            // Never leave a half-drawn frame's stale bars/icons up (they may be from an earlier fight).
+            try { HideRest(_labels, 0); HideRest(_bars, 0); HideRest(_icons, 0); HideRest(_grid, 0); } catch { }
+            ErrorLog.Once("bars render", ex);
+        }
     }
 
     // Three short diagonal strokes tucked into the bottom-right corner (inside the native frame's bevel).
@@ -539,15 +544,7 @@ internal sealed class DamageChartView
         return ic;
     }
 
-    private Texture2D? LoadTex(string path)
-    {
-        if (_texCache.TryGetValue(path, out var cached)) return cached;
-        Texture2D? tex = null;
-        try { if (ResourceLoader.Exists(path)) tex = ResourceLoader.Load<Texture2D>(path, null, ResourceLoader.CacheMode.Reuse); }
-        catch { tex = null; }
-        _texCache[path] = tex;
-        return tex;
-    }
+    private Texture2D? LoadTex(string path) => _texCache.Get(path, DamageDetailView.ProbeTex);
 
     private static void HideRest<T>(List<T> nodes, int from) where T : CanvasItem
     {

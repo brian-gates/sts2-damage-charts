@@ -35,6 +35,7 @@
     <Compile Include="../Share/ShareAction.cs" Link="ShareAction.cs" />
     <Compile Include="../Share/ShareLayout.cs" Link="ShareLayout.cs" />
     <Compile Include="../Ui/CardPortrait.cs" Link="CardPortrait.cs" />
+    <Compile Include="../Common/LiveCache.cs" Link="LiveCache.cs" />
   </ItemGroup>
 
   <ItemGroup>
