@@ -137,6 +137,7 @@ internal sealed class DamageTracker
     private readonly Dictionary<int, long> _healByPlayer = new();   // slot -> total healed
     private readonly Dictionary<int, long> _blockByPlayer = new();  // slot -> total block gained
     private readonly Dictionary<int, long> _absorbedByPlayer = new(); // slot -> damage their pet took for them
+    private readonly Dictionary<int, long> _stoppedByPlayer = new();  // slot -> damage their block stopped
     private readonly Dictionary<int, long> _bufferedByPlayer = new(); // slot -> HP their Buffer saved
     private readonly Dictionary<int, Dictionary<string, long>> _potionsByPlayer = new(); // slot -> potion -> uses
     private readonly List<LogEntry> _log = new();
@@ -171,6 +172,7 @@ internal sealed class DamageTracker
             _healByPlayer.Clear();
             _blockByPlayer.Clear();
             _absorbedByPlayer.Clear();
+            _stoppedByPlayer.Clear();
             _bufferedByPlayer.Clear();
             _potionsByPlayer.Clear();
             _log.Clear();
@@ -215,6 +217,9 @@ internal sealed class DamageTracker
 
     public void AddAbsorbed(int slot, int amount) => AddTotal(_absorbedByPlayer, slot, amount);
 
+    // Damage this player's block stopped (block lost to an enemy's hit). Not the pet's AddAbsorbed.
+    public void AddBlockStopped(int slot, int amount) => AddTotal(_stoppedByPlayer, slot, amount);
+
     public void AddBuffered(int slot, int amount) => AddTotal(_bufferedByPlayer, slot, amount);
 
     // HP this player has lost so far this fight (the sum of their taken sources). For the forecast check.
@@ -225,6 +230,24 @@ internal sealed class DamageTracker
             long total = 0;
             if (_takenBySource.TryGetValue(slot, out var map)) foreach (var v in map.Values) total += v;
             return total;
+        }
+    }
+
+    // One player's running totals for this fight, read straight from the accumulators (no snapshot copy): the live
+    // state reads these every few frames. An unknown slot is all zero.
+    public readonly record struct FightTotals(long Dealt, long Taken, long Healed, long Blocked, long BlockStopped);
+
+    public FightTotals Totals(int slot)
+    {
+        lock (_lock)
+        {
+            long dealt = 0, taken = 0, heal = 0, block = 0, stopped = 0;
+            if (_dealtBySource.TryGetValue(slot, out var d)) foreach (var v in d.Values) dealt += v;
+            if (_takenBySource.TryGetValue(slot, out var t)) foreach (var v in t.Values) taken += v;
+            _healByPlayer.TryGetValue(slot, out heal);
+            _blockByPlayer.TryGetValue(slot, out block);
+            _stoppedByPlayer.TryGetValue(slot, out stopped);
+            return new FightTotals(dealt, taken, heal, block, stopped);
         }
     }
 

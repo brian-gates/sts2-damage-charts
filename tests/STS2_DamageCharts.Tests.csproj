@@ -37,6 +37,9 @@
     <Compile Include="../Share/ShareLayout.cs" Link="ShareLayout.cs" />
     <Compile Include="../Ui/CardPortrait.cs" Link="CardPortrait.cs" />
     <Compile Include="../Common/LiveCache.cs" Link="LiveCache.cs" />
+    <Compile Include="../Live/LiveSnapshot.cs" Link="LiveSnapshot.cs" />
+    <Compile Include="../Live/LiveWriter.cs" Link="LiveWriter.cs" />
+    <Compile Include="../Live/LiveIntentKind.cs" Link="LiveIntentKind.cs" />
   </ItemGroup>
 
   <ItemGroup>

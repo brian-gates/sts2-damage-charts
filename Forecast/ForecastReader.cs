@@ -450,12 +450,54 @@ internal static class ForecastReader
             if (outcome == IntentRules.Outcome.Hidden) { readable = false; continue; }
             if (outcome != IntentRules.Outcome.Add) continue;
 
-            int hits = GetInt(intent, "Repeats", "Hits", "Times", "Count", "AttackCount");
-            if (hits <= 0) hits = 1;
+            int hits = IntentHits(intent);
             items.Add(new ForecastItem(name, ForecastKind.Attack, hits, perHit, blockable: true, conditional: false));
         }
         return readable;
     }
+
+    private static int IntentHits(object intent)
+    {
+        int hits = GetInt(intent, "Repeats", "Hits", "Times", "Count", "AttackCount");
+        return hits <= 0 ? 1 : hits;
+    }
+
+    // The enemy's telegraphed move for the live state, read the way the forecast reads it. A move can hold several
+    // intents (an attack and a debuff): the most informative one is shown (LiveIntentKind.Rank). Null when the enemy
+    // shows none. An attack's damage is per hit, as the game shows it. Never throws.
+    internal static Live.LiveIntent? ReadLiveIntent(Creature enemy)
+    {
+        try
+        {
+            bool alive = true;
+            try { alive = enemy.IsAlive; } catch { }
+            Live.LiveIntent? best = null;
+            foreach (var intent in ResolveIntents(enemy))
+            {
+                var chain = TypeChain(intent.GetType());
+                string? intentType = GetProp(intent, "IntentType")?.ToString();
+                var threat = IntentRules.Classify(chain, intentType);
+                if (!alive && threat != IntentThreat.DeathBlow) continue;   // a dead enemy's leftovers are not moves
+                string kind = Live.LiveIntentKind.Of(threat, chain.Length > 0 ? chain[0] : null, intentType);
+                int damage = 0, hits = 0;
+                if (kind == "attack")
+                {
+                    damage = ResolveIntentDamage(intent, enemy);
+                    hits = IntentHits(intent);
+                }
+                if (best == null || Live.LiveIntentKind.Rank(kind) < Live.LiveIntentKind.Rank(best.Kind))
+                    best = new Live.LiveIntent(kind, damage, hits);
+            }
+            return best;
+        }
+        catch { return null; }
+    }
+
+    // HP, max HP and block as the forecast reads them (by name, so a rename reads 0 instead of throwing).
+    internal static (int Hp, int MaxHp, int Block) ReadVitals(Creature c) => (
+        GetInt(c, "CurrentHp", "Hp", "Health"),
+        GetInt(c, "MaxHp", "MaxHealth"),
+        GetInt(c, "Block", "CurrentBlock"));
 
     // An intent's type name and its base types' names, most derived first (cached per type).
     private static readonly Dictionary<Type, string[]> _typeChains = new();

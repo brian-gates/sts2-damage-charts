@@ -337,6 +337,17 @@ internal static class RunStatsFile
     public static Outcome Upsert(List<JsonObject> fights, JsonObject fight, int floorOrdinal) =>
         Upsert(fights, fight, floorOrdinal, out _);
 
+    // The index a fight on `floor` (0 = unknown) would get if it were added now: what AddFight would write for it,
+    // by the same Upsert and index rules. Null when the file is full. `fights` is left unchanged. (A fight too large
+    // for the file is not predicted.) The live state uses it as its "fight" number.
+    public static int? NextIndex(List<JsonObject> fights, int floor, int floorOrdinal)
+    {
+        var copy = new List<JsonObject>(fights);
+        var probe = new JsonObject { ["floor"] = floor > 0 ? floor : null };
+        if (Upsert(copy, probe, floorOrdinal, out int at) == Outcome.Full) return null;
+        return WrittenIndex(copy, at);
+    }
+
     // `at`: where the fight went in `fights` (-1 when the file is full).
     private static Outcome Upsert(List<JsonObject> fights, JsonObject fight, int floorOrdinal, out int at)
     {
