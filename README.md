@@ -181,6 +181,8 @@ After the first publish, subscribe in-client and verify the overlay loads in a r
   (`~/Library/Application Support/SlayTheSpire2` on macOS, `%APPDATA%\SlayTheSpire2` on Windows), for
   Spire Sync to upload. The file also notes rounds where the incoming-damage forecast was off, and the game version,
   so the forecast can be improved. Set `false` to stop writing the file.
+  While it is on, the mod also writes the current fight's live state to `damage-charts/live.json` for the Spire
+  Sync app; turning the setting off stops that too, and the mod never goes online itself.
 
 Changes to `hotkey`, `show_bars` and `vfx_moments` are picked up live (within about half a second);
 the rest apply the next time the game starts.
