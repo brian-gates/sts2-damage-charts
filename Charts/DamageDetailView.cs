@@ -109,7 +109,7 @@ internal sealed class DamageDetailView
     private Rect2 _closeRect;                 // hit region (local), empty when not shown
     private bool _closeRequested;
     private int _logOffset;
-    private bool _logAtBottom = true;
+    private bool _logAtBottom; // the log opens at its first line; scrolling to the end follows newer lines from there
     private bool _grabbing;
     private bool _leftLast;
     private float _grabStartY;
@@ -403,8 +403,8 @@ internal sealed class DamageDetailView
             // the whole view scales down so the log's text column keeps its minimum.
             _fullFrame = full ? RoundCards.Frame(vp.X, 1.5f * _fontScale) : default;
             if (full) _fontScale = _fullFrame.U / 1.5f;
-            // The summary and the full view scroll in different units: start each at the newest lines.
-            if (full != _lastFull) { _logOffset = 0; _logAtBottom = true; _lastFull = full; }
+            // The summary and the full view scroll in different units: each opens at the top of the log.
+            if (full != _lastFull) { _logOffset = 0; _logAtBottom = false; _lastFull = full; }
             _opaque = full;
             _bottomReserve = 0f;
 
