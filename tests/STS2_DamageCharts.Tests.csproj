@@ -40,6 +40,7 @@
     <Compile Include="../Live/LiveSnapshot.cs" Link="LiveSnapshot.cs" />
     <Compile Include="../Live/LiveWriter.cs" Link="LiveWriter.cs" />
     <Compile Include="../Live/LiveIntentKind.cs" Link="LiveIntentKind.cs" />
+    <Compile Include="../Live/LiveThrottle.cs" Link="LiveThrottle.cs" />
   </ItemGroup>
 
   <ItemGroup>

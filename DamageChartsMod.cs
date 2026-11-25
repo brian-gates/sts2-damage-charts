@@ -141,9 +141,7 @@ public static class DamageChartsMod
     // fight will get in the runs file (null: unknown, nothing is written). The game is read at most every few frames.
     private static LiveWriter? _live;
     private static int? _liveFight;
-    private static long _liveReadFrame = long.MinValue;
-    private const int LiveReadFrames = 20;       // ~3 reads a second at 60 fps
-    private const int LiveReadFramesOnChange = 5; // a new round or side shows within a few frames
+    private static long? _liveReadFrame;   // null: not read yet this fight (LiveThrottle)
     private static bool _tipShown;            // the hover tooltip was rendered this tick (else it is hidden)
     private static int _localSlot;            // local player's slot for this combat
 
@@ -1630,8 +1628,8 @@ public static class DamageChartsMod
 
     private static void OnCombatEnd()
     {
-        EndLive();   // while the tracker still holds this fight's totals
         DecideCombatResolved();   // before UnsubscribeAll: it reads the creatures this fight subscribed to
+        EndLive();   // only for a resolved fight, while the tracker still holds its totals
         UnsubscribeAll();
         CheckBufferSaves();   // a save whose stack was spent by now still belongs to this fight
         _pending.Clear();
@@ -1755,7 +1753,7 @@ public static class DamageChartsMod
     private static void BeginLive()
     {
         _liveFight = null;
-        _liveReadFrame = long.MinValue;
+        _liveReadFrame = null;
         try
         {
             _live ??= new LiveWriter(Path.Combine(OS.GetUserDataDir(), "damage-charts", "live.json"),
@@ -1767,6 +1765,7 @@ public static class DamageChartsMod
             var fights = (File.Exists(path) ? RunStatsFile.ParseFights(File.ReadAllText(path), ident.RunId) : null)
                          ?? new List<System.Text.Json.Nodes.JsonObject>();
             _liveFight = RunStatsFile.NextIndex(fights, _fightMeta.Floor, NextFloorOrdinal(ident.RunId, _fightMeta.Floor));
+            if (_liveFight is int fight) _live.Resume(ident.RunId, fight);   // a replayed fight continues its seq
         }
         catch (Exception ex) { ErrorLog.NoteOnce($"live state: fight start not read: {ex.Message}"); }
     }
@@ -1779,8 +1778,7 @@ public static class DamageChartsMod
             if (_live == null || _liveFight is not int fight || _fightRun is not { } ident) return;
             string side = cs.CurrentSide == CombatSide.Enemy ? "enemy" : "player";
             int round = cs.RoundNumber;
-            long wait = _live.KeyChanged(round, side) ? LiveReadFramesOnChange : LiveReadFrames;
-            if (_frame - _liveReadFrame < wait) return;
+            if (!LiveThrottle.ShouldRead(_frame, _liveReadFrame, _live.KeyChanged(round, side))) return;
             _liveReadFrame = _frame;
             _live.Tick(_frame, BuildLiveInput(cs, ident, fight, round, side));
         }
@@ -1801,7 +1799,7 @@ public static class DamageChartsMod
                     final = BuildLiveInput(cs, ident, fight, cs.RoundNumber, cs.CurrentSide == CombatSide.Enemy ? "enemy" : "player");
             }
             catch { }
-            _live.End(final);
+            _live.End(_combatResolved, final);
         }
         catch (Exception ex) { ErrorLog.NoteOnce($"live end state not written: {ex.Message}"); }
     }

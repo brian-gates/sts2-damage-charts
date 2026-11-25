@@ -36,6 +36,30 @@ internal sealed class LiveWriter
         _ended = false;
     }
 
+    /// <summary>A fight that is resumed (replayed after a quit or reload) continues the seq of the file left behind
+    /// for the same run and fight, so the server does not drop it as stale. Anything unreadable counts as no file.</summary>
+    public void Resume(string runId, int fight)
+    {
+        try { _seq = SeqOf(File.ReadAllText(_path), runId, fight); }
+        catch { _seq = 0; }
+    }
+
+    /// <summary>The seq in a live.json text when it is for this run and fight, else 0. Never throws.</summary>
+    public static int SeqOf(string? json, string runId, int fight)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(json)) return 0;
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var r = doc.RootElement;
+            if (r.ValueKind != System.Text.Json.JsonValueKind.Object) return 0;
+            if (r.GetProperty("run_id").GetString() != runId || r.GetProperty("fight").GetInt32() != fight) return 0;
+            int seq = r.GetProperty("seq").GetInt32();
+            return seq > 0 && seq <= LiveSnapshot.MaxNumber ? seq : 0;
+        }
+        catch { return 0; }
+    }
+
     /// <summary>Writes when this is a new (round, side) or the content differs from the last write; once per frame.
     /// Returns whether a file was written.</summary>
     public bool Tick(long frame, LiveInput input)
@@ -65,15 +89,17 @@ internal sealed class LiveWriter
     public bool KeyChanged(int round, string side) => _lastKey != (round, side);
 
     /// <summary>The fight is over: write the last state (or <paramref name="final"/>, when the game still answers) as
-    /// "ended". Nothing is written when no state was ever written or the end was already written.</summary>
-    public bool End(LiveInput? final = null)
+    /// "ended", only when the combat <paramref name="resolved"/> (a win or a death): an abandoned fight is replayed on
+    /// continue, and the server treats ended as terminal. Nothing is written when no state was ever written or the end
+    /// was already written; a failed write is retried by the next call.</summary>
+    public bool End(bool resolved, LiveInput? final = null)
     {
-        if (_ended || _last == null || _lastKey == null) return false;
-        _ended = true;
+        if (!resolved || _ended || _last == null || _lastKey == null) return false;
         try
         {
             Write(final ?? _last, "ended", _seq + 1);
             _seq++;
+            _ended = true;
             return true;
         }
         catch (Exception ex)

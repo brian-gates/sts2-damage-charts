@@ -77,12 +77,12 @@ public sealed class LiveWriterTests : IDisposable
     {
         var w = Writer();
         w.Tick(1, Input(hp: 30));
-        Assert.True(w.End());
+        Assert.True(w.End(true));
         var r = Read();
         Assert.Equal("ended", r.GetProperty("status").GetString());
         Assert.Equal(2, r.GetProperty("seq").GetInt32());
         Assert.Equal(30, r.GetProperty("players")[0].GetProperty("hp").GetInt32());
-        Assert.False(w.End());
+        Assert.False(w.End(true));
         Assert.False(w.Tick(9, Input(hp: 1)));   // nothing after the end until the next fight
     }
 
@@ -91,14 +91,14 @@ public sealed class LiveWriterTests : IDisposable
     {
         var w = Writer();
         w.Tick(1, Input(hp: 30));
-        Assert.True(w.End(Input(hp: 12)));
+        Assert.True(w.End(true, Input(hp: 12)));
         Assert.Equal(12, Read().GetProperty("players")[0].GetProperty("hp").GetInt32());
     }
 
     [Fact]
     public void End_without_any_written_state_writes_nothing()
     {
-        Assert.False(Writer().End());
+        Assert.False(Writer().End(true));
         Assert.False(File.Exists(Path_));
     }
 
@@ -107,7 +107,7 @@ public sealed class LiveWriterTests : IDisposable
     {
         var w = Writer();
         w.Tick(1, Input());
-        w.End();
+        w.End(true);
         w.Begin();
         Assert.True(w.Tick(10, Input()));
         var r = Read();
@@ -134,5 +134,80 @@ public sealed class LiveWriterTests : IDisposable
         Assert.False(w.Tick(2, bad));
         Assert.Single(_notes);
         Assert.False(File.Exists(Path_));
+    }
+
+    [Fact]
+    public void An_unresolved_fight_writes_no_ended_state_and_can_still_end_later()
+    {
+        var w = Writer();
+        w.Tick(1, Input(hp: 30));
+        Assert.False(w.End(false));
+        Assert.Equal("active", Read().GetProperty("status").GetString());
+        Assert.True(w.End(true));
+        Assert.Equal("ended", Read().GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public void A_failed_ended_write_is_retried_by_the_next_end()
+    {
+        var w = Writer();
+        w.Tick(1, Input());
+        Directory.Delete(Path.GetDirectoryName(Path_)!, true);
+        File.WriteAllText(Path.GetDirectoryName(Path_)!, "in the way");   // the directory cannot be created
+        Assert.False(w.End(true));
+        File.Delete(Path.GetDirectoryName(Path_)!);
+        Assert.True(w.End(true));
+        var r = Read();
+        Assert.Equal("ended", r.GetProperty("status").GetString());
+        Assert.Equal(2, r.GetProperty("seq").GetInt32());
+    }
+
+    [Fact]
+    public void A_resumed_fight_continues_the_seq_of_the_file_it_left()
+    {
+        var first = Writer();
+        first.Tick(1, Input(hp: 50));
+        first.Tick(2, Input(hp: 40));
+        first.Tick(3, Input(hp: 30));   // seq 3 on disk, then the game quits
+        var again = Writer();
+        again.Begin();
+        again.Resume("0123456789abcdef", 1);
+        Assert.True(again.Tick(1, Input(hp: 20)));
+        Assert.Equal(4, Read().GetProperty("seq").GetInt32());
+    }
+
+    [Fact]
+    public void A_file_for_another_run_or_fight_or_a_malformed_one_does_not_change_the_seq()
+    {
+        var first = Writer();
+        first.Tick(1, Input());
+        first.Tick(2, Input(hp: 1));
+        foreach (var (run, fight) in new[] { ("fedcba9876543210", 1), ("0123456789abcdef", 2) })
+        {
+            var w = Writer();
+            w.Begin(); w.Resume(run, fight);
+            Assert.True(w.Tick(1, Input(hp: 9)));
+            Assert.Equal(1, Read().GetProperty("seq").GetInt32());
+            first = Writer(); first.Tick(1, Input()); first.Tick(2, Input(hp: 1));   // restore seq 2 on disk
+        }
+        File.WriteAllText(Path_, "{ not json");
+        var m = Writer();
+        m.Begin(); m.Resume("0123456789abcdef", 1);
+        Assert.True(m.Tick(1, Input()));
+        Assert.Equal(1, Read().GetProperty("seq").GetInt32());
+    }
+
+    [Fact]
+    public void SeqOf_reads_only_a_matching_sane_file()
+    {
+        string Doc(string run, int fight, string seq) => $"{{\"run_id\":\"{run}\",\"fight\":{fight},\"seq\":{seq}}}";
+        Assert.Equal(7, LiveWriter.SeqOf(Doc("0123456789abcdef", 1, "7"), "0123456789abcdef", 1));
+        Assert.Equal(0, LiveWriter.SeqOf(Doc("0123456789abcdef", 2, "7"), "0123456789abcdef", 1));
+        Assert.Equal(0, LiveWriter.SeqOf(Doc("0123456789abcdef", 1, "-3"), "0123456789abcdef", 1));
+        Assert.Equal(0, LiveWriter.SeqOf(Doc("0123456789abcdef", 1, "1e99"), "0123456789abcdef", 1));
+        Assert.Equal(0, LiveWriter.SeqOf(Doc("0123456789abcdef", 1, "\"x\""), "0123456789abcdef", 1));
+        Assert.Equal(0, LiveWriter.SeqOf("[]", "0123456789abcdef", 1));
+        Assert.Equal(0, LiveWriter.SeqOf(null, "0123456789abcdef", 1));
+        Assert.Equal(0, LiveWriter.SeqOf("", "0123456789abcdef", 1));
     }
 }
