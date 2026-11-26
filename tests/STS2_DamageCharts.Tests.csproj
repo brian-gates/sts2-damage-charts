@@ -20,6 +20,7 @@
     <Compile Include="../Tracking/BufferCandidates.cs" Link="BufferCandidates.cs" />
     <Compile Include="../Tracking/RunAggregate.cs" Link="RunAggregate.cs" />
     <Compile Include="../Tracking/GroupDetail.cs" Link="GroupDetail.cs" />
+    <Compile Include="../Tracking/SelfKill.cs" Link="SelfKill.cs" />
     <Compile Include="../Forecast/SelfHarmText.cs" Link="SelfHarmText.cs" />
     <Compile Include="../Overlay/OverlayTransform.cs" Link="OverlayTransform.cs" />
     <Compile Include="../Overlay/PanelTop.cs" Link="PanelTop.cs" />

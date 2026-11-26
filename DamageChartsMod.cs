@@ -166,6 +166,7 @@ public static class DamageChartsMod
             TryApplyDamageHook();
             TryApplyPotionHook();
             TryApplyBufferHook();
+            TryApplySelfKillHook();
             TryApplySuppressHook();
             if (_sourceHooks) TryApplyPowerSourceHooks();
             else GD.Print("[STS2 Damage] power-source hooks DISABLED via config");
@@ -442,6 +443,77 @@ public static class DamageChartsMod
     // Potions used: postfix on CombatHistory.PotionUsed (sts2.dll v0.107.1), which the game calls once a potion
     // has actually resolved, right before it records a PotionUsedEntry. Plain (non-async) method; args are
     // matched by type, not name: the PotionModel and the optional target Creature.
+    // ===== Self-kills =====
+    //
+    // A monster that kills itself on its own move (the Waterfall Giant's ExplodeMove after TriggerAboutToBlowState
+    // set its HP to 999,999,999; a Gas Bomb's ExplodeMove) loses HP with no Damage tag, which OnHpChanged would
+    // otherwise credit to the local player as "Status". A prefix on MonsterModel.PerformMove (the one entry point
+    // every monster move runs through) records whose move is running; a prefix on CreatureCmd.Kill marks a kill of
+    // that same monster as a self-kill (SelfKill.IsSelfKill), and OnHpChanged doesn't credit its untagged HP loss.
+    private static Creature? _mover;     // the monster whose move is being performed
+    private static int _moverRound;      // the combat round it started in (a later enemy turn makes it stale)
+    private static readonly Dictionary<Creature, long> _selfKills = new();
+    private static bool _selfKillLogged; // one log line per session confirming a self-kill was skipped
+
+    private static void TryApplySelfKillHook()
+    {
+        try
+        {
+            var h = new Harmony("com.sts2damagecharts");
+            var move = AccessTools.DeclaredMethod(typeof(MonsterModel), "PerformMove");
+            var cmd = AccessTools.TypeByName("MegaCrit.Sts2.Core.Commands.CreatureCmd");
+            var kills = cmd == null ? new List<MethodInfo>()
+                : cmd.GetMethods(BindingFlags.Public | BindingFlags.Static | BindingFlags.DeclaredOnly).Where(m => m.Name == "Kill").ToList();
+            if (move == null || kills.Count == 0)
+            {
+                GD.Print($"[STS2 Damage] self-kill hook not resolved (PerformMove={move != null}, Kill={kills.Count}); a monster killing itself may be credited as Status");
+                return;
+            }
+            h.Patch(move, prefix: new HarmonyMethod(typeof(DamageChartsMod).GetMethod(nameof(PerformMovePrefix), BindingFlags.NonPublic | BindingFlags.Static)));
+            var killPrefix = new HarmonyMethod(typeof(DamageChartsMod).GetMethod(nameof(KillPrefix), BindingFlags.NonPublic | BindingFlags.Static));
+            foreach (var k in kills) h.Patch(k, prefix: killPrefix);
+            GD.Print($"[STS2 Damage] self-kill hook applied (PerformMove + {kills.Count} Kill overload(s))");
+        }
+        catch (Exception ex) { GD.PrintErr($"[STS2 Damage] self-kill hook skipped: {ex.GetType().Name}: {ex.Message}"); }
+    }
+
+    private static void PerformMovePrefix(MonsterModel __instance)
+    {
+        try
+        {
+            _mover = __instance?.Creature;
+            _moverRound = SafeCombatState()?.RoundNumber ?? 0;
+        }
+        catch (Exception ex) { _mover = null; ErrorLog.NoteOnce($"self-kill: PerformMove not readable ({ex.GetType().Name}): self-kills may be credited"); }
+    }
+
+    // Kill(Creature, CardModel, bool) and Kill(IReadOnlyCollection<Creature>, CardModel, bool): args by type.
+    private static void KillPrefix(object[] __args)
+    {
+        try
+        {
+            if (_mover is not { } mover || __args == null) return;
+            bool byCard = false;
+            IEnumerable<Creature>? killed = null;
+            foreach (var a in __args)
+            {
+                if (a is CardModel) byCard = true;
+                else if (a is Creature c) killed = new[] { c };
+                else if (a is IEnumerable<Creature> cs) killed = cs;
+            }
+            if (killed == null) return;
+            int round = SafeCombatState()?.RoundNumber ?? 0;
+            bool playerSource = ActiveFresh() && _activeSource!.Value.Owner != null;
+            foreach (var c in killed)
+            {
+                if (c == null || c.IsPlayer || c.IsPet) continue;
+                if (SelfKill.IsSelfKill(c, mover, _moverRound, round, EnemyTurn(), byCard, playerSource, c.CurrentHp))
+                    _selfKills[c] = _frame;
+            }
+        }
+        catch (Exception ex) { ErrorLog.NoteOnce($"self-kill: Kill args not readable ({ex.GetType().Name}): self-kills may be credited"); }
+    }
+
     private static void TryApplyPotionHook()
     {
         try
@@ -1556,6 +1628,8 @@ public static class DamageChartsMod
         VfxMoments.Reset(me);
         _pending.Clear();
         _dotTags.Clear();
+        _selfKills.Clear();
+        _mover = null;
         _bufferBefore.Clear();
         _bufferSaves.Clear();
         UnsubscribeAll();
@@ -1570,6 +1644,8 @@ public static class DamageChartsMod
         CheckBufferSaves();   // a save whose stack was spent by now still belongs to this fight
         _pending.Clear();
         _dotTags.Clear();
+        _selfKills.Clear();
+        _mover = null;
         _bufferBefore.Clear();
         _bufferSaves.Clear();
         _forecastCheck.CombatEnded();   // the fight ended before the next round: that round isn't checked
@@ -2063,6 +2139,18 @@ public static class DamageChartsMod
                 if (ForecastReader.Debug) GD.Print($"[STS2 Damage] HIT taken src={attacker} amt={lost} round={round} frame={_frame}");
                 VfxMoments.OnTaken(creature, lost);
                 _tracker.AddHit(new Hit(round, HitKind.Taken, slot, attacker, attackerId, -1, victim, slot, lost));
+                return;
+            }
+
+            // An enemy killing itself on its own move (Waterfall Giant, Gas Bomb) is nobody's damage.
+            long? selfKill = _selfKills.Remove(creature, out var skf) ? skf : null;
+            if (!SelfKill.Credit(pend.Label != null, selfKill, _frame, PendingTtlFrames))
+            {
+                if (!_selfKillLogged)
+                {
+                    _selfKillLogged = true;
+                    GD.Print($"[STS2 Damage] self-kill not credited: {TextHelper.SafeGetText(() => creature.Monster!.Title) ?? "Enemy"} {lost}");
+                }
                 return;
             }
 
