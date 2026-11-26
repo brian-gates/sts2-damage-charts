@@ -66,7 +66,7 @@ public static class DamageChartsMod
     private static readonly Dictionary<Creature, Action<int, int>> _blockSubs = new();
     // What's about to hit each creature, set by the Damage prefix (or Doom), consumed by the HP change.
     // Frame-stamped: a tag whose hit never changed HP (fully blocked, or Osty soaked it) expires.
-    private static readonly Dictionary<Creature, (string Label, Creature? Dealer, string? Icon, long Frame, string? Id)> _pending = new();
+    private static readonly Dictionary<Creature, (string Label, Creature? Dealer, string? Icon, long Frame, string? Id, HpTag Kind)> _pending = new();
     private const long PendingTtlFrames = 600; // ~10 s at 60 fps: covers Doom's kill animation
     // How recent an enemy's tag on a pet's owner must be for the pet's HP loss to count as that hit
     // (~2 s: the hit lands within its attack animation; much older tags are from earlier, blocked hits).
@@ -166,6 +166,7 @@ public static class DamageChartsMod
             TryApplyDamageHook();
             TryApplyPotionHook();
             TryApplyBufferHook();
+            TryApplySelfKillHook();
             TryApplySuppressHook();
             if (_sourceHooks) TryApplyPowerSourceHooks();
             else GD.Print("[STS2 Damage] power-source hooks DISABLED via config");
@@ -442,6 +443,56 @@ public static class DamageChartsMod
     // Potions used: postfix on CombatHistory.PotionUsed (sts2.dll v0.107.1), which the game calls once a potion
     // has actually resolved, right before it records a PotionUsedEntry. Plain (non-async) method; args are
     // matched by type, not name: the PotionModel and the optional target Creature.
+    // ===== Self-kills =====
+    //
+    // A monster that kills itself on its own move (the Waterfall Giant's ExplodeMove after TriggerAboutToBlowState
+    // set its HP to 999,999,999; a Gas Bomb's ExplodeMove) loses HP with no Damage tag, which OnHpChanged would
+    // otherwise credit to the local player as "Status". A prefix on the innermost CreatureCmd.Kill overload
+    // (IReadOnlyCollection<Creature>, CardModel, bool), which the other three call, marks a kill of a monster whose
+    // MonsterModel.IsPerformingMove is true (SelfKill.IsSelfKill). The Kill takes its HP synchronously, so the mark
+    // holds for that frame only, and OnHpChanged doesn't credit that HP loss (SelfKill.Credit).
+    private static readonly Dictionary<Creature, long> _selfKills = new();
+    private static bool _selfKillLogged; // one log line per session confirming a self-kill was skipped
+
+    private static void TryApplySelfKillHook()
+    {
+        try
+        {
+            var cmd = AccessTools.TypeByName("MegaCrit.Sts2.Core.Commands.CreatureCmd");
+            var kill = cmd?.GetMethods(BindingFlags.Public | BindingFlags.Static | BindingFlags.DeclaredOnly).FirstOrDefault(m =>
+            {
+                var ps = m.GetParameters();
+                return m.Name == "Kill" && ps.Length == 3 && ps[0].ParameterType == typeof(IReadOnlyCollection<Creature>)
+                    && ps[1].ParameterType == typeof(CardModel) && ps[2].ParameterType == typeof(bool);
+            });
+            bool performing = AccessTools.Property(typeof(MonsterModel), "IsPerformingMove") != null;
+            if (kill == null || !performing)
+            {
+                GD.Print($"[STS2 Damage] self-kill hook not resolved (Kill(IReadOnlyCollection<Creature>, CardModel, bool)={kill != null}, IsPerformingMove={performing}); a monster killing itself may be credited as Status");
+                return;
+            }
+            new Harmony("com.sts2damagecharts").Patch(kill, prefix: new HarmonyMethod(typeof(DamageChartsMod).GetMethod(nameof(KillPrefix), BindingFlags.NonPublic | BindingFlags.Static)));
+            GD.Print("[STS2 Damage] self-kill hook applied (Kill(IReadOnlyCollection<Creature>, CardModel, bool))");
+        }
+        catch (Exception ex) { GD.PrintErr($"[STS2 Damage] self-kill hook skipped: {ex.GetType().Name}: {ex.Message}"); }
+    }
+
+    private static void KillPrefix(IReadOnlyCollection<Creature> creatures, CardModel cardSource)
+    {
+        try
+        {
+            if (creatures == null) return;
+            bool playerSource = ActiveFresh() && _activeSource!.Value.Owner != null;
+            foreach (var c in creatures)
+            {
+                if (c == null || c.IsPlayer || c.IsPet) continue;
+                if (SelfKill.IsSelfKill(c.Monster?.IsPerformingMove == true, cardSource != null, playerSource, c.CurrentHp))
+                    _selfKills[c] = _frame;
+            }
+        }
+        catch (Exception ex) { ErrorLog.NoteOnce($"self-kill: Kill args not readable ({ex.GetType().Name}): self-kills may be credited"); }
+    }
+
     private static void TryApplyPotionHook()
     {
         try
@@ -735,7 +786,7 @@ public static class DamageChartsMod
             if (creatures == null) return;
             // Credit the kill to whoever applied the Doom (in co-op it isn't always the local player).
             foreach (var c in creatures)
-                if (c != null) _pending[c] = ("Doom", DoomApplier(c)?.Creature, _doomIcon, _frame, null);
+                if (c != null) _pending[c] = ("Doom", DoomApplier(c)?.Creature, _doomIcon, _frame, null, HpTag.DoomKill);
         }
         catch { }
     }
@@ -836,8 +887,8 @@ public static class DamageChartsMod
             {
                 if (t == null) continue;
                 // A stale stamp: a DoT on this enemy hurting it after an await (later Poison ticks).
-                if (unattributed && _dotTags.TryGetValue(t, out var dot)) _pending[t] = (dot.Label, dot.Owner, dot.Icon, _frame, dot.Id);
-                else _pending[t] = (label, dealer, icon, _frame, id);
+                if (unattributed && _dotTags.TryGetValue(t, out var dot)) _pending[t] = (dot.Label, dot.Owner, dot.Icon, _frame, dot.Id, HpTag.Damage);
+                else _pending[t] = (label, dealer, icon, _frame, id, HpTag.Damage);
                 // Damage that reaches a pet (Osty) can spill over to its owner without another Damage call,
                 // so tag the owner with the same hit.
                 try { if (t.IsPet && t.PetOwner?.Creature is { } po && !list.Contains(po)) _pending[po] = _pending[t]; } catch { }
@@ -1556,6 +1607,7 @@ public static class DamageChartsMod
         VfxMoments.Reset(me);
         _pending.Clear();
         _dotTags.Clear();
+        _selfKills.Clear();
         _bufferBefore.Clear();
         _bufferSaves.Clear();
         UnsubscribeAll();
@@ -1570,6 +1622,7 @@ public static class DamageChartsMod
         CheckBufferSaves();   // a save whose stack was spent by now still belongs to this fight
         _pending.Clear();
         _dotTags.Clear();
+        _selfKills.Clear();
         _bufferBefore.Clear();
         _bufferSaves.Clear();
         _forecastCheck.CombatEnded();   // the fight ended before the next round: that round isn't checked
@@ -2063,6 +2116,18 @@ public static class DamageChartsMod
                 if (ForecastReader.Debug) GD.Print($"[STS2 Damage] HIT taken src={attacker} amt={lost} round={round} frame={_frame}");
                 VfxMoments.OnTaken(creature, lost);
                 _tracker.AddHit(new Hit(round, HitKind.Taken, slot, attacker, attackerId, -1, victim, slot, lost));
+                return;
+            }
+
+            // An enemy killing itself on its own move (Waterfall Giant, Gas Bomb) is nobody's damage.
+            bool selfKill = SelfKill.MarkedNow(_selfKills.Remove(creature, out var skf) ? skf : null, _frame);
+            if (!SelfKill.Credit(pend.Label != null ? pend.Kind : HpTag.None, selfKill))
+            {
+                if (!_selfKillLogged)
+                {
+                    _selfKillLogged = true;
+                    GD.Print($"[STS2 Damage] self-kill not credited: {TextHelper.SafeGetText(() => creature.Monster!.Title) ?? "Enemy"} {lost}");
+                }
                 return;
             }
 
