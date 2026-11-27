@@ -16,9 +16,13 @@ internal readonly struct ForecastItem
     public readonly int DamagePerHit;
     public readonly bool Blockable;
     public readonly bool Conditional;
+    // Lands at the start of the player's next turn, after the enemy turn (Poison: PoisonPower.AfterSideTurnStart).
+    public readonly bool NextTurnStart;
 
-    public ForecastItem(string label, ForecastKind kind, int hits, int damagePerHit, bool blockable, bool conditional)
+    public ForecastItem(string label, ForecastKind kind, int hits, int damagePerHit, bool blockable, bool conditional,
+                        bool nextTurnStart = false)
     {
+        NextTurnStart = nextTurnStart;
         Label = label;
         Kind = kind;
         Hits = hits;
@@ -49,12 +53,22 @@ internal readonly struct ForecastInputs
     // HP loss reduction (Tungsten Rod): every hit that still costs the player HP after block and Osty costs this
     // much less, never below 0 (TungstenRod.ModifyHpLostAfterOsty).
     public readonly int HpLossReduction;
+    // Beating Remnant: at most TurnHpLossLimit HP lost per turn (0 = no limit). The count, TurnHpLossSoFar, is HP
+    // actually lost since the player's turn started and resets when their next turn starts. Both it and the Rod are
+    // relics (ModifyHpLostAfterOsty), so they apply in the player's relic order: ReductionBeforeLimit.
+    public readonly int TurnHpLossLimit;
+    public readonly int TurnHpLossSoFar;
+    public readonly bool ReductionBeforeLimit;
 
     // ostyHp < 0: the HP/block split is unknown, so all of OstyAbsorb is treated as HP.
     public ForecastInputs(int currentHp, int maxHp, int block, int ostyAbsorb, bool hasHidden, IReadOnlyList<ForecastItem> items,
                           int endTurnBlock = 0, int ostyHp = -1, int buffer = 0, bool intangible = false,
-                          int wuppyHp = 0, int wuppyBlock = 0, int hpLossReduction = 0)
+                          int wuppyHp = 0, int wuppyBlock = 0, int hpLossReduction = 0,
+                          int turnHpLossLimit = 0, int turnHpLossSoFar = 0, bool reductionBeforeLimit = true)
     {
+        TurnHpLossLimit = Math.Max(0, turnHpLossLimit);
+        TurnHpLossSoFar = Math.Max(0, turnHpLossSoFar);
+        ReductionBeforeLimit = reductionBeforeLimit;
         HpLossReduction = Math.Max(0, hpLossReduction);
         WuppyHp = Math.Max(0, wuppyHp);
         WuppyBlock = WuppyHp > 0 ? Math.Max(0, wuppyBlock) : 0;
@@ -130,13 +144,14 @@ internal static class DamageForecast
     public static ForecastResult Compute(ForecastInputs inp)
     {
         // Hits resolve one at a time, in this order:
-        //   1. self damage (the player's own powers/cards, e.g. Disintegration, Infection, "lose N HP" DoTs):
+        //   1. self damage (except Poison, see 3) (the player's own powers/cards, e.g. Disintegration, Infection, "lose N HP" DoTs):
         //      during or at the end of the player's turn, before enemies act. "Take N damage" spends the
         //      player's block only, never Osty; "lose N HP" bypasses block.
         //   2. enemy items, in intent order: while Wuppy lives, each attack is aimed at Wuppy instead (before
         //      block: Wuppy's block, then its HP; the overflow of the hit that kills it is spent). Otherwise
         //      attacks (incl. death blows) hit player block, then Osty (block, then HP), then the player;
         //      unblockable ones go straight to HP.
+        //   3. Poison, at the start of the player's next turn (after Beating Remnant's count resets).
         // Block and Osty are pools, so the order only matters for Buffer (BufferPower.ModifyHpLostAfterOstyLate):
         // each stack cancels the next hit that would still cost HP after block and Osty.
         // Intangible caps every hit on the player at 1 (IntangiblePower.ModifyDamageCap before block, and
@@ -151,8 +166,8 @@ internal static class DamageForecast
         int ostyHp = Math.Min(Math.Max(0, inp.OstyHp), osty);
 
         var wuppy = new Wuppy(inp.WuppyHp, inp.WuppyBlock);
-        var g = Simulate(inp.Items, block, osty, ostyHp, inp.Buffer, inp.Intangible, inp.HpLossReduction, wuppy, includeConditional: false);
-        var w = Simulate(inp.Items, block, osty, ostyHp, inp.Buffer, inp.Intangible, inp.HpLossReduction, wuppy, includeConditional: true);
+        var g = Simulate(inp.Items, block, osty, ostyHp, inp.Buffer, inp.Intangible, Relics(inp), wuppy, includeConditional: false);
+        var w = Simulate(inp.Items, block, osty, ostyHp, inp.Buffer, inp.Intangible, Relics(inp), wuppy, includeConditional: true);
 
         // Spare block in the worst case: the player's own block left after self damage and attacks (spare
         // Osty isn't block).
@@ -162,23 +177,31 @@ internal static class DamageForecast
     }
 
     private readonly record struct Wuppy(int Hp, int Block);
+    // Tungsten Rod's reduction and Beating Remnant's per-turn limit, in relic order.
+    private readonly record struct HpLossRelics(int Reduction, int Limit, int SoFar, bool ReductionFirst);
+    private static HpLossRelics Relics(ForecastInputs inp) =>
+        new(inp.HpLossReduction, inp.TurnHpLossLimit, inp.TurnHpLossSoFar, inp.ReductionBeforeLimit);
     private readonly record struct Outcome(int Incoming, int Mitigated, int Loss, int BlockLeft, int OstyHpLoss, int WuppyHpLoss);
 
     private static bool IsSelf(ForecastItem it) => it.Kind == ForecastKind.Dot || it.Kind == ForecastKind.SelfCard;
 
     private static Outcome Simulate(IReadOnlyList<ForecastItem> items, int block, int osty, int ostyHp, int buffer,
-        bool intangible, int hpLossReduction, Wuppy wuppy, bool includeConditional)
+        bool intangible, HpLossRelics relics, Wuppy wuppy, bool includeConditional)
     {
         int ostyBlock = osty - ostyHp, ostyHpLeft = ostyHp;
         int wuppyBlock = wuppy.Block, wuppyHpLeft = wuppy.Hp;
         int incoming = 0, mitigated = 0, loss = 0;
-        for (int phase = 0; phase < 2; phase++)
+        bool limited = relics.Limit > 0;
+        int budget = limited ? Math.Max(0, relics.Limit - relics.SoFar) : int.MaxValue;
+        for (int phase = 0; phase < 3; phase++)
         {
+            if (phase == 2 && limited) budget = relics.Limit;   // the player's next turn starts: the count resets
             for (int i = 0; i < items.Count; i++)
             {
                 var it = items[i];
                 if (it.Kind == ForecastKind.Hidden || it.Total <= 0) continue;
-                if (IsSelf(it) != (phase == 0)) continue;
+                int itemPhase = it.NextTurnStart ? 2 : IsSelf(it) ? 0 : 1;
+                if (itemPhase != phase) continue;
                 if (it.Conditional && !includeConditional) continue;
                 bool attack = !IsSelf(it) && it.Blockable;
                 for (int h = 0; h < it.Hits; h++)
@@ -204,8 +227,13 @@ internal static class DamageForecast
                             int oh = Math.Min(ostyHpLeft, rest); ostyHpLeft -= oh; rest -= oh; mitigated += oh;
                         }
                     }
-                    if (rest > 0) rest = Math.Max(0, rest - hpLossReduction);
+                    if (rest > 0)
+                    {
+                        if (relics.ReductionFirst) rest = Math.Min(Math.Max(0, rest - relics.Reduction), budget);
+                        else rest = Math.Max(0, Math.Min(rest, budget) - relics.Reduction);
+                    }
                     if (rest > 0 && buffer > 0) { buffer--; rest = 0; }
+                    if (limited) budget -= rest;   // Beating Remnant counts the HP actually lost
                     loss += rest;
                 }
             }

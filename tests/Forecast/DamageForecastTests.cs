@@ -507,4 +507,72 @@ public class DamageForecastTests
         var r = RunRod(0, 1, false, Attack(1), Attack(10));
         Assert.Equal(0, r.MinLoss);
     }
+
+    // Beating Remnant (BeatingRemnant.ModifyHpLostAfterOsty): at most 20 HP lost per turn (the player's turn and
+    // the enemy turn after it), counting HP already lost this turn; Poison ticks after it resets.
+    private static ForecastItem Poison(int amount) =>
+        new("Poison", ForecastKind.Dot, 1, amount, blockable: false, conditional: false, nextTurnStart: true);
+
+    private static ForecastResult RunRemnant(int lostSoFar, int block, int buffer, int reduction, bool reductionFirst,
+        params ForecastItem[] items) =>
+        DamageForecast.Compute(new ForecastInputs(60, 80, block, 0, false, new List<ForecastItem>(items), 0, -1, buffer,
+            false, hpLossReduction: reduction, turnHpLossLimit: 20, turnHpLossSoFar: lostSoFar,
+            reductionBeforeLimit: reductionFirst));
+
+    [Fact]
+    public void BeatingRemnant_CapsTheTurnAt20()
+    {
+        var r = RunRemnant(0, 0, 0, 0, true, Attack(15, 3));
+        Assert.Equal(20, r.MinLoss);
+        Assert.Equal(45, r.Incoming);
+        Assert.False(r.IsLethal);
+    }
+
+    [Fact]
+    public void BeatingRemnant_CountsHpAlreadyLostThisTurn()
+    {
+        var r = RunRemnant(12, 0, 0, 0, true, Attack(30));
+        Assert.Equal(8, r.MinLoss);
+    }
+
+    [Fact]
+    public void BeatingRemnant_PoisonGetsAFreshTurn()
+    {
+        // The enemy turn uses up the 20; Poison ticks at the start of the next turn, after the reset.
+        var r = RunRemnant(0, 0, 0, 0, true, Attack(30), Poison(5));
+        Assert.Equal(25, r.MinLoss);
+    }
+
+    [Fact]
+    public void BeatingRemnant_LimitSpentStillCostsNothing()
+    {
+        var r = RunRemnant(20, 0, 0, 0, true, Attack(9));
+        Assert.Equal(0, r.MaxLoss);
+    }
+
+    [Fact]
+    public void BeatingRemnant_WithTungstenRod_FollowsRelicOrder()
+    {
+        // 25 then 25. Rod first: 24 capped to 20, then 0. Remnant first: 20 - 1 = 19, then 1 left - 1 = 0.
+        Assert.Equal(20, RunRemnant(0, 0, 0, 1, true, Attack(25, 2)).MinLoss);
+        Assert.Equal(19, RunRemnant(0, 0, 0, 1, false, Attack(25, 2)).MinLoss);
+    }
+
+    [Fact]
+    public void BeatingRemnant_BufferNotSpentOnceTheTurnIsCapped()
+    {
+        // The first hit uses the whole 20, so the second costs nothing and Buffer is kept... for the first hit:
+        // Buffer cancels the 20 hit, leaving the budget for the second.
+        var r = RunRemnant(0, 0, 1, 0, true, Attack(25), Attack(7));
+        Assert.Equal(7, r.MinLoss);
+    }
+
+    [Fact]
+    public void Poison_TicksAfterEnemyAttacks_SoBufferTakesTheAttack()
+    {
+        // Without Remnant too: Poison comes after the enemy turn, so Buffer is spent on the attack, not Poison.
+        var r = DamageForecast.Compute(new ForecastInputs(40, 50, 0, 0, false,
+            new List<ForecastItem> { Poison(3), Attack(12) }, 0, -1, 1));
+        Assert.Equal(3, r.MinLoss);
+    }
 }

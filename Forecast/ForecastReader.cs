@@ -21,8 +21,8 @@ internal static class ForecastReader
     public static ForecastInputs Build(CombatState cs, IReadOnlyList<Player> players, int localSlot)
     {
         var items = new List<ForecastItem>();
-        int hp = 0, maxHp = 0, hpLossReduction = 0, block = 0, ostyAbsorb = 0, ostyHp = 0, endTurnBlock = 0, buffer = 0, wuppyHp = 0, wuppyBlock = 0;
-        bool intangible = false;
+        int hp = 0, maxHp = 0, hpLossReduction = 0, turnLimit = 0, turnSoFar = 0, block = 0, ostyAbsorb = 0, ostyHp = 0, endTurnBlock = 0, buffer = 0, wuppyHp = 0, wuppyBlock = 0;
+        bool intangible = false, reductionFirst = true;
         bool hasHidden = false;
 
         try
@@ -40,6 +40,7 @@ internal static class ForecastReader
                 buffer = ReadPowerAmount(me, "BufferPower");
                 intangible = ReadPowerAmount(me, "IntangiblePower") > 0;
                 hpLossReduction = ReadHpLossReduction(mePlayer!);
+                ReadTurnHpLossLimit(mePlayer!, out turnLimit, out turnSoFar, out reductionFirst);
                 if (Debug && !_dumped) { _dumped = true; DumpDiagnostics(cs, players, localSlot, me); }
                 ReadDots(me, items);
                 long ps = Perf.Start();
@@ -65,7 +66,7 @@ internal static class ForecastReader
         catch { }
 
         return new ForecastInputs(hp, maxHp, block, ostyAbsorb, hasHidden, items, endTurnBlock, ostyHp, buffer, intangible,
-            wuppyHp, wuppyBlock, hpLossReduction);
+            wuppyHp, wuppyBlock, hpLossReduction, turnLimit, turnSoFar, reductionFirst);
     }
 
     // How much less HP each hit costs the player: Tungsten Rod's HpLossReduction (1), unless melted. Also used for
@@ -94,6 +95,40 @@ internal static class ForecastReader
         }
         catch { }
         return total;
+    }
+
+    // Beating Remnant (unless melted): its MaxHpLoss (20) and the HP lost this turn so far (its private
+    // _damageReceivedThisTurn, the sum of each hit's UnblockedDamage, i.e. HP actually lost; reset when the player's
+    // turn starts). reductionFirst: Tungsten Rod comes before it in the relic list (the game applies relics in order).
+    private static void ReadTurnHpLossLimit(Player player, out int limit, out int soFar, out bool reductionFirst)
+    {
+        limit = 0; soFar = 0; reductionFirst = true;
+        try
+        {
+            if (GetProp(player, "Relics") is not IEnumerable relics) return;
+            int i = 0, rodAt = -1, remnantAt = -1;
+            foreach (var rel in relics)
+            {
+                int at = i++;
+                if (rel == null || GetProp(rel, "IsMelted") is true) continue;
+                string tn = rel.GetType().Name;
+                if (tn == "TungstenRod") { if (rodAt < 0) rodAt = at; continue; }
+                if (tn != "BeatingRemnant" || remnantAt >= 0) continue;
+                remnantAt = at;
+                limit = 20;
+                try
+                {
+                    object? dv = GetProp(rel, "DynamicVars");
+                    var indexer = dv?.GetType().GetProperty("Item", new[] { typeof(string) });
+                    object? v = indexer?.GetValue(dv, new object[] { "MaxHpLoss" });
+                    if (v != null && GetNum(v, "BaseValue", "Value", "IntValue") is int m && m > 0) limit = m;
+                }
+                catch { }
+                soFar = Math.Max(0, GetNum(rel, "_damageReceivedThisTurn"));
+            }
+            if (rodAt >= 0 && remnantAt >= 0) reductionFirst = rodAt < remnantAt;
+        }
+        catch { }
     }
 
     // A power's stack count on the creature (0 if absent or unreadable). Also used by the Buffer save detection.
@@ -661,7 +696,11 @@ internal static class ForecastReader
                 if (amount <= 0) continue;
                 string label = TextHelper.SafeGetText(() => GetProp(p, "Title")) ?? Prettify(tn);
                 // Keyword DoTs (poison, bleed, ...) bypass block; text-detected ones follow their wording.
-                items.Add(new ForecastItem(label, ForecastKind.Dot, 1, amount, blockable: byText && !keyword && blockable, conditional: false));
+                // Poison ticks at the start of the player's next turn (PoisonPower.AfterSideTurnStart), after the
+                // enemy turn; the others at the end of this one.
+                bool poison = tn == "PoisonPower";
+                items.Add(new ForecastItem(label, ForecastKind.Dot, 1, amount, blockable: byText && !keyword && blockable, conditional: false,
+                    nextTurnStart: poison));
             }
         }
         catch { }
