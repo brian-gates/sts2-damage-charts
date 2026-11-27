@@ -21,8 +21,9 @@ internal static class ForecastReader
     public static ForecastInputs Build(CombatState cs, IReadOnlyList<Player> players, int localSlot)
     {
         var items = new List<ForecastItem>();
-        int hp = 0, maxHp = 0, hpLossReduction = 0, turnLimit = 0, turnSoFar = 0, block = 0, ostyAbsorb = 0, ostyHp = 0, endTurnBlock = 0, buffer = 0, wuppyHp = 0, wuppyBlock = 0;
+        int hp = 0, maxHp = 0, hpLossReduction = 0, turnLimit = 0, turnSoFar = 0, endTurnHeal = 0, block = 0, ostyAbsorb = 0, ostyHp = 0, endTurnBlock = 0, buffer = 0, wuppyHp = 0, wuppyBlock = 0;
         bool intangible = false, reductionFirst = true;
+        string? revive = null;
         bool hasHidden = false;
 
         try
@@ -41,6 +42,8 @@ internal static class ForecastReader
                 intangible = ReadPowerAmount(me, "IntangiblePower") > 0;
                 hpLossReduction = ReadHpLossReduction(mePlayer!);
                 ReadTurnHpLossLimit(mePlayer!, out turnLimit, out turnSoFar, out reductionFirst);
+                endTurnHeal = ReadPowerAmount(me, "RegenPower");
+                revive = ReadRevive(mePlayer!);
                 if (Debug && !_dumped) { _dumped = true; DumpDiagnostics(cs, players, localSlot, me); }
                 ReadDots(me, items);
                 long ps = Perf.Start();
@@ -66,7 +69,7 @@ internal static class ForecastReader
         catch { }
 
         return new ForecastInputs(hp, maxHp, block, ostyAbsorb, hasHidden, items, endTurnBlock, ostyHp, buffer, intangible,
-            wuppyHp, wuppyBlock, hpLossReduction, turnLimit, turnSoFar, reductionFirst);
+            wuppyHp, wuppyBlock, hpLossReduction, turnLimit, turnSoFar, reductionFirst, endTurnHeal, revive);
     }
 
     // How much less HP each hit costs the player: Tungsten Rod's HpLossReduction (1), unless melted. Also used for
@@ -129,6 +132,30 @@ internal static class ForecastReader
             if (rodAt >= 0 && remnantAt >= 0) reductionFirst = rodAt < remnantAt;
         }
         catch { }
+    }
+
+    // What would stop the player dying: a Fairy in a Bottle potion (FairyInABottle.ShouldDie, asked first), else an
+    // unused, unmelted Lizard Tail (LizardTail.ShouldDieLate, WasUsed false). Its in-game name, or null.
+    private static string? ReadRevive(Player player)
+    {
+        try
+        {
+            if (GetProp(player, "Potions") is IEnumerable potions)
+                foreach (var pot in potions)
+                    if (pot != null && pot.GetType().Name == "FairyInABottle")
+                        return TextHelper.SafeGetText(() => GetProp(pot, "Title")) ?? "Fairy in a Bottle";
+        }
+        catch { }
+        try
+        {
+            if (GetProp(player, "Relics") is IEnumerable relics)
+                foreach (var rel in relics)
+                    if (rel != null && rel.GetType().Name == "LizardTail" && GetProp(rel, "IsMelted") is not true
+                        && GetProp(rel, "WasUsed") is false)
+                        return TextHelper.SafeGetText(() => GetProp(rel, "Title")) ?? "Lizard Tail";
+        }
+        catch { }
+        return null;
     }
 
     // A power's stack count on the creature (0 if absent or unreadable). Also used by the Buffer save detection.

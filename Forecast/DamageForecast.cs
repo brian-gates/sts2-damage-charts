@@ -59,13 +59,21 @@ internal readonly struct ForecastInputs
     public readonly int TurnHpLossLimit;
     public readonly int TurnHpLossSoFar;
     public readonly bool ReductionBeforeLimit;
+    // Healing at the end of the player's turn, before the enemy turn (Regen: RegenPower.BeforeSideTurnEndEarly).
+    public readonly int EndTurnHeal;
+    // What prevents the player's death this turn, if anything: Fairy in a Bottle (ShouldDie), else an unused
+    // Lizard Tail (ShouldDieLate). Null when nothing does.
+    public readonly string? Revive;
 
     // ostyHp < 0: the HP/block split is unknown, so all of OstyAbsorb is treated as HP.
     public ForecastInputs(int currentHp, int maxHp, int block, int ostyAbsorb, bool hasHidden, IReadOnlyList<ForecastItem> items,
                           int endTurnBlock = 0, int ostyHp = -1, int buffer = 0, bool intangible = false,
                           int wuppyHp = 0, int wuppyBlock = 0, int hpLossReduction = 0,
-                          int turnHpLossLimit = 0, int turnHpLossSoFar = 0, bool reductionBeforeLimit = true)
+                          int turnHpLossLimit = 0, int turnHpLossSoFar = 0, bool reductionBeforeLimit = true,
+                          int endTurnHeal = 0, string? revive = null)
     {
+        EndTurnHeal = Math.Max(0, endTurnHeal);
+        Revive = string.IsNullOrEmpty(revive) ? null : revive;
         TurnHpLossLimit = Math.Max(0, turnHpLossLimit);
         TurnHpLossSoFar = Math.Max(0, turnHpLossSoFar);
         ReductionBeforeLimit = reductionBeforeLimit;
@@ -111,11 +119,20 @@ internal readonly struct ForecastResult
     public readonly int WuppyHp;
     public readonly int WuppyHpLoss;
     public bool WuppyDies => WuppyHp > 0 && WuppyHpLoss >= WuppyHp;
+    // HP healed before the enemy turn (Regen, up to max HP), and what revives the player if the turn kills them.
+    public readonly int Heal;
+    public readonly string? Revive;
+    // HP the losses come out of, and the worst case left afterwards (negative when lethal: how far short).
+    public int HpBeforeLoss => CurrentHp + Heal;
+    public int HpLeft => HpBeforeLoss - MaxLoss;
 
     public ForecastResult(int incoming, int mitigated, int minLoss, int maxLoss,
         int block, int ostyAbsorb, int currentHp, int maxHp, bool hasHidden, IReadOnlyList<ForecastItem> items,
-        int overblock = 0, int ostyHp = 0, int ostyHpLoss = 0, int wuppyHp = 0, int wuppyBlock = 0, int wuppyHpLoss = 0)
+        int overblock = 0, int ostyHp = 0, int ostyHpLoss = 0, int wuppyHp = 0, int wuppyBlock = 0, int wuppyHpLoss = 0,
+        int heal = 0, string? revive = null)
     {
+        Heal = Math.Max(0, heal);
+        Revive = revive;
         WuppyHp = Math.Max(0, wuppyHp);
         WuppyAbsorb = WuppyHp > 0 ? WuppyHp + Math.Max(0, wuppyBlock) : 0;
         WuppyHpLoss = Math.Clamp(wuppyHpLoss, 0, WuppyHp);
@@ -136,7 +153,9 @@ internal readonly struct ForecastResult
 
     // Safe only when nothing can cost HP AND nothing is hidden (an unknown intent might still hurt).
     public bool IsSafe => MaxLoss <= 0 && !HasHidden;
-    public bool IsLethal => CurrentHp > 0 && MaxLoss >= CurrentHp;
+    // Lethal: the worst case reaches 0 HP. Revived: it does, but something keeps the player alive.
+    public bool IsLethal => CurrentHp > 0 && MaxLoss >= HpBeforeLoss;
+    public bool Revived => IsLethal && Revive != null;
 }
 
 internal static class DamageForecast
@@ -173,7 +192,10 @@ internal static class DamageForecast
         // Osty isn't block).
         return new ForecastResult(g.Incoming, g.Mitigated, g.Loss, w.Loss,
             block, osty, inp.CurrentHp, inp.MaxHp, inp.HasHidden, inp.Items, w.BlockLeft, ostyHp, w.OstyHpLoss,
-            inp.WuppyHp, inp.WuppyBlock, w.WuppyHpLoss);
+            inp.WuppyHp, inp.WuppyBlock, w.WuppyHpLoss,
+            // Regen heals at the start of end-of-turn (before Plating's block and end-of-turn self damage), so it is
+            // simply added to the HP the turn's losses come out of.
+            Math.Min(inp.EndTurnHeal, Math.Max(0, inp.MaxHp - inp.CurrentHp)), inp.Revive);
     }
 
     private readonly record struct Wuppy(int Hp, int Block);

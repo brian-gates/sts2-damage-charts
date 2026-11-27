@@ -575,4 +575,45 @@ public class DamageForecastTests
             new List<ForecastItem> { Poison(3), Attack(12) }, 0, -1, 1));
         Assert.Equal(3, r.MinLoss);
     }
+
+    // Regen (RegenPower.BeforeSideTurnEndEarly) heals before the enemy turn; it can't go past max HP.
+    [Fact]
+    public void Regen_HealsBeforeTheEnemyTurn()
+    {
+        var r = DamageForecast.Compute(new ForecastInputs(10, 50, 0, 0, false, new List<ForecastItem> { Attack(12) },
+            endTurnHeal: 5));
+        Assert.Equal(12, r.MinLoss);
+        Assert.Equal(5, r.Heal);
+        Assert.Equal(3, r.HpLeft);
+        Assert.False(r.IsLethal);
+    }
+
+    [Fact]
+    public void Regen_CappedAtMaxHp()
+    {
+        var r = DamageForecast.Compute(new ForecastInputs(48, 50, 0, 0, false, new List<ForecastItem> { Attack(49) },
+            endTurnHeal: 5));
+        Assert.Equal(2, r.Heal);
+        Assert.Equal(1, r.HpLeft);
+        Assert.False(r.IsLethal);
+    }
+
+    // Lizard Tail / Fairy in a Bottle: the turn is still lethal, but the panel says what saves you.
+    [Fact]
+    public void Revive_NamesWhatSavesYou()
+    {
+        var r = DamageForecast.Compute(new ForecastInputs(10, 50, 0, 0, false, new List<ForecastItem> { Attack(30) },
+            revive: "Lizard Tail"));
+        Assert.True(r.IsLethal);
+        Assert.True(r.Revived);
+        Assert.Equal("Lizard Tail", r.Revive);
+    }
+
+    [Fact]
+    public void Revive_NotMentionedWhenYouSurvive()
+    {
+        var r = DamageForecast.Compute(new ForecastInputs(40, 50, 0, 0, false, new List<ForecastItem> { Attack(30) },
+            revive: "Lizard Tail"));
+        Assert.False(r.Revived);
+    }
 }

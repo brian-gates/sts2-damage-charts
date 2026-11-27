@@ -79,7 +79,7 @@ internal sealed class ForecastCheck
     // revive, or a co-op partner fighting on, lets more HP be lost after the killing blow).
     public static bool IsMiss(ForecastResult r, long actual)
     {
-        long min = Math.Min(r.MinLoss, Math.Max(0, r.CurrentHp));
+        long min = Math.Min(r.MinLoss, Math.Max(0, r.HpBeforeLoss));
         return actual < min || (actual > r.MaxLoss && !r.HasHidden && !r.IsLethal);
     }
 

@@ -227,10 +227,12 @@ internal sealed class DamageForecastView
             // they answer "how much will I lose" and "what will I be sitting at".
             // Don't clamp at 0 when lethal: the net-negative HP is how much you still need to block/mitigate
             // to survive (e.g. "30 → -11" means you're 11 short).
-            int after = r.CurrentHp - r.MaxLoss;
+            int after = r.HpLeft;
             string afterHex = after <= 0 ? LossHex
                 : (r.MaxHp > 0 && after < r.MaxHp * 0.30f ? GoldHex : GreenHex);
-            string tail = after <= 0 ? "☠" : "left";
+            // A revive (Lizard Tail, Fairy in a Bottle) is named in gold instead of the skull's alarm.
+            string tail = r.Revived ? $"☠ [color=#{GoldHex}]{r.Revive}[/color]" : after <= 0 ? "☠" : "left";
+            string healed = r.Heal > 0 ? $" [color=#{GreenHex}]+{r.Heal}[/color]" : "";
             string hidden = r.HasHidden ? $" [color=#{GoldHex}][font_size={F(15, sc)}]+?[/font_size][/color]" : "";
             // Spare block: inline after "Safe" only when the right-hand ledger is hidden (no incoming);
             // otherwise it's a ledger line, so it never overlaps the ledger column.
@@ -242,7 +244,7 @@ internal sealed class DamageForecastView
             string line1 = r.IsSafe
                 ? $"[color=#{GreenHex}]Safe ✓[/color]{spare}"
                 : $"[color=#{LossHex}]{lossStr} [font_size={F(15, sc)}]HP[/font_size][/color]{hidden}";
-            string line2 = $"[color=#{CreamHex}][font_size={F(13, sc)}]{r.CurrentHp} → [color=#{afterHex}]{after}[/color] {tail}[/font_size][/color]";
+            string line2 = $"[color=#{CreamHex}][font_size={F(13, sc)}]{r.CurrentHp}{healed} → [color=#{afterHex}]{after}[/color] {tail}[/font_size][/color]";
             if (numFont != null)
             {
                 // Numbers in the game's numeric Kreon with the health bar HP label's dark-red outline.
@@ -306,8 +308,9 @@ internal sealed class DamageForecastView
 
             // Lethal: red border tint on the panel to signal you can die this turn, pulsed with the game's
             // button_pulse shader when available (the tint alone is the fallback).
+            // A revive still shows the red tint (you'd die and spend it) but doesn't pulse.
             _bg.SelfModulate = r.IsLethal ? new Color(1f, 0.5f, 0.5f) : Colors.White;
-            Material? pulse = r.IsLethal ? ForecastStyle.PulseMaterial() : null;
+            Material? pulse = r.IsLethal && !r.Revived ? ForecastStyle.PulseMaterial() : null;
             if (_bg.Material != pulse) _bg.Material = pulse;
         }
         catch (Exception ex) { ErrorLog.Once("forecast render", ex); }
@@ -321,9 +324,9 @@ internal sealed class DamageForecastView
         _hpTrack.SetPosition(new Vector2(x, y));
         _hpTrack.SetSize(new Vector2(w, barH));
 
-        float max = Math.Max(1, Math.Max(r.MaxHp, r.CurrentHp));
+        float max = Math.Max(1, Math.Max(r.MaxHp, r.HpBeforeLoss));
         float Px(int hp) => w * Math.Clamp(hp, 0, (int)max) / max;
-        int cur = Math.Max(0, r.CurrentHp);
+        int cur = Math.Max(0, r.HpBeforeLoss);
         int certain = Math.Min(cur, Math.Max(0, r.MinLoss));
         int worst = Math.Min(cur, Math.Max(0, r.MaxLoss));
         float leftW = Px(cur - worst), certainW = Px(cur) - Px(cur - certain), rangeW = Px(cur - certain) - Px(cur - worst);
