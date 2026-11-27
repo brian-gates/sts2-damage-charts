@@ -559,10 +559,9 @@ public class DamageForecastTests
     }
 
     [Fact]
-    public void BeatingRemnant_BufferNotSpentOnceTheTurnIsCapped()
+    public void BeatingRemnant_BufferCancelsTheCappedHit()
     {
-        // The first hit uses the whole 20, so the second costs nothing and Buffer is kept... for the first hit:
-        // Buffer cancels the 20 hit, leaving the budget for the second.
+        // Remnant caps the 25 at 20, Buffer then cancels it (HP lost: 0), so the 7 still fits the budget.
         var r = RunRemnant(0, 0, 1, 0, true, Attack(25), Attack(7));
         Assert.Equal(7, r.MinLoss);
     }
@@ -615,5 +614,32 @@ public class DamageForecastTests
         var r = DamageForecast.Compute(new ForecastInputs(40, 50, 0, 0, false, new List<ForecastItem> { Attack(30) },
             revive: "Lizard Tail"));
         Assert.False(r.Revived);
+    }
+
+    // Intangible loses a stack at the end of the enemy turn: one stack doesn't reach next turn's Poison.
+    [Fact]
+    public void Intangible_OneStack_DoesNotCapNextTurnPoison()
+    {
+        var r = DamageForecast.Compute(new ForecastInputs(40, 50, 0, 0, false, new List<ForecastItem> { Attack(9), Poison(8) },
+            intangible: true, intangibleStacks: 1));
+        Assert.Equal(9, r.MinLoss);   // 1 from the attack, 8 from Poison
+    }
+
+    [Fact]
+    public void Intangible_TwoStacks_CapsNextTurnPoison()
+    {
+        var r = DamageForecast.Compute(new ForecastInputs(40, 50, 0, 0, false, new List<ForecastItem> { Attack(9), Poison(8) },
+            intangible: true, intangibleStacks: 2));
+        Assert.Equal(2, r.MinLoss);
+    }
+
+    // The check's minimum is capped at the HP the losses come out of, Regen's heal included.
+    [Fact]
+    public void ForecastCheck_MinCappedAtHpAfterRegen()
+    {
+        var r = DamageForecast.Compute(new ForecastInputs(10, 50, 0, 0, false, new List<ForecastItem> { Attack(30) },
+            endTurnHeal: 5));
+        Assert.False(ForecastCheck.IsMiss(r, 15));   // all 15 HP (10 + 5 healed) lost: as forecast
+        Assert.True(ForecastCheck.IsMiss(r, 14));
     }
 }

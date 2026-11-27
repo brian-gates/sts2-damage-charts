@@ -23,6 +23,7 @@ internal static class ForecastReader
         var items = new List<ForecastItem>();
         int hp = 0, maxHp = 0, hpLossReduction = 0, turnLimit = 0, turnSoFar = 0, endTurnHeal = 0, block = 0, ostyAbsorb = 0, ostyHp = 0, endTurnBlock = 0, buffer = 0, wuppyHp = 0, wuppyBlock = 0;
         bool intangible = false, reductionFirst = true;
+        int intangibleStacks = 0;
         string? revive = null;
         bool hasHidden = false;
 
@@ -39,7 +40,8 @@ internal static class ForecastReader
                 ReadWuppy(mePlayer!, out wuppyHp, out wuppyBlock);
                 endTurnBlock = ReadEndTurnBlock(cs, mePlayer!, me, block) + AllyHibernateBlock(cs, players, mePlayer!);
                 buffer = ReadPowerAmount(me, "BufferPower");
-                intangible = ReadPowerAmount(me, "IntangiblePower") > 0;
+                intangibleStacks = ReadPowerAmount(me, "IntangiblePower");
+                intangible = intangibleStacks > 0;
                 hpLossReduction = ReadHpLossReduction(mePlayer!);
                 ReadTurnHpLossLimit(mePlayer!, out turnLimit, out turnSoFar, out reductionFirst);
                 endTurnHeal = ReadPowerAmount(me, "RegenPower");
@@ -69,7 +71,8 @@ internal static class ForecastReader
         catch { }
 
         return new ForecastInputs(hp, maxHp, block, ostyAbsorb, hasHidden, items, endTurnBlock, ostyHp, buffer, intangible,
-            wuppyHp, wuppyBlock, hpLossReduction, turnLimit, turnSoFar, reductionFirst, endTurnHeal, revive);
+            wuppyHp, wuppyBlock, hpLossReduction, turnLimit, turnSoFar, reductionFirst, endTurnHeal, revive,
+            intangibleStacks);
     }
 
     // How much less HP each hit costs the player: Tungsten Rod's HpLossReduction (1), unless melted. Also used for
@@ -143,7 +146,7 @@ internal static class ForecastReader
             if (GetProp(player, "Potions") is IEnumerable potions)
                 foreach (var pot in potions)
                     if (pot != null && pot.GetType().Name == "FairyInABottle")
-                        return TextHelper.SafeGetText(() => GetProp(pot, "Title")) ?? "Fairy in a Bottle";
+                        return NameOr(TextHelper.SafeGetText(() => GetProp(pot, "Title")), "Fairy in a Bottle");
         }
         catch { }
         try
@@ -152,11 +155,13 @@ internal static class ForecastReader
                 foreach (var rel in relics)
                     if (rel != null && rel.GetType().Name == "LizardTail" && GetProp(rel, "IsMelted") is not true
                         && GetProp(rel, "WasUsed") is false)
-                        return TextHelper.SafeGetText(() => GetProp(rel, "Title")) ?? "Lizard Tail";
+                        return NameOr(TextHelper.SafeGetText(() => GetProp(rel, "Title")), "Lizard Tail");
         }
         catch { }
         return null;
     }
+
+    private static string NameOr(string? name, string fallback) => string.IsNullOrWhiteSpace(name) ? fallback : name;
 
     // A power's stack count on the creature (0 if absent or unreadable). Also used by the Buffer save detection.
     internal static int ReadPowerAmount(Creature c, string powerType)

@@ -46,6 +46,9 @@ internal readonly struct ForecastInputs
     public readonly int OstyHp;       // Osty's HP part of OstyAbsorb (the rest is its block)
     public readonly int Buffer;       // Buffer stacks: each cancels one HP loss (after block and Osty)
     public readonly bool Intangible;  // every hit on the player deals and costs at most 1
+    // Intangible stacks. One is spent at the end of the enemy turn (IntangiblePower.AfterSideTurnEnd), so Poison at the
+    // start of the next turn is only capped when there were at least 2.
+    public readonly int IntangibleStacks;
     // Wuppy (the Wuppy relic's pet): while alive, every attack on the player is aimed at it instead, before
     // block. 0 HP = no Wuppy (its block alone doesn't count).
     public readonly int WuppyHp;
@@ -70,8 +73,9 @@ internal readonly struct ForecastInputs
                           int endTurnBlock = 0, int ostyHp = -1, int buffer = 0, bool intangible = false,
                           int wuppyHp = 0, int wuppyBlock = 0, int hpLossReduction = 0,
                           int turnHpLossLimit = 0, int turnHpLossSoFar = 0, bool reductionBeforeLimit = true,
-                          int endTurnHeal = 0, string? revive = null)
+                          int endTurnHeal = 0, string? revive = null, int intangibleStacks = -1)
     {
+        IntangibleStacks = intangibleStacks >= 0 ? intangibleStacks : (intangible ? 1 : 0);
         EndTurnHeal = Math.Max(0, endTurnHeal);
         Revive = string.IsNullOrEmpty(revive) ? null : revive;
         TurnHpLossLimit = Math.Max(0, turnHpLossLimit);
@@ -185,8 +189,8 @@ internal static class DamageForecast
         int ostyHp = Math.Min(Math.Max(0, inp.OstyHp), osty);
 
         var wuppy = new Wuppy(inp.WuppyHp, inp.WuppyBlock);
-        var g = Simulate(inp.Items, block, osty, ostyHp, inp.Buffer, inp.Intangible, Relics(inp), wuppy, includeConditional: false);
-        var w = Simulate(inp.Items, block, osty, ostyHp, inp.Buffer, inp.Intangible, Relics(inp), wuppy, includeConditional: true);
+        var g = Simulate(inp.Items, block, osty, ostyHp, inp.Buffer, inp.Intangible, inp.IntangibleStacks >= 2, Relics(inp), wuppy, includeConditional: false);
+        var w = Simulate(inp.Items, block, osty, ostyHp, inp.Buffer, inp.Intangible, inp.IntangibleStacks >= 2, Relics(inp), wuppy, includeConditional: true);
 
         // Spare block in the worst case: the player's own block left after self damage and attacks (spare
         // Osty isn't block).
@@ -208,7 +212,7 @@ internal static class DamageForecast
     private static bool IsSelf(ForecastItem it) => it.Kind == ForecastKind.Dot || it.Kind == ForecastKind.SelfCard;
 
     private static Outcome Simulate(IReadOnlyList<ForecastItem> items, int block, int osty, int ostyHp, int buffer,
-        bool intangible, HpLossRelics relics, Wuppy wuppy, bool includeConditional)
+        bool intangible, bool intangibleNextTurn, HpLossRelics relics, Wuppy wuppy, bool includeConditional)
     {
         int ostyBlock = osty - ostyHp, ostyHpLeft = ostyHp;
         int wuppyBlock = wuppy.Block, wuppyHpLeft = wuppy.Hp;
@@ -228,7 +232,8 @@ internal static class DamageForecast
                 bool attack = !IsSelf(it) && it.Blockable;
                 for (int h = 0; h < it.Hits; h++)
                 {
-                    int dmg = intangible ? Math.Min(1, it.DamagePerHit) : it.DamagePerHit;
+                    bool capped = phase == 2 ? intangibleNextTurn : intangible;
+                    int dmg = capped ? Math.Min(1, it.DamagePerHit) : it.DamagePerHit;
                     if (dmg <= 0) continue;
                     if (!it.Conditional) incoming += dmg;
                     if (attack && wuppyHpLeft > 0)
