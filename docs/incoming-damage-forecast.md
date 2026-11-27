@@ -38,10 +38,19 @@ Computed fresh each `Tick` for the local player. Sources of HP loss:
 | Source | Blockable? | Timing | Counts toward |
 | --- | --- | --- | --- |
 | Enemy attack intents | yes (block + Osty) | this turn | min (revealed) |
-| Player DoTs (Bleed/Burn/Poison…) | no | this turn | min |
+| Player DoTs: Constrict, Magic Bomb | yes (block) | end of turn | min |
+| Player Poison | no | start of next turn, after the enemy turn | min |
 | Infection cards held in hand | no | end of turn if held | min (guaranteed) |
 | Self-damage cards ("take/lose … HP") | no | only if played | max only (conditional) |
 | Hidden / unreadable intents | — | unknown | raises a `+?` flag, no fake number |
+
+The player's own buffs never count as damage to them (The Bomb's number is turns left, not damage).
+
+**After block and Osty**, in the game's order: Intangible caps each hit at 1, then Tungsten Rod
+(1 less per hit) and Beating Remnant (at most 20 HP lost per turn, counting HP already lost this turn)
+in relic-bar order, then Buffer cancels the next hit that still costs HP. Regen heals before the
+enemy turn. If the turn is lethal but a Fairy in a Bottle or an unused Lizard Tail would revive the
+player, the panel names it instead of pulsing.
 
 **Mitigation.** Enemy attacks are absorbed by a combined pool of **player block + Osty
 (block + HP)** — Osty is a damage sink standing in front of the player; overflow past the pool
