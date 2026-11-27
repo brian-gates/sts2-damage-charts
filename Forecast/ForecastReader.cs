@@ -21,8 +21,10 @@ internal static class ForecastReader
     public static ForecastInputs Build(CombatState cs, IReadOnlyList<Player> players, int localSlot)
     {
         var items = new List<ForecastItem>();
-        int hp = 0, maxHp = 0, block = 0, ostyAbsorb = 0, ostyHp = 0, endTurnBlock = 0, buffer = 0, wuppyHp = 0, wuppyBlock = 0;
-        bool intangible = false;
+        int hp = 0, maxHp = 0, hpLossReduction = 0, turnLimit = 0, turnSoFar = 0, endTurnHeal = 0, block = 0, ostyAbsorb = 0, ostyHp = 0, endTurnBlock = 0, buffer = 0, wuppyHp = 0, wuppyBlock = 0;
+        bool intangible = false, reductionFirst = true;
+        int intangibleStacks = 0;
+        string? revive = null;
         bool hasHidden = false;
 
         try
@@ -38,7 +40,12 @@ internal static class ForecastReader
                 ReadWuppy(mePlayer!, out wuppyHp, out wuppyBlock);
                 endTurnBlock = ReadEndTurnBlock(cs, mePlayer!, me, block) + AllyHibernateBlock(cs, players, mePlayer!);
                 buffer = ReadPowerAmount(me, "BufferPower");
-                intangible = ReadPowerAmount(me, "IntangiblePower") > 0;
+                intangibleStacks = ReadPowerAmount(me, "IntangiblePower");
+                intangible = intangibleStacks > 0;
+                hpLossReduction = ReadHpLossReduction(mePlayer!);
+                ReadTurnHpLossLimit(mePlayer!, out turnLimit, out turnSoFar, out reductionFirst);
+                endTurnHeal = ReadPowerAmount(me, "RegenPower");
+                revive = ReadRevive(mePlayer!);
                 if (Debug && !_dumped) { _dumped = true; DumpDiagnostics(cs, players, localSlot, me); }
                 ReadDots(me, items);
                 long ps = Perf.Start();
@@ -64,8 +71,97 @@ internal static class ForecastReader
         catch { }
 
         return new ForecastInputs(hp, maxHp, block, ostyAbsorb, hasHidden, items, endTurnBlock, ostyHp, buffer, intangible,
-            wuppyHp, wuppyBlock);
+            wuppyHp, wuppyBlock, hpLossReduction, turnLimit, turnSoFar, reductionFirst, endTurnHeal, revive,
+            intangibleStacks);
     }
+
+    // How much less HP each hit costs the player: Tungsten Rod's HpLossReduction (1), unless melted. Also used for
+    // the HP a Buffer save is credited with. 0 when absent or unreadable.
+    internal static int ReadHpLossReduction(Player player)
+    {
+        int total = 0;
+        try
+        {
+            if (GetProp(player, "Relics") is not IEnumerable relics) return 0;
+            foreach (var rel in relics)
+            {
+                if (rel == null || rel.GetType().Name != "TungstenRod") continue;
+                if (GetProp(rel, "IsMelted") is true) continue;
+                int amount = 1;
+                try
+                {
+                    object? dv = GetProp(rel, "DynamicVars");
+                    var indexer = dv?.GetType().GetProperty("Item", new[] { typeof(string) });
+                    object? v = indexer?.GetValue(dv, new object[] { "HpLossReduction" });
+                    if (v != null) amount = GetNum(v, "BaseValue", "Value", "IntValue");
+                }
+                catch { }
+                total += Math.Max(0, amount);
+            }
+        }
+        catch { }
+        return total;
+    }
+
+    // Beating Remnant (unless melted): its MaxHpLoss (20) and the HP lost this turn so far (its private
+    // _damageReceivedThisTurn, the sum of each hit's UnblockedDamage, i.e. HP actually lost; reset when the player's
+    // turn starts). reductionFirst: Tungsten Rod comes before it in the relic list (the game applies relics in order).
+    private static void ReadTurnHpLossLimit(Player player, out int limit, out int soFar, out bool reductionFirst)
+    {
+        limit = 0; soFar = 0; reductionFirst = true;
+        try
+        {
+            if (GetProp(player, "Relics") is not IEnumerable relics) return;
+            int i = 0, rodAt = -1, remnantAt = -1;
+            foreach (var rel in relics)
+            {
+                int at = i++;
+                if (rel == null || GetProp(rel, "IsMelted") is true) continue;
+                string tn = rel.GetType().Name;
+                if (tn == "TungstenRod") { if (rodAt < 0) rodAt = at; continue; }
+                if (tn != "BeatingRemnant" || remnantAt >= 0) continue;
+                remnantAt = at;
+                limit = 20;
+                try
+                {
+                    object? dv = GetProp(rel, "DynamicVars");
+                    var indexer = dv?.GetType().GetProperty("Item", new[] { typeof(string) });
+                    object? v = indexer?.GetValue(dv, new object[] { "MaxHpLoss" });
+                    if (v != null && GetNum(v, "BaseValue", "Value", "IntValue") is int m && m > 0) limit = m;
+                }
+                catch { }
+                soFar = Math.Max(0, GetNum(rel, "_damageReceivedThisTurn"));
+            }
+            if (rodAt >= 0 && remnantAt >= 0) reductionFirst = rodAt < remnantAt;
+        }
+        catch { }
+    }
+
+    // What would stop the player dying: a Fairy in a Bottle potion (FairyInABottle.ShouldDie, asked first), else an
+    // unused, unmelted Lizard Tail (LizardTail.ShouldDieLate, WasUsed false). Its in-game name, or null.
+    private static string? ReadRevive(Player player)
+    {
+        try
+        {
+            if (GetProp(player, "Potions") is IEnumerable potions)
+                foreach (var pot in potions)
+                    if (pot != null && pot.GetType().Name == "FairyInABottle")
+                        return NameOr(TextHelper.SafeGetText(() => GetProp(pot, "Title")), "Fairy in a Bottle");
+        }
+        catch { }
+        try
+        {
+            if (GetProp(player, "Relics") is IEnumerable relics)
+                foreach (var rel in relics)
+                    if (rel != null && rel.GetType().Name == "LizardTail" && GetProp(rel, "IsMelted") is not true
+                        && GetProp(rel, "WasUsed") is false)
+                        return NameOr(TextHelper.SafeGetText(() => GetProp(rel, "Title")), "Lizard Tail");
+        }
+        catch { }
+        return null;
+    }
+
+    private static string NameOr(string? name, string fallback) => string.IsNullOrWhiteSpace(name) ? fallback : name;
 
     // A power's stack count on the creature (0 if absent or unreadable). Also used by the Buffer save detection.
     internal static int ReadPowerAmount(Creature c, string powerType)
@@ -599,6 +695,9 @@ internal static class ForecastReader
         return 0;
     }
 
+    // Whether a keyword DoT's damage is absorbed by block (ConstrictPower, MagicBombPower: ValueProp.Unpowered).
+    internal static bool KeywordDotBlockable(string typeName) => typeName is "ConstrictPower" or "MagicBombPower";
+
     private static readonly string[] DotKeywords = { "Bleed", "Burn", "Poison", "Regret", "Bomb", "Constrict" };
 
     // Player powers that tick HP loss this turn regardless of action. Damage magnitude is the power's
@@ -614,7 +713,10 @@ internal static class ForecastReader
                 if (p == null) continue;
                 string tn = p.GetType().Name;
                 string id = GetString(p, "Id", "PowerId") ?? tn;
-                bool keyword = MatchesAny(tn, DotKeywords) || MatchesAny(id, DotKeywords);
+                // A name match on a buff isn't damage to the player: The Bomb is the player's own countdown (its
+                // Amount is turns left) that hits the enemies. A buff whose text says it costs HP still counts below.
+                bool isBuff = GetProp(p, "Type")?.ToString() == "Buff";
+                bool keyword = !isBuff && (MatchesAny(tn, DotKeywords) || MatchesAny(id, DotKeywords));
                 // Powers whose text tells the player to take damage / lose HP at end of turn (e.g.
                 // Disintegration: "At the end of your turn, take 6 damage.") count too, whatever their name.
                 string desc = TextHelper.SafeGetText(() => GetProp(p, "Description")) ?? "";
@@ -631,8 +733,14 @@ internal static class ForecastReader
                 }
                 if (amount <= 0) continue;
                 string label = TextHelper.SafeGetText(() => GetProp(p, "Title")) ?? Prettify(tn);
-                // Keyword DoTs (poison, bleed, ...) bypass block; text-detected ones follow their wording.
-                items.Add(new ForecastItem(label, ForecastKind.Dot, 1, amount, blockable: byText && !keyword && blockable, conditional: false));
+                // Keyword DoTs: Poison is Unblockable; Constrict and Magic Bomb deal Unpowered damage, which block
+                // absorbs. Text-detected ones follow their wording.
+                // Poison ticks at the start of the player's next turn (PoisonPower.AfterSideTurnStart), after the
+                // enemy turn; the others at the end of this one.
+                bool poison = tn == "PoisonPower";
+                bool blocks = keyword ? KeywordDotBlockable(tn) : blockable;
+                items.Add(new ForecastItem(label, ForecastKind.Dot, 1, amount, blockable: blocks, conditional: false,
+                    nextTurnStart: poison));
             }
         }
         catch { }

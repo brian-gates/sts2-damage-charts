@@ -20,3 +20,4 @@ dist/workshop/mod_id.txt
 
 # ModUploader CLI binary (downloaded per-machine)
 tools/
+__pycache__/

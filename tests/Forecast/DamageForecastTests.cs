@@ -469,4 +469,177 @@ public class DamageForecastTests
         var r = RunIntangible(0, 1, Attack(30));
         Assert.True(r.IsSafe);
     }
+
+    // Tungsten Rod (TungstenRod.ModifyHpLostAfterOsty): every HP loss on its owner, after block and Osty, is 1 less.
+    private static ForecastResult RunRod(int block, int buffer, bool intangible, params ForecastItem[] items) =>
+        DamageForecast.Compute(new ForecastInputs(40, 50, block, 0, false, new List<ForecastItem>(items), 0, -1, buffer,
+            intangible, hpLossReduction: 1));
+
+    [Fact]
+    public void TungstenRod_OneLessPerHpLoss()
+    {
+        // The reported fight: a 13 attack and 2 Poison cost 12 + 1, not 15.
+        var r = RunRod(0, 0, false, Attack(13), Dot(2));
+        Assert.Equal(13, r.MinLoss);
+        Assert.Equal(15, r.Incoming);   // the threat itself is unchanged
+    }
+
+    [Fact]
+    public void TungstenRod_AppliesAfterBlock()
+    {
+        // 3 hits of 5 against 7 block: 0, 3, 5 get through; the Rod takes 1 off the two that cost HP.
+        var r = RunRod(7, 0, false, Attack(5, 3));
+        Assert.Equal(6, r.MinLoss);
+    }
+
+    [Fact]
+    public void TungstenRod_WithIntangible_IsSafe()
+    {
+        // Intangible (a power) caps each hit at 1 before the Rod (a relic) takes it to 0.
+        var r = RunRod(0, 0, true, Attack(30, 2), Dot(4));
+        Assert.True(r.IsSafe);
+    }
+
+    [Fact]
+    public void TungstenRod_KeepsBufferForARealHit()
+    {
+        // A 1-damage hit costs nothing with the Rod, so Buffer is still there for the 10.
+        var r = RunRod(0, 1, false, Attack(1), Attack(10));
+        Assert.Equal(0, r.MinLoss);
+    }
+
+    // Beating Remnant (BeatingRemnant.ModifyHpLostAfterOsty): at most 20 HP lost per turn (the player's turn and
+    // the enemy turn after it), counting HP already lost this turn; Poison ticks after it resets.
+    private static ForecastItem Poison(int amount) =>
+        new("Poison", ForecastKind.Dot, 1, amount, blockable: false, conditional: false, nextTurnStart: true);
+
+    private static ForecastResult RunRemnant(int lostSoFar, int block, int buffer, int reduction, bool reductionFirst,
+        params ForecastItem[] items) =>
+        DamageForecast.Compute(new ForecastInputs(60, 80, block, 0, false, new List<ForecastItem>(items), 0, -1, buffer,
+            false, hpLossReduction: reduction, turnHpLossLimit: 20, turnHpLossSoFar: lostSoFar,
+            reductionBeforeLimit: reductionFirst));
+
+    [Fact]
+    public void BeatingRemnant_CapsTheTurnAt20()
+    {
+        var r = RunRemnant(0, 0, 0, 0, true, Attack(15, 3));
+        Assert.Equal(20, r.MinLoss);
+        Assert.Equal(45, r.Incoming);
+        Assert.False(r.IsLethal);
+    }
+
+    [Fact]
+    public void BeatingRemnant_CountsHpAlreadyLostThisTurn()
+    {
+        var r = RunRemnant(12, 0, 0, 0, true, Attack(30));
+        Assert.Equal(8, r.MinLoss);
+    }
+
+    [Fact]
+    public void BeatingRemnant_PoisonGetsAFreshTurn()
+    {
+        // The enemy turn uses up the 20; Poison ticks at the start of the next turn, after the reset.
+        var r = RunRemnant(0, 0, 0, 0, true, Attack(30), Poison(5));
+        Assert.Equal(25, r.MinLoss);
+    }
+
+    [Fact]
+    public void BeatingRemnant_LimitSpentStillCostsNothing()
+    {
+        var r = RunRemnant(20, 0, 0, 0, true, Attack(9));
+        Assert.Equal(0, r.MaxLoss);
+    }
+
+    [Fact]
+    public void BeatingRemnant_WithTungstenRod_FollowsRelicOrder()
+    {
+        // 25 then 25. Rod first: 24 capped to 20, then 0. Remnant first: 20 - 1 = 19, then 1 left - 1 = 0.
+        Assert.Equal(20, RunRemnant(0, 0, 0, 1, true, Attack(25, 2)).MinLoss);
+        Assert.Equal(19, RunRemnant(0, 0, 0, 1, false, Attack(25, 2)).MinLoss);
+    }
+
+    [Fact]
+    public void BeatingRemnant_BufferCancelsTheCappedHit()
+    {
+        // Remnant caps the 25 at 20, Buffer then cancels it (HP lost: 0), so the 7 still fits the budget.
+        var r = RunRemnant(0, 0, 1, 0, true, Attack(25), Attack(7));
+        Assert.Equal(7, r.MinLoss);
+    }
+
+    [Fact]
+    public void Poison_TicksAfterEnemyAttacks_SoBufferTakesTheAttack()
+    {
+        // Without Remnant too: Poison comes after the enemy turn, so Buffer is spent on the attack, not Poison.
+        var r = DamageForecast.Compute(new ForecastInputs(40, 50, 0, 0, false,
+            new List<ForecastItem> { Poison(3), Attack(12) }, 0, -1, 1));
+        Assert.Equal(3, r.MinLoss);
+    }
+
+    // Regen (RegenPower.BeforeSideTurnEndEarly) heals before the enemy turn; it can't go past max HP.
+    [Fact]
+    public void Regen_HealsBeforeTheEnemyTurn()
+    {
+        var r = DamageForecast.Compute(new ForecastInputs(10, 50, 0, 0, false, new List<ForecastItem> { Attack(12) },
+            endTurnHeal: 5));
+        Assert.Equal(12, r.MinLoss);
+        Assert.Equal(5, r.Heal);
+        Assert.Equal(3, r.HpLeft);
+        Assert.False(r.IsLethal);
+    }
+
+    [Fact]
+    public void Regen_CappedAtMaxHp()
+    {
+        var r = DamageForecast.Compute(new ForecastInputs(48, 50, 0, 0, false, new List<ForecastItem> { Attack(49) },
+            endTurnHeal: 5));
+        Assert.Equal(2, r.Heal);
+        Assert.Equal(1, r.HpLeft);
+        Assert.False(r.IsLethal);
+    }
+
+    // Lizard Tail / Fairy in a Bottle: the turn is still lethal, but the panel says what saves you.
+    [Fact]
+    public void Revive_NamesWhatSavesYou()
+    {
+        var r = DamageForecast.Compute(new ForecastInputs(10, 50, 0, 0, false, new List<ForecastItem> { Attack(30) },
+            revive: "Lizard Tail"));
+        Assert.True(r.IsLethal);
+        Assert.True(r.Revived);
+        Assert.Equal("Lizard Tail", r.Revive);
+    }
+
+    [Fact]
+    public void Revive_NotMentionedWhenYouSurvive()
+    {
+        var r = DamageForecast.Compute(new ForecastInputs(40, 50, 0, 0, false, new List<ForecastItem> { Attack(30) },
+            revive: "Lizard Tail"));
+        Assert.False(r.Revived);
+    }
+
+    // Intangible loses a stack at the end of the enemy turn: one stack doesn't reach next turn's Poison.
+    [Fact]
+    public void Intangible_OneStack_DoesNotCapNextTurnPoison()
+    {
+        var r = DamageForecast.Compute(new ForecastInputs(40, 50, 0, 0, false, new List<ForecastItem> { Attack(9), Poison(8) },
+            intangible: true, intangibleStacks: 1));
+        Assert.Equal(9, r.MinLoss);   // 1 from the attack, 8 from Poison
+    }
+
+    [Fact]
+    public void Intangible_TwoStacks_CapsNextTurnPoison()
+    {
+        var r = DamageForecast.Compute(new ForecastInputs(40, 50, 0, 0, false, new List<ForecastItem> { Attack(9), Poison(8) },
+            intangible: true, intangibleStacks: 2));
+        Assert.Equal(2, r.MinLoss);
+    }
+
+    // The check's minimum is capped at the HP the losses come out of, Regen's heal included.
+    [Fact]
+    public void ForecastCheck_MinCappedAtHpAfterRegen()
+    {
+        var r = DamageForecast.Compute(new ForecastInputs(10, 50, 0, 0, false, new List<ForecastItem> { Attack(30) },
+            endTurnHeal: 5));
+        Assert.False(ForecastCheck.IsMiss(r, 15));   // all 15 HP (10 + 5 healed) lost: as forecast
+        Assert.True(ForecastCheck.IsMiss(r, 14));
+    }
 }

@@ -911,7 +911,7 @@ public static class DamageChartsMod
     //      BufferPower.AfterModifyingHpLostAfterOsty (an async hook); if it has not landed by step 2 the check is
     //      retried for a few frames, until the player's next hit starts.
     // One stack lost confirms at most one hit (BufferCandidates), since other effects can zero a hit before
-    // Buffer and then Buffer doesn't decrement. HP saved = IntendedHpLoss; the attacker comes from the same
+    // Buffer and then Buffer doesn't decrement. HP saved = IntendedHpLoss less Tungsten Rod's 1; the attacker comes from the same
     // pending tag the taken path uses.
     private const long BufferRetryFrames = 30;
     private static readonly Dictionary<Creature, (int Stacks, int Hp, long Frame)> _bufferBefore = new();
@@ -968,7 +968,9 @@ public static class DamageChartsMod
             }
             if (result == null || InstanceGet(result, "Receiver") is not Creature who || !who.IsPlayer) return;
             if (!_bufferBefore.Remove(who, out var before) || _frame - before.Frame > PendingTtlFrames) return;
+            // IntendedHpLoss is before ModifyHpLost, so Tungsten Rod's 1 is still in it; Buffer only saved the rest.
             long intended = Convert.ToInt64(InstanceGet(result, "IntendedHpLoss") ?? 0);
+            if (who.Player != null) intended = Math.Max(0, intended - ForecastReader.ReadHpLossReduction(who.Player));
             int hp = HpOf(who);
             if (intended <= 0 || hp < 0 || before.Hp < 0 || hp < before.Hp) return;   // HP was lost: not saved
             int slot = SlotOf(who.Player);
