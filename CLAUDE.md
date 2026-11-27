@@ -95,6 +95,13 @@ not in the spec). `run_id` comes from `Stats/RunId.cs` (copied from the Run Libr
 `_startTime`, `RunState.Rng.StringSeed` and the players' `NetId`s. The same id keys the recap aggregate
 (`RunAggregate.EnsureRun`), and a fight is written only if the run is unchanged at combat end.
 
+**Live fight state** (`Live/`, pure; I/O in `BeginLive`/`ObserveLive`/`EndLive`): while a fight runs, `LiveWriter`
+writes `<user dir>/damage-charts/live.json` (temp file + move, only when the round, side or numbers change; read
+throttled by `LiveThrottle`) for the Spire Sync app to upload. The mod never makes network calls. Its `fight` is the
+index the runs file will give the fight (`RunStatsFile.NextIndex`); "ended" is written only for a resolved fight the
+runs file stored under that index (`LiveEnd.Stored`), since the server treats ended as final, and a failed ended
+write is retried out of combat. Off with `run_stats_file`.
+
 **Share button** (`Share/ShareButton.cs`; pure logic in `Share/ShareAction.cs` + `Share/AppStatus.cs`): a postfix on
 `NGameOverScreen._Ready` (`TryApplyGameOverHook`) records the screen and picks its run id with `ShareRun.Pick`:
 only when the screen's RunState is the live run (else no button; never the wrong run). `UpdateShare` in `Tick`

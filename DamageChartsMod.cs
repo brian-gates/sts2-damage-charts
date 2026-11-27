@@ -142,6 +142,9 @@ public static class DamageChartsMod
     private static LiveWriter? _live;
     private static int? _liveFight;
     private static long? _liveReadFrame;   // null: not read yet this fight (LiveThrottle)
+    // An "ended" write that failed (a file held by another process), retried out of combat until it lands or the next
+    // fight begins; null when none is due.
+    private static LiveInput? _liveEndPending;
     private static bool _tipShown;            // the hover tooltip was rendered this tick (else it is hidden)
     private static int _localSlot;            // local player's slot for this combat
 
@@ -1241,6 +1244,7 @@ public static class DamageChartsMod
                 _combatLast = inCombat;
             }
 
+            if (!inCombat) RetryLiveEnd();
             if (inCombat)
             {
                 var cs = SafeCombatState();
@@ -1629,7 +1633,7 @@ public static class DamageChartsMod
     private static void OnCombatEnd()
     {
         DecideCombatResolved();   // before UnsubscribeAll: it reads the creatures this fight subscribed to
-        EndLive();   // only for a resolved fight, while the tracker still holds its totals
+        var liveFinal = LiveFinal();   // read while the game still answers; written once the runs file has the fight
         UnsubscribeAll();
         CheckBufferSaves();   // a save whose stack was spent by now still belongs to this fight
         _pending.Clear();
@@ -1649,6 +1653,7 @@ public static class DamageChartsMod
             _run.Fold(_tracker.SourceSnapshot(), _tracker.Snapshot(), _fightMeta);
             TryWriteRunStats();
         }
+        EndLive(liveFinal);
         // Auto-show the breakdown as an end-of-combat summary (until dismissed / map / next fight), but
         // only for a real win/loss — not when the player abandons combat (e.g. quits to the menu).
         _summaryActive = _summaryOnEnd && _combatResolved && _tracker.HasData();
@@ -1754,13 +1759,16 @@ public static class DamageChartsMod
     {
         _liveFight = null;
         _liveReadFrame = null;
+        _liveEndPending = null;   // a new fight's state replaces an unwritten end
         try
         {
             _live ??= new LiveWriter(Path.Combine(OS.GetUserDataDir(), "damage-charts", "live.json"),
                 ErrorLog.NoteOnce, () => DateTimeOffset.UtcNow.ToUnixTimeSeconds());
             _live.Begin();
             var ident = _fightRun;
-            if (!_runStatsFile || ident == null) return;
+            // The runs file's own gate (TryWriteRunStats): a fight it would never store gets no live number either.
+            if (!_runStatsFile || ident == null || string.IsNullOrEmpty(ident.LocalId)
+                || Array.IndexOf(ident.SteamIds, ident.LocalId) < 0) return;
             string path = Path.Combine(OS.GetUserDataDir(), "damage-charts", "runs", ident.RunId + ".json");
             var fights = (File.Exists(path) ? RunStatsFile.ParseFights(File.ReadAllText(path), ident.RunId) : null)
                          ?? new List<System.Text.Json.Nodes.JsonObject>();
@@ -1785,23 +1793,40 @@ public static class DamageChartsMod
         catch (Exception ex) { ErrorLog.NoteOnce($"live state not read: {ex.Message}"); }
     }
 
-    // The fight is over: the last state goes out as "ended" (fresh when the game still answers, else the last one).
-    private static void EndLive()
+    // The fight's last state, read at combat end while the game still answers (null if it doesn't). Never throws.
+    private static LiveInput? LiveFinal()
+    {
+        try
+        {
+            var cs = SafeCombatState();
+            if (cs != null && _liveFight is int fight && _fightRun is { } ident)
+                return BuildLiveInput(cs, ident, fight, cs.RoundNumber, cs.CurrentSide == CombatSide.Enemy ? "enemy" : "player");
+        }
+        catch { }
+        return null;
+    }
+
+    // The fight is over: its last state goes out as "ended", but only for a resolved fight the runs file stored under
+    // the same number (LiveEnd.Stored; the server treats ended as final for that number). A failed write is retried
+    // out of combat (RetryLiveEnd). Never throws.
+    private static void EndLive(LiveInput? final)
     {
         try
         {
             if (_live == null) return;
-            LiveInput? final = null;
-            try
-            {
-                var cs = SafeCombatState();
-                if (cs != null && _liveFight is int fight && _fightRun is { } ident)
-                    final = BuildLiveInput(cs, ident, fight, cs.RoundNumber, cs.CurrentSide == CombatSide.Enemy ? "enemy" : "player");
-            }
-            catch { }
-            _live.End(_combatResolved, final);
+            bool stored = _combatResolved && LiveEnd.Stored(RunStatsFile.LastWritten, _fightRun?.RunId, _liveFight);
+            if (!stored) return;
+            if (!_live.End(true, final) && !_live.Ended) _liveEndPending = final ?? _live.Last;
         }
         catch (Exception ex) { ErrorLog.NoteOnce($"live end state not written: {ex.Message}"); }
+    }
+
+    // Out of combat: retry an "ended" write that failed, at most every 60 frames, until it lands.
+    private static void RetryLiveEnd()
+    {
+        if (_liveEndPending is not { } final || _live == null || _frame % 60 != 0) return;
+        try { if (_live.End(true, final) || _live.Ended) _liveEndPending = null; }
+        catch { }
     }
 
     private static LiveInput BuildLiveInput(CombatState cs, RunIdent ident, int fight, int round, string side)

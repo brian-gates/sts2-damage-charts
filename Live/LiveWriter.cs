@@ -88,10 +88,16 @@ internal sealed class LiveWriter
     /// <summary>Whether (round, side) differs from the last write, so the caller reads the game at once instead of waiting for its throttle.</summary>
     public bool KeyChanged(int round, string side) => _lastKey != (round, side);
 
+    /// <summary>Whether this fight's "ended" state has been written.</summary>
+    public bool Ended => _ended;
+
+    /// <summary>The last state written (or seen unchanged) this fight; null before the first.</summary>
+    public LiveInput? Last => _last;
+
     /// <summary>The fight is over: write the last state (or <paramref name="final"/>, when the game still answers) as
     /// "ended", only when the combat <paramref name="resolved"/> (a win or a death): an abandoned fight is replayed on
     /// continue, and the server treats ended as terminal. Nothing is written when no state was ever written or the end
-    /// was already written; a failed write is retried by the next call.</summary>
+    /// was already written; after a failed write, calling End again retries it (the mod does so out of combat).</summary>
     public bool End(bool resolved, LiveInput? final = null)
     {
         if (!resolved || _ended || _last == null || _lastKey == null) return false;
