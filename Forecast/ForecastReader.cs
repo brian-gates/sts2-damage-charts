@@ -21,7 +21,7 @@ internal static class ForecastReader
     public static ForecastInputs Build(CombatState cs, IReadOnlyList<Player> players, int localSlot)
     {
         var items = new List<ForecastItem>();
-        int hp = 0, maxHp = 0, block = 0, ostyAbsorb = 0, ostyHp = 0, endTurnBlock = 0, buffer = 0, wuppyHp = 0, wuppyBlock = 0;
+        int hp = 0, maxHp = 0, hpLossReduction = 0, block = 0, ostyAbsorb = 0, ostyHp = 0, endTurnBlock = 0, buffer = 0, wuppyHp = 0, wuppyBlock = 0;
         bool intangible = false;
         bool hasHidden = false;
 
@@ -39,6 +39,7 @@ internal static class ForecastReader
                 endTurnBlock = ReadEndTurnBlock(cs, mePlayer!, me, block) + AllyHibernateBlock(cs, players, mePlayer!);
                 buffer = ReadPowerAmount(me, "BufferPower");
                 intangible = ReadPowerAmount(me, "IntangiblePower") > 0;
+                hpLossReduction = ReadHpLossReduction(mePlayer!);
                 if (Debug && !_dumped) { _dumped = true; DumpDiagnostics(cs, players, localSlot, me); }
                 ReadDots(me, items);
                 long ps = Perf.Start();
@@ -64,7 +65,35 @@ internal static class ForecastReader
         catch { }
 
         return new ForecastInputs(hp, maxHp, block, ostyAbsorb, hasHidden, items, endTurnBlock, ostyHp, buffer, intangible,
-            wuppyHp, wuppyBlock);
+            wuppyHp, wuppyBlock, hpLossReduction);
+    }
+
+    // How much less HP each hit costs the player: Tungsten Rod's HpLossReduction (1), unless melted. Also used for
+    // the HP a Buffer save is credited with. 0 when absent or unreadable.
+    internal static int ReadHpLossReduction(Player player)
+    {
+        int total = 0;
+        try
+        {
+            if (GetProp(player, "Relics") is not IEnumerable relics) return 0;
+            foreach (var rel in relics)
+            {
+                if (rel == null || rel.GetType().Name != "TungstenRod") continue;
+                if (GetProp(rel, "IsMelted") is true) continue;
+                int amount = 1;
+                try
+                {
+                    object? dv = GetProp(rel, "DynamicVars");
+                    var indexer = dv?.GetType().GetProperty("Item", new[] { typeof(string) });
+                    object? v = indexer?.GetValue(dv, new object[] { "HpLossReduction" });
+                    if (v != null) amount = GetNum(v, "BaseValue", "Value", "IntValue");
+                }
+                catch { }
+                total += Math.Max(0, amount);
+            }
+        }
+        catch { }
+        return total;
     }
 
     // A power's stack count on the creature (0 if absent or unreadable). Also used by the Buffer save detection.

@@ -46,12 +46,16 @@ internal readonly struct ForecastInputs
     // block. 0 HP = no Wuppy (its block alone doesn't count).
     public readonly int WuppyHp;
     public readonly int WuppyBlock;
+    // HP loss reduction (Tungsten Rod): every hit that still costs the player HP after block and Osty costs this
+    // much less, never below 0 (TungstenRod.ModifyHpLostAfterOsty).
+    public readonly int HpLossReduction;
 
     // ostyHp < 0: the HP/block split is unknown, so all of OstyAbsorb is treated as HP.
     public ForecastInputs(int currentHp, int maxHp, int block, int ostyAbsorb, bool hasHidden, IReadOnlyList<ForecastItem> items,
                           int endTurnBlock = 0, int ostyHp = -1, int buffer = 0, bool intangible = false,
-                          int wuppyHp = 0, int wuppyBlock = 0)
+                          int wuppyHp = 0, int wuppyBlock = 0, int hpLossReduction = 0)
     {
+        HpLossReduction = Math.Max(0, hpLossReduction);
         WuppyHp = Math.Max(0, wuppyHp);
         WuppyBlock = WuppyHp > 0 ? Math.Max(0, wuppyBlock) : 0;
         CurrentHp = currentHp;
@@ -138,14 +142,17 @@ internal static class DamageForecast
         // Intangible caps every hit on the player at 1 (IntangiblePower.ModifyDamageCap before block, and
         // ModifyHpLostAfterOsty for "lose HP"). Enemy intents already show the capped number (the game's
         // preview runs the cap); self damage and HP loss items don't, so the cap is applied here to every hit.
+        // Tungsten Rod takes 1 off each hit's HP loss after block and Osty (ModifyHpLostAfterOsty). In combat the
+        // game asks each creature's powers before its relics, so Intangible's cap of 1 comes first (and the Rod
+        // makes it 0); Buffer (ModifyHpLostAfterOstyLate) comes after, and isn't spent on a hit already at 0.
         // End-of-turn block lands before the enemy turn, so it counts like block already on the player.
         int block = Math.Max(0, inp.Block) + Math.Max(0, inp.EndTurnBlock);
         int osty = Math.Max(0, inp.OstyAbsorb);
         int ostyHp = Math.Min(Math.Max(0, inp.OstyHp), osty);
 
         var wuppy = new Wuppy(inp.WuppyHp, inp.WuppyBlock);
-        var g = Simulate(inp.Items, block, osty, ostyHp, inp.Buffer, inp.Intangible, wuppy, includeConditional: false);
-        var w = Simulate(inp.Items, block, osty, ostyHp, inp.Buffer, inp.Intangible, wuppy, includeConditional: true);
+        var g = Simulate(inp.Items, block, osty, ostyHp, inp.Buffer, inp.Intangible, inp.HpLossReduction, wuppy, includeConditional: false);
+        var w = Simulate(inp.Items, block, osty, ostyHp, inp.Buffer, inp.Intangible, inp.HpLossReduction, wuppy, includeConditional: true);
 
         // Spare block in the worst case: the player's own block left after self damage and attacks (spare
         // Osty isn't block).
@@ -160,7 +167,7 @@ internal static class DamageForecast
     private static bool IsSelf(ForecastItem it) => it.Kind == ForecastKind.Dot || it.Kind == ForecastKind.SelfCard;
 
     private static Outcome Simulate(IReadOnlyList<ForecastItem> items, int block, int osty, int ostyHp, int buffer,
-        bool intangible, Wuppy wuppy, bool includeConditional)
+        bool intangible, int hpLossReduction, Wuppy wuppy, bool includeConditional)
     {
         int ostyBlock = osty - ostyHp, ostyHpLeft = ostyHp;
         int wuppyBlock = wuppy.Block, wuppyHpLeft = wuppy.Hp;
@@ -197,6 +204,7 @@ internal static class DamageForecast
                             int oh = Math.Min(ostyHpLeft, rest); ostyHpLeft -= oh; rest -= oh; mitigated += oh;
                         }
                     }
+                    if (rest > 0) rest = Math.Max(0, rest - hpLossReduction);
                     if (rest > 0 && buffer > 0) { buffer--; rest = 0; }
                     loss += rest;
                 }

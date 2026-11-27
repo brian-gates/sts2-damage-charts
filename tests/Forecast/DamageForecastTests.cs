@@ -469,4 +469,42 @@ public class DamageForecastTests
         var r = RunIntangible(0, 1, Attack(30));
         Assert.True(r.IsSafe);
     }
+
+    // Tungsten Rod (TungstenRod.ModifyHpLostAfterOsty): every HP loss on its owner, after block and Osty, is 1 less.
+    private static ForecastResult RunRod(int block, int buffer, bool intangible, params ForecastItem[] items) =>
+        DamageForecast.Compute(new ForecastInputs(40, 50, block, 0, false, new List<ForecastItem>(items), 0, -1, buffer,
+            intangible, hpLossReduction: 1));
+
+    [Fact]
+    public void TungstenRod_OneLessPerHpLoss()
+    {
+        // The reported fight: a 13 attack and 2 Poison cost 12 + 1, not 15.
+        var r = RunRod(0, 0, false, Attack(13), Dot(2));
+        Assert.Equal(13, r.MinLoss);
+        Assert.Equal(15, r.Incoming);   // the threat itself is unchanged
+    }
+
+    [Fact]
+    public void TungstenRod_AppliesAfterBlock()
+    {
+        // 3 hits of 5 against 7 block: 0, 3, 5 get through; the Rod takes 1 off the two that cost HP.
+        var r = RunRod(7, 0, false, Attack(5, 3));
+        Assert.Equal(6, r.MinLoss);
+    }
+
+    [Fact]
+    public void TungstenRod_WithIntangible_IsSafe()
+    {
+        // Intangible (a power) caps each hit at 1 before the Rod (a relic) takes it to 0.
+        var r = RunRod(0, 0, true, Attack(30, 2), Dot(4));
+        Assert.True(r.IsSafe);
+    }
+
+    [Fact]
+    public void TungstenRod_KeepsBufferForARealHit()
+    {
+        // A 1-damage hit costs nothing with the Rod, so Buffer is still there for the 10.
+        var r = RunRod(0, 1, false, Attack(1), Attack(10));
+        Assert.Equal(0, r.MinLoss);
+    }
 }
