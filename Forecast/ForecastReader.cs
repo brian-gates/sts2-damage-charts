@@ -663,6 +663,9 @@ internal static class ForecastReader
         return 0;
     }
 
+    // Whether a keyword DoT's damage is absorbed by block (ConstrictPower, MagicBombPower: ValueProp.Unpowered).
+    internal static bool KeywordDotBlockable(string typeName) => typeName is "ConstrictPower" or "MagicBombPower";
+
     private static readonly string[] DotKeywords = { "Bleed", "Burn", "Poison", "Regret", "Bomb", "Constrict" };
 
     // Player powers that tick HP loss this turn regardless of action. Damage magnitude is the power's
@@ -678,7 +681,10 @@ internal static class ForecastReader
                 if (p == null) continue;
                 string tn = p.GetType().Name;
                 string id = GetString(p, "Id", "PowerId") ?? tn;
-                bool keyword = MatchesAny(tn, DotKeywords) || MatchesAny(id, DotKeywords);
+                // A name match on a buff isn't damage to the player: The Bomb is the player's own countdown (its
+                // Amount is turns left) that hits the enemies. A buff whose text says it costs HP still counts below.
+                bool isBuff = GetProp(p, "Type")?.ToString() == "Buff";
+                bool keyword = !isBuff && (MatchesAny(tn, DotKeywords) || MatchesAny(id, DotKeywords));
                 // Powers whose text tells the player to take damage / lose HP at end of turn (e.g.
                 // Disintegration: "At the end of your turn, take 6 damage.") count too, whatever their name.
                 string desc = TextHelper.SafeGetText(() => GetProp(p, "Description")) ?? "";
@@ -695,11 +701,13 @@ internal static class ForecastReader
                 }
                 if (amount <= 0) continue;
                 string label = TextHelper.SafeGetText(() => GetProp(p, "Title")) ?? Prettify(tn);
-                // Keyword DoTs (poison, bleed, ...) bypass block; text-detected ones follow their wording.
+                // Keyword DoTs: Poison is Unblockable; Constrict and Magic Bomb deal Unpowered damage, which block
+                // absorbs. Text-detected ones follow their wording.
                 // Poison ticks at the start of the player's next turn (PoisonPower.AfterSideTurnStart), after the
                 // enemy turn; the others at the end of this one.
                 bool poison = tn == "PoisonPower";
-                items.Add(new ForecastItem(label, ForecastKind.Dot, 1, amount, blockable: byText && !keyword && blockable, conditional: false,
+                bool blocks = keyword ? KeywordDotBlockable(tn) : blockable;
+                items.Add(new ForecastItem(label, ForecastKind.Dot, 1, amount, blockable: blocks, conditional: false,
                     nextTurnStart: poison));
             }
         }
