@@ -3,7 +3,7 @@
   "name": "Damage Charts",
   "author": "zaxnyd",
   "description": "Incoming-damage forecast and damage analytics: see how much HP you're about to lose this turn (docked beside your character), plus a hotkey-toggled (default C) breakdown of damage dealt and taken by source, potions used, an end-of-combat summary and a run recap. Uses the game's own look. Share button on the victory and death screens (with Spire Sync 0.3.3+). Single-player and multiplayer.",
-  "version": "1.6.3",
+  "version": "1.7.0",
   "has_pck": false,
   "has_dll": true,
   "affects_gameplay": false

@@ -18,6 +18,7 @@ using MegaCrit.Sts2.Core.Runs;
 using STS2_DamageCharts.Charts;
 using STS2_DamageCharts.Common;
 using STS2_DamageCharts.Forecast;
+using STS2_DamageCharts.Live;
 using STS2_DamageCharts.Overlay;
 using STS2_DamageCharts.Share;
 using STS2_DamageCharts.Stats;
@@ -135,6 +136,15 @@ public static class DamageChartsMod
     private static string? _statsRunId;
     private static int _statsFloor;
     private static int _statsFloorCount;
+
+    // Live fight state for the Spire Sync app (Live/): <user dir>/damage-charts/live.json. _liveFight is the index this
+    // fight will get in the runs file (null: unknown, nothing is written). The game is read at most every few frames.
+    private static LiveWriter? _live;
+    private static int? _liveFight;
+    private static long? _liveReadFrame;   // null: not read yet this fight (LiveThrottle)
+    // An "ended" write that failed (a file held by another process), retried out of combat until it lands or the next
+    // fight begins; null when none is due.
+    private static LiveInput? _liveEndPending;
     private static bool _tipShown;            // the hover tooltip was rendered this tick (else it is hidden)
     private static int _localSlot;            // local player's slot for this combat
 
@@ -1234,6 +1244,7 @@ public static class DamageChartsMod
                 _combatLast = inCombat;
             }
 
+            if (!inCombat) RetryLiveEnd();
             if (inCombat)
             {
                 var cs = SafeCombatState();
@@ -1242,6 +1253,7 @@ public static class DamageChartsMod
                     SubscribeNewCreatures(cs); // keep tracking even while hidden
                     CheckBufferSaves();
                     ObserveForecastCheck(cs);
+                    ObserveLive(cs);
                     // Sticky: did this combat reach a real conclusion (all enemies dead, or local player
                     // dead)? If the player abandons the fight instead, this stays false and we suppress the
                     // end-of-combat summary.
@@ -1606,6 +1618,7 @@ public static class DamageChartsMod
         _localSlot = localSlot;
         _fightMeta = CaptureFightMeta(rs, SafeCombatState());
         _tracker.Reset(_players.Count, labels, localSlot);
+        BeginLive();
         VfxMoments.Reset(me);
         _pending.Clear();
         _dotTags.Clear();
@@ -1620,6 +1633,7 @@ public static class DamageChartsMod
     private static void OnCombatEnd()
     {
         DecideCombatResolved();   // before UnsubscribeAll: it reads the creatures this fight subscribed to
+        var liveFinal = LiveFinal();   // read while the game still answers; written once the runs file has the fight
         UnsubscribeAll();
         CheckBufferSaves();   // a save whose stack was spent by now still belongs to this fight
         _pending.Clear();
@@ -1639,6 +1653,7 @@ public static class DamageChartsMod
             _run.Fold(_tracker.SourceSnapshot(), _tracker.Snapshot(), _fightMeta);
             TryWriteRunStats();
         }
+        EndLive(liveFinal);
         // Auto-show the breakdown as an end-of-combat summary (until dismissed / map / next fight), but
         // only for a real win/loss — not when the player abandons combat (e.g. quits to the menu).
         _summaryActive = _summaryOnEnd && _combatResolved && _tracker.HasData();
@@ -1730,6 +1745,120 @@ public static class DamageChartsMod
         return _gameVersion;
     }
 
+    // Which fight on `floor` of this run the next written fight is (1-based): the runs file replaces the stored fight
+    // with that ordinal instead of appending (a fight played again after a reload).
+    private static int NextFloorOrdinal(string runId, int floor) =>
+        floor > 0 && runId == _statsRunId && floor == _statsFloor ? _statsFloorCount + 1 : 1;
+
+    // ===== Live fight state (live.json) =====
+
+    // A fight starts: the live file's "fight" is the index the runs file will give it (the server ends the live fight
+    // when the damage upload carries that index), predicted by the runs file's own rules. Nothing is written without
+    // a run id and an index.
+    private static void BeginLive()
+    {
+        _liveFight = null;
+        _liveReadFrame = null;
+        _liveEndPending = null;   // a new fight's state replaces an unwritten end
+        try
+        {
+            _live ??= new LiveWriter(Path.Combine(OS.GetUserDataDir(), "damage-charts", "live.json"),
+                ErrorLog.NoteOnce, () => DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+            _live.Begin();
+            var ident = _fightRun;
+            // The runs file's own gate (TryWriteRunStats): a fight it would never store gets no live number either.
+            if (!_runStatsFile || ident == null || string.IsNullOrEmpty(ident.LocalId)
+                || Array.IndexOf(ident.SteamIds, ident.LocalId) < 0) return;
+            string path = Path.Combine(OS.GetUserDataDir(), "damage-charts", "runs", ident.RunId + ".json");
+            var fights = (File.Exists(path) ? RunStatsFile.ParseFights(File.ReadAllText(path), ident.RunId) : null)
+                         ?? new List<System.Text.Json.Nodes.JsonObject>();
+            _liveFight = RunStatsFile.NextIndex(fights, _fightMeta.Floor, NextFloorOrdinal(ident.RunId, _fightMeta.Floor));
+            if (_liveFight is int fight) _live.Resume(ident.RunId, fight);   // a replayed fight continues its seq
+        }
+        catch (Exception ex) { ErrorLog.NoteOnce($"live state: fight start not read: {ex.Message}"); }
+    }
+
+    // Every combat tick: write when the round or side changed, or the fight's numbers did. Never throws.
+    private static void ObserveLive(CombatState cs)
+    {
+        try
+        {
+            if (_live == null || _liveFight is not int fight || _fightRun is not { } ident) return;
+            string side = cs.CurrentSide == CombatSide.Enemy ? "enemy" : "player";
+            int round = cs.RoundNumber;
+            if (!LiveThrottle.ShouldRead(_frame, _liveReadFrame, _live.KeyChanged(round, side))) return;
+            _liveReadFrame = _frame;
+            _live.Tick(_frame, BuildLiveInput(cs, ident, fight, round, side));
+        }
+        catch (Exception ex) { ErrorLog.NoteOnce($"live state not read: {ex.Message}"); }
+    }
+
+    // The fight's last state, read at combat end while the game still answers (null if it doesn't). Never throws.
+    private static LiveInput? LiveFinal()
+    {
+        try
+        {
+            var cs = SafeCombatState();
+            if (cs != null && _liveFight is int fight && _fightRun is { } ident)
+                return BuildLiveInput(cs, ident, fight, cs.RoundNumber, cs.CurrentSide == CombatSide.Enemy ? "enemy" : "player");
+        }
+        catch { }
+        return null;
+    }
+
+    // The fight is over: its last state goes out as "ended", but only for a resolved fight the runs file stored under
+    // the same number (LiveEnd.Stored; the server treats ended as final for that number). A failed write is retried
+    // out of combat (RetryLiveEnd). Never throws.
+    private static void EndLive(LiveInput? final)
+    {
+        try
+        {
+            if (_live == null) return;
+            bool stored = _combatResolved && LiveEnd.Stored(RunStatsFile.LastWritten, _fightRun?.RunId, _liveFight);
+            if (!stored) return;
+            if (!_live.End(true, final) && !_live.Ended) _liveEndPending = final ?? _live.Last;
+        }
+        catch (Exception ex) { ErrorLog.NoteOnce($"live end state not written: {ex.Message}"); }
+    }
+
+    // Out of combat: retry an "ended" write that failed, at most every 60 frames, until it lands.
+    private static void RetryLiveEnd()
+    {
+        if (_liveEndPending is not { } final || _live == null || _frame % 60 != 0) return;
+        try { if (_live.End(true, final) || _live.Ended) _liveEndPending = null; }
+        catch { }
+    }
+
+    private static LiveInput BuildLiveInput(CombatState cs, RunIdent ident, int fight, int round, string side)
+    {
+        var players = new List<LivePlayer>();
+        for (int slot = 0; slot < _players.Count && slot < ident.SteamIds.Length; slot++)
+        {
+            var creature = _players[slot]?.Creature;
+            if (creature == null) continue;
+            var (hp, maxHp, block) = ForecastReader.ReadVitals(creature);
+            var t = _tracker.Totals(slot);
+            players.Add(new LivePlayer(ident.SteamIds[slot], ModelIdOf(_players[slot].Character) ?? "UNKNOWN", hp, maxHp, block,
+                Clamp(t.Dealt), Clamp(t.Taken), Clamp(t.Healed), Clamp(t.Blocked), Clamp(t.BlockStopped)));
+        }
+        var enemies = new List<LiveEnemy>();
+        foreach (var e in cs.Enemies)
+        {
+            if (e == null || e.IsPet) continue;
+            try
+            {
+                string id = ModelIdOf(InstanceGet(e, "Monster")) ?? "UNKNOWN";
+                string name = TextHelper.SafeGetText(() => e.Monster!.Title) ?? id;
+                var (hp, maxHp, block) = ForecastReader.ReadVitals(e);
+                enemies.Add(new LiveEnemy(id, name, hp, maxHp, block, ForecastReader.ReadLiveIntent(e)));
+            }
+            catch (Exception ex) { ErrorLog.NoteOnce($"live state: an enemy was not read: {ex.Message}"); }
+        }
+        return new LiveInput(ident.RunId, fight, _fightMeta.Name ?? "", _fightMeta.Floor, round, side, players, enemies);
+    }
+
+    private static int Clamp(long v) => (int)Math.Clamp(v, 0, int.MaxValue);
+
     // After a finished combat: add it to <user dir>/damage-charts/runs/<run_id>.json (temp file +
     // rename). Never throws; a failure costs this fight's entry only.
     private static void TryWriteRunStats()
@@ -1760,8 +1889,7 @@ public static class DamageChartsMod
             }
 
             int floor = meta.Floor;
-            if (floor > 0 && ident.RunId == _statsRunId && floor == _statsFloor) _statsFloorCount++;
-            else _statsFloorCount = 1;
+            _statsFloorCount = NextFloorOrdinal(ident.RunId, floor);
             _statsRunId = ident.RunId;
             _statsFloor = floor;
 
@@ -2046,9 +2174,15 @@ public static class DamageChartsMod
         {
             VfxMoments.OnBlockChanged(creature, oldBlock, newBlock);
             int gained = newBlock - oldBlock;
-            if (gained <= 0 || !creature.IsPlayer) return; // only block *gained*, players only
+            if (!creature.IsPlayer) return; // players only
             int slot = SlotOf(creature.Player);
-            if (slot >= 0) _tracker.AddBlock(slot, gained);
+            if (slot < 0) return;
+            if (gained > 0) { _tracker.AddBlock(slot, gained); return; }
+            // Block lost on the enemies' turn while an enemy's hit is aimed at this player: damage the block stopped
+            // (block clearing at the start of the player's turn is not).
+            if (gained < 0 && EnemyTurn() && _pending.TryGetValue(creature, out var hit)
+                && hit.Dealer is { IsMonster: true } && _frame - hit.Frame <= PetRedirectFrames)
+                _tracker.AddBlockStopped(slot, -gained);
         }
         catch { /* overlay must never break combat */ }
     }

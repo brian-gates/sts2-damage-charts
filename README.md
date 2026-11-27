@@ -6,10 +6,11 @@ A standalone damage analytics and incoming-damage forecast mod for [Slay the Spi
 
 - **Incoming-damage forecast** (always on in combat, docked beside your character): the HP you are
   about to lose this turn and what you'll be left at, as a range when something is uncertain. Counts
-  enemy intents, damage over time, Infection and self-damage cards, Block, Osty and Wuppy, and end-of-turn Block
+  enemy intents, damage over time, Infection and self-damage cards, Block, Osty and Wuppy, Buffer, Intangible,
+  Tungsten Rod, Beating Remnant, Regen, and end-of-turn Block
   (Plating, Orichalcum, Cloak Clasp, Frost orbs, and an ally's Frost while their Hibernate is up); ignores enemies that will die to Poison before they act. A thin
   HP bar previews the loss. Reads **Safe** when nothing can hurt you and pulses when the turn can kill
-  you. Hover it for the per-round HP-lost history and an itemized list of sources.
+  you; when a Lizard Tail or Fairy in a Bottle would revive you, it names it instead of pulsing. Hover it for the per-round HP-lost history and an itemized list of sources.
 - **Damage Out | In / Round**: a small always-on chart stacked above the forecast, damage dealt vs taken
   for the last 8 rounds; hover a round for its breakdown. `show_bars: false` hides it, `bars_style:
   "full"` swaps in the larger chart.
@@ -181,6 +182,10 @@ After the first publish, subscribe in-client and verify the overlay loads in a r
   (`~/Library/Application Support/SlayTheSpire2` on macOS, `%APPDATA%\SlayTheSpire2` on Windows), for
   Spire Sync to upload. The file also notes rounds where the incoming-damage forecast was off, and the game version,
   so the forecast can be improved. Set `false` to stop writing the file.
+  While it is on, the mod also writes the current fight's live state to `damage-charts/live.json` for the Spire
+  Sync app: each player's character, HP, Block and damage totals and the enemies' HP and intents (in co-op, your
+  teammates' Steam IDs and numbers too, so the group can watch). Turning the setting off stops that too, and the
+  mod never goes online itself.
 
 Changes to `hotkey`, `show_bars` and `vfx_moments` are picked up live (within about half a second);
 the rest apply the next time the game starts.
